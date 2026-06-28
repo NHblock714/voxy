@@ -36,6 +36,8 @@ This port is currently **alpha** software. It builds for Minecraft 1.21.1 and Ne
 
 * FakeSight-style extended chunk request support, Thanks for song_5007.
   集成 FakeSight 风格的扩展区块请求功能，感谢大佬song_5007。
+  
+* 修复模拟殖民地Domum Ornamentum方块颜色消失问题
 
 ---
 
@@ -195,39 +197,6 @@ latest.log
 ```
 
 ---
-
-## Building From Source / 从源码构建
-
-Clone the repository and run Gradle:
-
-克隆仓库并运行 Gradle：
-
-```bash
-git clone https://github.com/yarnobachmann/Voxy-Neoforge.-1.21.1.git
-cd Voxy-Neoforge.-1.21.1
-./gradlew build
-```
-
-On Windows:
-
-Windows 下：
-
-```powershell
-git clone https://github.com/yarnobachmann/Voxy-Neoforge.-1.21.1.git
-cd Voxy-Neoforge.-1.21.1
-.\gradlew.bat build
-```
-
-The compiled jar will be written to:
-
-构建完成后的 jar 位于：
-
-```text
-build/libs/
-```
-
----
-
 
 ## Credits / 鸣谢
 
