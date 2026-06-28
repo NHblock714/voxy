@@ -2,15 +2,17 @@ package me.cortex.voxy.client.core.model.bakery;
 
 
 import me.cortex.voxy.common.util.MemoryBuffer;
-import net.minecraft.client.model.geom.builders.UVPair;
+import net.minecraft.client.Minecraft;
 import net.minecraft.client.renderer.RenderType;
 import net.minecraft.client.renderer.block.model.BakedQuad;
+import net.minecraft.core.BlockPos;
+import net.minecraft.world.level.block.state.BlockState;
 import org.lwjgl.system.MemoryUtil;
 
 import com.mojang.blaze3d.vertex.VertexConsumer;
 
 public final class ReuseVertexConsumer implements VertexConsumer {
-    public static final int VERTEX_FORMAT_SIZE = 24;
+    public static final int VERTEX_FORMAT_SIZE = 28;
     private MemoryBuffer buffer = new MemoryBuffer(8192);
     private long ptr;
     private int count;
@@ -46,6 +48,7 @@ public final class ReuseVertexConsumer implements VertexConsumer {
         MemoryUtil.memPutFloat(this.ptr, x);
         MemoryUtil.memPutFloat(this.ptr + 4, y);
         MemoryUtil.memPutFloat(this.ptr + 8, z);
+        MemoryUtil.memPutInt(this.ptr + 24, 0xFFFFFFFF);
         return this;
     }
 
@@ -57,11 +60,12 @@ public final class ReuseVertexConsumer implements VertexConsumer {
 
     @Override
     public ReuseVertexConsumer setColor(int red, int green, int blue, int alpha) {
-        return this;
+        return this.setColor(packAbgr(red, green, blue, alpha));
     }
 
     @Override
     public VertexConsumer setColor(int i) {
+        MemoryUtil.memPutInt(this.ptr + 24, normalizeAbgr(i));
         return this;
     }
 
@@ -88,17 +92,32 @@ public final class ReuseVertexConsumer implements VertexConsumer {
     }
 
     public ReuseVertexConsumer quad(BakedQuad quad, RenderType layer) {
-        return this.quad(quad, false, layer);
+        return this.quad(quad, false, layer, null);
     }
 
     public ReuseVertexConsumer quad(BakedQuad quad, boolean forceSolid, RenderType layer) {
+        return this.quad(quad, forceSolid, layer, null);
+    }
+
+    public ReuseVertexConsumer quad(BakedQuad quad, boolean forceSolid, RenderType layer, BlockState state) {
         int meta = 0;
         meta |= forceSolid?0:(layer!=RenderType.solid()?1:0);//has discard
-        meta |= quad.isTinted()?4:0;//has tinting
-        return this.quad(quad, meta);
+
+        int tintColour = -1;
+        if (quad.isTinted()) {
+            tintColour = captureTintColour(state, quad.getTintIndex());
+            if (tintColour == -1) {
+                meta |= 4;//has tinting, keep Voxy's normal biome/constant tint path
+            }
+        }
+        return this.quad(quad, meta, tintColour);
     }
 
     public ReuseVertexConsumer quad(BakedQuad quad, int metadata) {
+        return this.quad(quad, metadata, -1);
+    }
+
+    public ReuseVertexConsumer quad(BakedQuad quad, int metadata, int tintColour) {
         this.anyShaded |= quad.isShade();
         this.anyDarkendTex |= false;// todo: what actually goes here??
         this.ensureCanPut();
@@ -106,12 +125,58 @@ public final class ReuseVertexConsumer implements VertexConsumer {
         for (int i = 0; i < 4; i++) {
             // look at FaceBakery
             int j = i * 8;
+            int colour = normalizeAbgr(vertices[j + 3]);
+            if (tintColour != -1) {
+                colour = multiplyAbgr(colour, tintColour);
+            }
             this.addVertex(Float.intBitsToFloat(vertices[j]), Float.intBitsToFloat(vertices[j + 1]), Float.intBitsToFloat(vertices[j + 2]));
+            this.setColor(colour);
             this.setUv(Float.intBitsToFloat(vertices[j + 4]), Float.intBitsToFloat(vertices[j + 5]));
 
             this.meta(metadata|this.globalOrMetadata);
         }
         return this;
+    }
+
+    private static int captureTintColour(BlockState state, int tintIndex) {
+        if (state == null || tintIndex <= 0xFF) {
+            return -1;
+        }
+        try {
+            int colour = Minecraft.getInstance().getBlockColors().getColor(state, null, BlockPos.ZERO, tintIndex);
+            if (colour == -1) {
+                return -1;
+            }
+            return rgbToAbgr(colour);
+        } catch (Throwable ignored) {
+            return -1;
+        }
+    }
+
+    private static int normalizeAbgr(int colour) {
+        if (colour == -1) {
+            return 0xFFFFFFFF;
+        }
+        if ((colour & 0xFF000000) == 0) {
+            colour |= 0xFF000000;
+        }
+        return colour;
+    }
+
+    private static int packAbgr(int red, int green, int blue, int alpha) {
+        return ((alpha & 0xFF) << 24) | ((blue & 0xFF) << 16) | ((green & 0xFF) << 8) | (red & 0xFF);
+    }
+
+    private static int rgbToAbgr(int rgb) {
+        return 0xFF000000 | ((rgb & 0x0000FF) << 16) | (rgb & 0x00FF00) | ((rgb >>> 16) & 0xFF);
+    }
+
+    private static int multiplyAbgr(int base, int tint) {
+        int a = (((base >>> 24) & 0xFF) * ((tint >>> 24) & 0xFF)) / 255;
+        int b = (((base >>> 16) & 0xFF) * ((tint >>> 16) & 0xFF)) / 255;
+        int g = (((base >>> 8) & 0xFF) * ((tint >>> 8) & 0xFF)) / 255;
+        int r = ((base & 0xFF) * (tint & 0xFF)) / 255;
+        return (a << 24) | (b << 16) | (g << 8) | r;
     }
 
     private void ensureCanPut() {

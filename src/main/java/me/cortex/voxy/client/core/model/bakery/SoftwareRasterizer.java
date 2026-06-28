@@ -33,6 +33,7 @@ public class SoftwareRasterizer {
     private final Vector3f a1 = new Vector3f();
     private final Vector3f a2 = new Vector3f();
     private final Vector3f a3 = new Vector3f();
+    private int quadColour;
 
     private static final long DEPTH_MASK = ((1L<<24)-1)<<(64-24);
     private static final long CLEAR_VALUE = DEPTH_MASK;//set the depth to max value and rest of bits to 0
@@ -93,6 +94,7 @@ public class SoftwareRasterizer {
         loadTransformPos(transform, addr, 1, this.scratch2, this.qmuv2);
         loadTransformPos(transform, addr, 2, this.scratch3, this.qmuv3);
         loadTransformPos(transform, addr, 3, this.scratch4, this.qmuv4);
+        this.quadColour = MemoryUtil.memGetInt(addr + 24);
 
 
         //0,1,2 | 2,3,0
@@ -175,6 +177,9 @@ public class SoftwareRasterizer {
         float v = Math.fma(b1, this.a1.z, Math.fma(b2, this.a2.z, b3 * this.a3.z));
 
         int colour = this.sampleTexture(u,v);//The ABGR colour of this pixel
+        if (this.quadColour != 0xFFFFFFFF) {
+            colour = multiplyAbgr(colour, this.quadColour);
+        }
 
 
         final int ALPHA_CUTOFF_THRESHOLD = 0;
@@ -234,6 +239,14 @@ public class SoftwareRasterizer {
         return Math.min(0xFF,(a&0xFF)+(b&0xFF))|
                 Math.min((0xFF<<8),(a&(0xFF<<8))+(b&(0xFF<<8)))|
                 Math.min((0xFF<<16),(a&(0xFF<<16))+(b&(0xFF<<16)));
+    }
+
+    private static int multiplyAbgr(int base, int tint) {
+        int a = (((base >>> 24) & 0xFF) * ((tint >>> 24) & 0xFF)) / 255;
+        int b = (((base >>> 16) & 0xFF) * ((tint >>> 16) & 0xFF)) / 255;
+        int g = (((base >>> 8) & 0xFF) * ((tint >>> 8) & 0xFF)) / 255;
+        int r = ((base & 0xFF) * (tint & 0xFF)) / 255;
+        return (a << 24) | (b << 16) | (g << 8) | r;
     }
 
     private static float edge(Vector3f a, Vector3f b, Vector3f c) {

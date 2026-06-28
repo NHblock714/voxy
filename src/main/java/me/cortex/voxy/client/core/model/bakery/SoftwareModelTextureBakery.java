@@ -109,7 +109,7 @@ public class SoftwareModelTextureBakery {
             var quads = model.getQuads(state, direction, new SingleThreadedRandomSource(42L));
             for (var quad : quads) {
                 (layer == RenderType.translucent() ? this.translucentVC : this.opaqueVC)
-                        .quad(quad, state.is(BlockTags.LEAVES), layer);
+                        .quad(quad, state.is(BlockTags.LEAVES), layer, state);
             }
         }
     }
