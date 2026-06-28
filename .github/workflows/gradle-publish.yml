@@ -19,20 +19,20 @@ jobs:
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: 21
+          java-version: '21'
 
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
         with:
           cache-read-only: false
 
-      - name: Grant execute permission for gradlew
+      - name: Grant execute permission for Gradle wrapper
         run: |
           chmod +x ./gradlew
           ls -la ./gradlew
 
       - name: Build mod with Gradle
-        run: ./gradlew -I init.gradle build --no-daemon
+        run: bash ./gradlew -I init.gradle build --no-daemon
 
       - name: List generated JARs
         run: |
