@@ -107,6 +107,11 @@ public class VoxyNeoForgeConfig {
 
     /**
      * Sync NeoForge config values to VoxyConfig.
+     *
+     * This is used only when the NeoForge config is explicitly reloaded/edited.
+     * The Sodium video settings write to VoxyConfig's JSON file directly, so the
+     * normal startup load path must not call this method or the TOML defaults will
+     * overwrite the user's Sodium settings every time the game starts.
      */
     private static void syncToVoxyConfig() {
         VoxyConfig.CONFIG.enabled = ENABLED.get();
@@ -125,14 +130,41 @@ public class VoxyNeoForgeConfig {
         // RenderStatistics is a runtime-only setting (not saved to JSON)
         RenderStatistics.enabled = RENDER_STATISTICS.get();
 
-        // Also save to the JSON config for compatibility
+        // Keep the JSON config in sync if the user edits through NeoForge's config screen.
         VoxyConfig.CONFIG.save();
+    }
+
+    /**
+     * Sync VoxyConfig's JSON values back into the NeoForge config view.
+     *
+     * Voxy's Sodium config menu uses voxy-config.json as the real backing store.
+     * On startup NeoForge fires ModConfigEvent.Loading for voxy-client.toml; if we
+     * copy TOML -> JSON here, Sodium changes from the previous session get reset.
+     * Instead, mirror JSON -> TOML/in-memory spec so both config UIs show the same
+     * current values without clobbering the saved JSON.
+     */
+    private static void syncFromVoxyConfig() {
+        ENABLED.set(VoxyConfig.CONFIG.enabled);
+        ENABLE_RENDERING.set(VoxyConfig.CONFIG.enableRendering);
+        INGEST_ENABLED.set(VoxyConfig.CONFIG.ingestEnabled);
+        SECTION_RENDER_DISTANCE.set((int) VoxyConfig.CONFIG.sectionRenderDistance);
+        SERVICE_THREADS.set(VoxyConfig.CONFIG.serviceThreads);
+        SUB_DIVISION_SIZE.set((double) VoxyConfig.CONFIG.subDivisionSize);
+        USE_ENVIRONMENTAL_FOG.set(VoxyConfig.CONFIG.useEnvironmentalFog);
+        DONT_USE_SODIUM_BUILDER_THREADS.set(VoxyConfig.CONFIG.dontUseSodiumBuilderThreads);
+        LOD_BOUNDARY_BUFFER.set(VoxyConfig.CONFIG.lodBoundaryBuffer);
+        EARTH_CURVE_RATIO.set(VoxyConfig.CONFIG.earthCurveRatio);
+        ENABLE_EXTENDED_REQUEST_DISTANCE.set(VoxyConfig.CONFIG.enableExtendedRequestDistance);
+        REQUEST_DISTANCE.set(VoxyConfig.CONFIG.requestDistance);
+
+        // Runtime-only value; keep the NeoForge screen consistent during this session.
+        RENDER_STATISTICS.set(RenderStatistics.enabled);
     }
 
     @SubscribeEvent
     public static void onConfigLoad(ModConfigEvent.Loading event) {
         if (event.getConfig().getSpec() == SPEC) {
-            syncToVoxyConfig();
+            syncFromVoxyConfig();
         }
     }
 
