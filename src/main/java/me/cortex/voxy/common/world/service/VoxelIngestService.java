@@ -203,7 +203,7 @@ public class VoxelIngestService {
     }
 
     private boolean rawIngest0(WorldEngine engine, LevelChunkSection section, int x, int y, int z, DataLayer bl, DataLayer sl) {
-        this.ingestQueue.add(new IngestSection(x, y, z, engine, section, bl, sl));
+        this.ingestQueue.add(new IngestSection(x, y, z, engine, null, section, bl, sl));
         try {
             this.service.execute();
             return true;
