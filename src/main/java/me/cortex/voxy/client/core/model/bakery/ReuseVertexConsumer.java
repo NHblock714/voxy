@@ -64,7 +64,7 @@ public final class ReuseVertexConsumer implements VertexConsumer {
     }
 
     @Override
-    public VertexConsumer setColor(int i) {
+    public ReuseVertexConsumer setColor(int i) {
         MemoryUtil.memPutInt(this.ptr + 24, normalizeAbgr(i));
         return this;
     }

@@ -1,0 +1,12 @@
+diff -ruN domum_compile_fix_orig/src/main/java/me/cortex/voxy/client/core/model/bakery/ReuseVertexConsumer.java domum_compile_fix/src/main/java/me/cortex/voxy/client/core/model/bakery/ReuseVertexConsumer.java
+--- domum_compile_fix_orig/src/main/java/me/cortex/voxy/client/core/model/bakery/ReuseVertexConsumer.java	2026-06-28 08:39:44.000000000 +0000
++++ domum_compile_fix/src/main/java/me/cortex/voxy/client/core/model/bakery/ReuseVertexConsumer.java	2026-06-28 08:46:07.945304912 +0000
+@@ -64,7 +64,7 @@
+     }
+ 
+     @Override
+-    public VertexConsumer setColor(int i) {
++    public ReuseVertexConsumer setColor(int i) {
+         MemoryUtil.memPutInt(this.ptr + 24, normalizeAbgr(i));
+         return this;
+     }
