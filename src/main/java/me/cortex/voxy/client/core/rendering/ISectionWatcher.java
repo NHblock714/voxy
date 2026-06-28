@@ -20,4 +20,13 @@ public interface ISectionWatcher {
     }
 
     int get(long position);
+
+    /**
+     * Re-submit a geometry build for an already watched section without
+     * changing its watch mask. The default implementation is a no-op so tests
+     * and simple watcher implementations do not need to support active retry.
+     */
+    default void triggerRemesh(long position) {
+    }
 }
+

@@ -1,13 +1,13 @@
 modLoader="javafml"
 loaderVersion="[4,)"
 license="All-Rights-Reserved"
-issueTrackerURL="https://github.com/MCRcortex/voxy/issues"
+issueTrackerURL="https://github.com/JohnSnow14284/neo-voxy/issues"
 
 [[mods]]
 modId="voxy"
 version="${version}"
-displayName="Voxy"
-description="Far distance rendering mod utilising LoDs"
+displayName="neo-voxy"
+description="NeoForge port of Voxy, a far distance rendering mod utilising LoDs"
 authors="Cortex"
 logoFile="assets/voxy/icon.png"
 

@@ -45,6 +45,13 @@ class NodeChildRequest {
         return this.childChildExistence[childIdx];
     }
 
+    public boolean hasChildMesh(int childIdx) {
+        if ((this.mask&(1<<childIdx))==0) {
+            throw new IllegalStateException("Tried checking child mesh when child isnt in mask");
+        }
+        return (this.results&(1<<childIdx))!=0;
+    }
+
     public int setChildMesh(int childIdx, int mesh) {
         if ((this.mask&(1<<childIdx))==0) {
             throw new IllegalStateException("Tried setting child mesh when child isnt in mask");
