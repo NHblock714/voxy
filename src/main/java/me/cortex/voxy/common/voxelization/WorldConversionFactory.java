@@ -5,6 +5,7 @@ import me.cortex.voxy.commonImpl.mixin.minecraft.AccessorPalettedContainerData;
 import it.unimi.dsi.fastutil.objects.Reference2IntOpenHashMap;
 import me.cortex.voxy.common.world.other.Mapper;
 import me.cortex.voxy.common.world.other.Mipper;
+import me.cortex.voxy.commonImpl.compat.DomumOrnamentumCompat;
 import net.caffeinemc.mods.lithium.common.world.chunk.LithiumHashPalette;
 import net.neoforged.fml.ModList;
 import net.minecraft.core.BlockPos;
@@ -192,11 +193,22 @@ public class WorldConversionFactory {
                     sample = bDat[c++];
                     dec = iterPerLong;
                 }
+                int paletteIndex = (int) (sample & MSK);
                 int bId;
+                BlockState voxelState;
                 if (bps == null) {
-                    bId = pc[Math.min((int) (sample & MSK), pcc)];
+                    int clampedPaletteIndex = Math.min(paletteIndex, pcc);
+                    bId = pc[clampedPaletteIndex];
+                    voxelState = null;
+                    if (DomumOrnamentumCompat.isLoaded()) {
+                        try { voxelState = vp.valueFor(clampedPaletteIndex); } catch (Throwable ignored) {}
+                    }
                 } else {
-                    bId = stateMapper.getIdForBlockState(bps.valueFor((int) (sample&MSK)));
+                    voxelState = bps.valueFor(paletteIndex);
+                    bId = stateMapper.getIdForBlockState(voxelState);
+                }
+                if (voxelState != null) {
+                    bId = DomumOrnamentumCompat.mapBlockId(stateMapper, voxelState, bId, i);
                 }
                 sample >>>= eBits;
 
@@ -215,9 +227,14 @@ public class WorldConversionFactory {
                 }
             } else {
                 nonZeroCnt = 4096;
+                BlockState voxelState = null;
+                if (DomumOrnamentumCompat.isLoaded()) {
+                    try { voxelState = vp.valueFor(0); } catch (Throwable ignored) {}
+                }
                 for (int i = 0; i <= 0xFFF; i++) {
                     byte light = lightSupplier.supply(i&0xF, (i>>8)&0xF, (i>>4)&0xF);
-                    data[i] = Mapper.composeMappingId(light, bId, biomes[Integer.compress(i,0b1100_1100_1100)]);
+                    int mappedBlockId = voxelState == null ? bId : DomumOrnamentumCompat.mapBlockId(stateMapper, voxelState, bId, i);
+                    data[i] = Mapper.composeMappingId(light, mappedBlockId, biomes[Integer.compress(i,0b1100_1100_1100)]);
                 }
             }
         }

@@ -11,6 +11,7 @@ import me.cortex.voxy.common.world.WorldEngine;
 import me.cortex.voxy.common.world.WorldUpdater;
 import me.cortex.voxy.commonImpl.VoxyCommon;
 import me.cortex.voxy.commonImpl.WorldIdentifier;
+import me.cortex.voxy.commonImpl.compat.DomumOrnamentumCompat;
 import net.minecraft.core.SectionPos;
 import net.minecraft.world.level.LightLayer;
 import net.minecraft.world.level.chunk.DataLayer;
@@ -24,7 +25,7 @@ import java.util.concurrent.ConcurrentLinkedDeque;
 public class VoxelIngestService {
     private static final ThreadLocal<VoxelizedSection> SECTION_CACHE = ThreadLocal.withInitial(VoxelizedSection::createEmpty);
     private final Service service;
-    private record IngestSection(int cx, int cy, int cz, WorldEngine world, LevelChunkSection section, DataLayer blockLight, DataLayer skyLight){}
+    private record IngestSection(int cx, int cy, int cz, WorldEngine world, LevelChunk chunk, LevelChunkSection section, DataLayer blockLight, DataLayer skyLight){}
     private final ConcurrentLinkedDeque<IngestSection> ingestQueue = new ConcurrentLinkedDeque<>();
 
     public VoxelIngestService(ServiceManager pool) {
@@ -36,20 +37,25 @@ public class VoxelIngestService {
         task.world.markActive();
 
         var section = task.section;
-        var vs = SECTION_CACHE.get().setPosition(task.cx, task.cy, task.cz);
+        DomumOrnamentumCompat.beginSection(task.chunk, task.cy);
+        try {
+            var vs = SECTION_CACHE.get().setPosition(task.cx, task.cy, task.cz);
 
-        if (section.hasOnlyAir() && task.blockLight==null && task.skyLight==null) {//If the chunk section has lighting data, propagate it
-            WorldUpdater.insertUpdate(task.world, vs.zero());
-        } else {
-            VoxelizedSection csec = WorldConversionFactory.convert(
-                    vs,
-                    task.world.getMapper(),
-                    section.getStates(),
-                    section.getBiomes(),
-                    getLightingSupplier(task)
-            );
-            WorldVoxilizedSectionMipper.mipSection(csec, task.world.getMapper());
-            WorldUpdater.insertUpdate(task.world, csec);
+            if (section.hasOnlyAir() && task.blockLight==null && task.skyLight==null) {//If the chunk section has lighting data, propagate it
+                WorldUpdater.insertUpdate(task.world, vs.zero());
+            } else {
+                VoxelizedSection csec = WorldConversionFactory.convert(
+                        vs,
+                        task.world.getMapper(),
+                        section.getStates(),
+                        section.getBiomes(),
+                        getLightingSupplier(task)
+                );
+                WorldVoxilizedSectionMipper.mipSection(csec, task.world.getMapper());
+                WorldUpdater.insertUpdate(task.world, csec);
+            }
+        } finally {
+            DomumOrnamentumCompat.endSection();
         }
     }
 
@@ -121,7 +127,7 @@ public class VoxelIngestService {
                 i++;
                 if (section == null || !shouldIngestSection(section, chunk.getPos().x, i, chunk.getPos().z)) continue;
                 engine.markActive();
-                this.ingestQueue.add(new IngestSection(chunk.getPos().x, i, chunk.getPos().z, engine, section, null, null));
+                this.ingestQueue.add(new IngestSection(chunk.getPos().x, i, chunk.getPos().z, engine, chunk, section, null, null));
                 try {
                     this.service.execute();
                 } catch (Exception e) {
@@ -161,7 +167,7 @@ public class VoxelIngestService {
             //    continue;
             //}
             engine.markActive();
-            this.ingestQueue.add(new IngestSection(chunk.getPos().x, i, chunk.getPos().z, engine, section, bl, sl));//TODO: fixme, this is technically not safe todo on the chunk load ingest, we need to copy the section data so it cant be modified while being read
+            this.ingestQueue.add(new IngestSection(chunk.getPos().x, i, chunk.getPos().z, engine, chunk, section, bl, sl));//TODO: fixme, this is technically not safe todo on the chunk load ingest, we need to copy the section data so it cant be modified while being read
             try {
                 this.service.execute();
             } catch (Exception e) {

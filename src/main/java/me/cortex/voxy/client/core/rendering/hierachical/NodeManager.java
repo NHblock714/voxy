@@ -1127,13 +1127,9 @@ public class NodeManager {
                 return;
             }
 
-            // If the node is already in-flight, the GPU traversal is still asking for
-            // finer children. Do not ignore this completely: a child build task may have
-            // been lost, de-duplicated, or delayed behind model baking. Re-trigger the
-            // missing child mesh builds so the fallback coarse mesh can eventually be
-            // replaced by the finer nodes.
+            //Check if the node is already in-flight, if it is, dont do any processing
             if (this.nodeData.isNodeRequestInFlight(nodeId)) {
-                this.retryMissingLeafChildMeshes(nodeId);
+                Logger.warn("Tried processing a node that already has a request in flight: " + nodeId + " pos: " + WorldEngine.pprintPos(pos) + " ignoring");
                 return;
             }
 
@@ -1145,29 +1141,6 @@ public class NodeManager {
 
         } else {
             this.processInnerRequest(pos, nodeId);
-        }
-    }
-
-    private void retryMissingLeafChildMeshes(int nodeId) {
-        int requestId = this.nodeData.getNodeRequest(nodeId);
-        if (requestId == NULL_REQUEST_ID) {
-            return;
-        }
-
-        long pos = this.nodeData.nodePosition(nodeId);
-        var request = this.childRequests.get(requestId);
-        if (request.getPosition() != pos) {
-            throw new IllegalStateException("Request is not at pos, got " + WorldEngine.pprintPos(request.getPosition()) + " expected " + WorldEngine.pprintPos(pos));
-        }
-
-        byte mask = request.getMsk();
-        for (int i = 0; i < 8; i++) {
-            if ((mask&(1<<i))==0) {
-                continue;
-            }
-            if (!request.hasChildMesh(i)) {
-                this.watcher.triggerRemesh(makeChildPos(pos, i));
-            }
         }
     }
 

@@ -52,6 +52,7 @@ public class Mapper {
 
     private final ReentrantLock blockLock = new ReentrantLock();
     private final ConcurrentHashMap<BlockState, StateEntry> block2stateEntry = new ConcurrentHashMap<>(2000,0.75f, 10);
+    private final ConcurrentHashMap<VariantStateKey, StateEntry> variantBlock2stateEntry = new ConcurrentHashMap<>(2000,0.75f, 10);
     private final ObjectArrayList<StateEntry> blockId2stateEntry = new ObjectArrayList<>();
 
 
@@ -61,6 +62,9 @@ public class Mapper {
 
     private Consumer<StateEntry> newStateCallback;
     private Consumer<BiomeEntry> newBiomeCallback;
+
+    private record VariantStateKey(BlockState state, Object variantKey) { }
+
     public Mapper(IMappingStorage storage) {
         this.storage = storage;
         //Insert air since its a special entry (index 0)
@@ -254,6 +258,53 @@ public class Mapper {
         var mapping = this.block2stateEntry.get(state);
         if (mapping == null) {
             mapping = this.registerNewBlockState(state);
+        }
+        return mapping.id;
+    }
+
+    /**
+     * Registers a virtual block-state id that uses the same BlockState for all
+     * vanilla metadata, but must be baked as a distinct client model. This is
+     * used for block-entity-driven model data such as Domum Ornamentum material
+     * variants. The default BlockState mapping is intentionally left unchanged.
+     */
+    public int getIdForBlockStateVariant(BlockState state, Object variantKey) {
+        if (state.isAir()) {
+            return 0;
+        }
+        if (variantKey == null) {
+            return this.getIdForBlockState(state);
+        }
+
+        var key = new VariantStateKey(state, variantKey);
+        var mapping = this.variantBlock2stateEntry.get(key);
+        if (mapping != null) {
+            return mapping.id;
+        }
+
+        this.blockLock.lock();
+        try {
+            mapping = this.variantBlock2stateEntry.get(key);
+            if (mapping != null) {
+                return mapping.id;
+            }
+
+            mapping = new StateEntry(this.blockId2stateEntry.size(), state);
+            this.blockId2stateEntry.add(mapping);
+            this.variantBlock2stateEntry.put(key, mapping);
+        } finally {
+            this.blockLock.unlock();
+        }
+
+        byte[] serialized = mapping.serialize();
+        ByteBuffer buffer = MemoryUtil.memAlloc(serialized.length);
+        buffer.put(serialized);
+        buffer.rewind();
+        this.storage.putIdMapping(mapping.id | (BLOCK_STATE_TYPE<<30), buffer);
+        MemoryUtil.memFree(buffer);
+
+        if (this.newStateCallback != null) {
+            this.newStateCallback.accept(mapping);
         }
         return mapping.id;
     }
