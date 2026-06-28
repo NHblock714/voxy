@@ -1,10 +1,9 @@
-# Voxy NeoForge 1.21.1
-
 # Voxy NeoForge 1.21.1 非官方移植版
 
 An unofficial NeoForge 1.21.1 port of **Voxy**, the high-performance Level of Detail terrain renderer for Minecraft.
 
 这是 **Voxy** 的非官方 NeoForge 1.21.1 移植版本,原地址https://github.com/JohnSnow14284/1.21.1-Neo-Voxy
+
 通过yarnobachmann的分支进行修改，但其基于的版本过于旧，性能表现很差，因此我结合原作者cortex的最新版（主要）和m3t4f1v3的分支版本进行修改，成功“套壳”到1.21.1Neoforge，且无需信雅互联和Fabricapi。
 
 > All original Voxy credit belongs to [MCRcortex](https://github.com/MCRcortex), the creator of Voxy.
@@ -50,12 +49,6 @@ An unofficial NeoForge 1.21.1 port of **Voxy**, the high-performance Level of De
 | Java        | 21                                             |
 | Sodium      | mc1.21.1-0.8.12-alpha.4-neoforge or compatible |
 
-| 需求        | 版本                                     |
-| --------- | -------------------------------------- |
-| Minecraft | 1.21.1                                 |
-| NeoForge  | 21.1.x                                 |
-| Java      | 21                                     |
-| Sodium    | mc1.21.1-0.8.12-alpha.4-neoforge 或兼容版本 |
 
 This version no longer requires Forgified Fabric API as a mandatory dependency.
 
@@ -70,12 +63,6 @@ Recommended optional mods:
 | Lithium                | General game performance improvements      |
 | Iris                   | Shader testing, if supported by your setup |
 | Reese's Sodium Options | Optional Sodium settings UI enhancement    |
-
-| Mod                    | 作用                |
-| ---------------------- | ----------------- |
-| Lithium                | 提升游戏整体性能          |
-| Iris                   | 用于测试光影兼容性         |
-| Reese's Sodium Options | 可选的 Sodium 设置界面增强 |
 
 ---
 
