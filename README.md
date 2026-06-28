@@ -12,14 +12,6 @@ An unofficial NeoForge 1.21.1 port of **Voxy**, the high-performance Level of De
 
 ---
 
-## Status / 当前状态
-
-This port is currently **alpha** software. It builds for Minecraft 1.21.1 and NeoForge 21.1.x, but it is still being tested and stabilized.
-
-当前版本仍属于 **alpha 测试阶段**。它可以在 Minecraft 1.21.1 与 NeoForge 21.1.x 环境下构建和运行，但仍建议在新存档或备份存档中测试后再加入长期整合包。
-
----
-
 ## What Works / 已实现功能
 
 * Distant Level of Detail terrain rendering
@@ -34,10 +26,17 @@ This port is currently **alpha** software. It builds for Minecraft 1.21.1 and Ne
 * Client configuration through Sodium/Voxy settings
   可通过 Sodium / Voxy 设置界面调整配置
 
-* FakeSight-style extended chunk request support, Thanks for song_5007.
-  集成 FakeSight 风格的扩展区块请求功能，感谢大佬song_5007。
+* FakeSight-style extended chunk request support, Thanks for song_5007
+  集成 FakeSight 风格的扩展区块请求功能，感谢大佬song_5007
   
-* 修复模拟殖民地Domum Ornamentum方块颜色消失问题
+* 已初步兼容Domum Ornamentum，修复模拟殖民地Domum Ornamentum方块颜色消失问题
+
+---
+## Pre / 计划实现
+
+*兼容voxy worldgen
+
+*兼容Continuity
 
 ---
 
@@ -77,124 +76,6 @@ Recommended optional mods:
 | Lithium                | 提升游戏整体性能          |
 | Iris                   | 用于测试光影兼容性         |
 | Reese's Sodium Options | 可选的 Sodium 设置界面增强 |
-
----
-
-## Installation / 安装方式
-
-1. Install Minecraft 1.21.1 with NeoForge 21.1.x.
-   安装 Minecraft 1.21.1 与 NeoForge 21.1.x。
-
-2. Install the required NeoForge build of Sodium.
-   安装 NeoForge 版本的 Sodium。
-
-3. Download the latest `voxy-*.jar` from this repository's GitHub Releases page.
-   从本仓库 GitHub Releases 页面下载最新的 `voxy-*.jar`。
-
-4. Place the Voxy jar in your `mods` folder.
-   将 Voxy jar 放入 `mods` 文件夹。
-
-5. Start the game and check that Voxy appears in the mod list.
-   启动游戏，并确认 Mod 列表中出现 Voxy。
-
-6. Open Sodium video settings and configure Voxy.
-   打开 Sodium 视频设置页面，并调整 Voxy 配置。
-
----
-
-## Configuration / 配置说明
-
-Voxy options can be accessed from Sodium's video settings screen.
-
-Voxy 配置可以从 Sodium 视频设置界面进入。
-
-Recommended first-test settings:
-
-建议首次测试设置：
-
-```text
-Voxy Render Distance: Start low, then increase gradually
-Extended Request Distance: 32 or 48
-Shaders: Disabled for first test
-Vanilla Render Distance: 8 to 16
-```
-
-中文建议：
-
-```text
-Voxy 渲染距离：先设置较低，再逐渐提高
-扩展区块请求距离：建议先使用 32 或 48
-光影：首次测试建议关闭
-原版渲染距离：建议 8 到 16
-```
-
-If you encounter rendering issues, test with shaders disabled first.
-
-如果遇到渲染异常，请先关闭光影进行测试。
-
----
-
-## Troubleshooting / 常见问题
-
-### The Game Crashes on Startup / 游戏启动崩溃
-
-* Confirm you are using Minecraft 1.21.1.
-  确认你使用的是 Minecraft 1.21.1。
-
-* Confirm you are using NeoForge 21.1.x.
-  确认你使用的是 NeoForge 21.1.x。
-
-* Confirm Sodium is the NeoForge build and compatible with this port.
-  确认 Sodium 是 NeoForge 版本，并且与本移植版兼容。
-
-* Remove shader packs and other rendering overhaul mods for the first test.
-  首次测试时建议移除光影和其他大型渲染修改 Mod。
-
-* Check `latest.log` for dependency or mixin errors.
-  查看 `latest.log` 中是否存在依赖缺失或 mixin 报错。
-
----
-
-### Distant Terrain Does Not Render / 远景地形不渲染
-
-* Confirm Voxy is enabled in its configuration screen.
-  确认 Voxy 配置中已启用渲染。
-
-* Confirm Sodium is installed and active.
-  确认 Sodium 已安装并正常运行。
-
-* Lower Voxy render distance temporarily.
-  暂时降低 Voxy 渲染距离。
-
-* Lower Extended Request Distance if using FakeSight integration.
-  如果启用了 FakeSight 扩展请求，请适当降低请求距离。
-
-* Test in a fresh world or a copied save.
-  建议在新世界或备份存档中测试。
-
----
-
-
-
-### Shader Issues / 光影问题
-
-Shader support is experimental during the port.
-
-光影支持仍处于测试阶段。
-
-If a shader pack breaks Voxy rendering, test without the shader pack and report:
-
-如果某个光影导致 Voxy 渲染异常，请先关闭光影测试，并反馈：
-
-```text
-Minecraft version
-NeoForge version
-Sodium version
-Iris version
-Voxy version
-Shader pack name
-latest.log
-```
 
 ---
 
