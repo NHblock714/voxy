@@ -1,6 +1,7 @@
 package me.cortex.voxy.client;
 
 import com.mojang.brigadier.arguments.BoolArgumentType;
+import com.mojang.brigadier.arguments.IntegerArgumentType;
 import com.mojang.brigadier.arguments.StringArgumentType;
 import com.mojang.brigadier.builder.LiteralArgumentBuilder;
 import com.mojang.brigadier.context.CommandContext;
@@ -66,13 +67,70 @@ public class VoxyCommands {
                         .executes(ctx->verifyTLNs(ctx, false))
                         .then(Commands.argument("attemptRepair", BoolArgumentType.bool())
                                 .executes(ctx->verifyTLNs(ctx, BoolArgumentType.getBool(ctx, "attemptRepair"))))
-                );
+                )
+                .then(Commands.literal("probe")
+                        .then(Commands.argument("x", IntegerArgumentType.integer())
+                                .then(Commands.argument("y", IntegerArgumentType.integer())
+                                        .then(Commands.argument("z", IntegerArgumentType.integer())
+                                                .executes(VoxyCommands::probeStorage)))));
 
         return Commands.literal("voxy")//.requires((ctx)-> VoxyCommon.getInstance() != null)
                 .then(Commands.literal("reload")
                         .executes(VoxyCommands::reloadInstance))
                 .then(imports)
                 .then(debug);
+    }
+
+    //Dumps the stored voxel (block + light nibbles) at every lod level for a position, plus the
+    //voxel above it (the one most faces light from).
+    private static int probeStorage(CommandContext<CommandSourceStack> ctx) {
+        var instance = VoxyCommon.getInstance();
+        if (instance == null) {
+            ctx.getSource().sendFailure(Component.translatable("Voxy must be enabled in settings to use this"));
+            return 1;
+        }
+        var engine = WorldIdentifier.ofEngineNullable(Minecraft.getInstance().level);
+        if (engine == null) {
+            ctx.getSource().sendFailure(Component.translatable("No voxy world engine for this dimension"));
+            return 1;
+        }
+        int x = IntegerArgumentType.getInteger(ctx, "x");
+        int y = IntegerArgumentType.getInteger(ctx, "y");
+        int z = IntegerArgumentType.getInteger(ctx, "z");
+        var sb = new StringBuilder("voxy probe @ " + x + " " + y + " " + z);
+        for (int lvl = 0; lvl <= 4; lvl++) {
+            var sec = engine.acquireIfExists(lvl, x >> (5 + lvl), y >> (5 + lvl), z >> (5 + lvl));
+            if (sec == null) {
+                sb.append("\nlvl").append(lvl).append(": <section not in storage>");
+                continue;
+            }
+            long[] raw = sec._unsafeGetRawDataArray();
+            int lx = (x >> lvl) & 31, ly = (y >> lvl) & 31, lz = (z >> lvl) & 31;
+            long self = raw[lx | (lz << 5) | (ly << 10)];
+            String above = ly < 31 ? formatVoxel(raw[lx | (lz << 5) | ((ly + 1) << 10)], engine) : "<in +y section>";
+            sb.append("\nlvl").append(lvl).append(": self=").append(formatVoxel(self, engine)).append(" above=").append(above);
+            sec.release();
+        }
+        String out = sb.toString();
+        Logger.info(out);
+        ctx.getSource().sendSuccess(() -> Component.literal(out), false);
+        return 0;
+    }
+
+    private static String formatVoxel(long v, me.cortex.voxy.common.world.WorldEngine engine) {
+        if (v == 0) return "void";
+        int light = me.cortex.voxy.common.world.other.Mapper.getLightId(v);
+        String block;
+        if (me.cortex.voxy.common.world.other.Mapper.isAir(v)) {
+            block = "air";
+        } else {
+            try {
+                block = String.valueOf(engine.getMapper().getBlockStateFromBlockId(me.cortex.voxy.common.world.other.Mapper.getBlockId(v)));
+            } catch (Exception e) {
+                block = "<unmapped:" + me.cortex.voxy.common.world.other.Mapper.getBlockId(v) + ">";
+            }
+        }
+        return block + "{sky=" + (light & 0xF) + ",blk=" + ((light >> 4) & 0xF) + "}";
     }
 
     private static int reloadInstance(CommandContext<CommandSourceStack> ctx) {

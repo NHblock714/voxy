@@ -321,13 +321,23 @@ public class RenderDataFactory {
             sec.release(WorldSection.RELEASE_HINT_POSSIBLE_REUSE);
         }
         if ((msk&8)!=0) {//+y
-            var sec = this.world.acquire(section.lvl, section.x, section.y + 1, section.z);
-            //Note this is not thread safe! (but eh, fk it)
-            var raw = sec._unsafeGetRawDataArray();
-            for (int i = 0; i < 32*32; i++) {
-                this.neighboringFaces[i+32*32*3] = raw[i];//pull the -y faces from the section
+            var sec = this.world.acquireIfExists(section.lvl, section.x, section.y + 1, section.z);
+            if (sec == null) {
+                //Never-ingested space above the surface is open sky (vanilla stores no sky DataLayer there and
+                //chunk senders skip all-air sections); zero-lit air here would black out every neighbor-lit top
+                //face. Ingested-but-dark sections (caves) still copy through below.
+                long skyAir = Mapper.airWithLight(0x0F);
+                for (int i = 0; i < 32*32; i++) {
+                    this.neighboringFaces[i+32*32*3] = skyAir;
+                }
+            } else {
+                //Note this is not thread safe! (but eh, fk it)
+                var raw = sec._unsafeGetRawDataArray();
+                for (int i = 0; i < 32*32; i++) {
+                    this.neighboringFaces[i+32*32*3] = raw[i];//pull the -y faces from the section
+                }
+                sec.release(WorldSection.RELEASE_HINT_POSSIBLE_REUSE);
             }
-            sec.release(WorldSection.RELEASE_HINT_POSSIBLE_REUSE);
         }
 
         if ((msk&16)!=0) {//-z
@@ -379,6 +389,15 @@ public class RenderDataFactory {
         quad &= ~(BLMSK);
         quad |= bl;
         return quad;
+    }
+
+    //Per-nibble max of two quad-position light bytes (sky bits 55-58, block 59-62). Fluid faces
+    //light from their neighbor, but above-surface air can be stored with zero sky light; taking the
+    //max with the fluid's own light keeps caves dark while fixing zero-lit neighbors.
+    private static long maxQuadLight(long a, long b) {
+        final long SKYMSK = 0xFL<<55;
+        final long BLKMSK = 0xFL<<59;
+        return Math.max(a&SKYMSK, b&SKYMSK) | Math.max(a&BLKMSK, b&BLKMSK);
     }
 
     private void generateYZOpaqueInnerGeometry(int axis) {
@@ -603,7 +622,7 @@ public class RenderDataFactory {
                         this.blockMesher.putNext(applyQuadLight(
                                 ((long) facingForward) |//Facing
                                 (A&~LM) |
-                                (lighter&LM),//Apply lighting
+                                maxQuadLight(A, lighter),//Apply lighting
                                 Am)
                         );
                     }
@@ -687,7 +706,7 @@ public class RenderDataFactory {
                         this.blockMesher.putNext(applyQuadLight(
                                 (side == 0 ? 0L : 1L) |
                                 (A&~LM) |
-                                ((neighborId&(0xFFL<<56))>>>1),
+                                maxQuadLight(A, (neighborId&(0xFFL<<56))>>>1),
                                 Am)
                         );
                     }
@@ -868,8 +887,6 @@ public class RenderDataFactory {
             this.generateYZOpaqueInnerGeometry(axis);
             this.generateYZOpaqueOuterGeometry(axis);
 
-            this.generateYZFluidInnerGeometry(axis);
-            this.generateYZFluidOuterGeometry(axis);
             if (CHECK_NEIGHBOR_FACE_OCCLUSION) {
                 this.generateYZNonOpaqueInnerGeometry(axis);
                 this.generateYZNonOpaqueOuterGeometry(axis);
@@ -1224,7 +1241,7 @@ public class RenderDataFactory {
                         mesher.putNext(applyQuadLight(
                                 ((long) facingForward) |//Facing
                                 (A&~LM) |
-                                (lighter&LM),//Lighting
+                                maxQuadLight(A, lighter),//Lighting
                                 Am
                                 )
                         );
@@ -1322,7 +1339,7 @@ public class RenderDataFactory {
                         ma.skip(skipA); skipA = 0;
 
                         //TODO: LIGHTING
-                        long lightData = ((neighborId&(0xFFL<<56))>>>1);//A;
+                        long lightData = maxQuadLight(A, (neighborId&(0xFFL<<56))>>>1);
                         //if (!ModelQueries.faceUsesSelfLighting(Am, facingForward|(axis*2))) {//TODO: check this is right
                         //    lighter = this.sectionData[bi];
                         //}
@@ -1386,7 +1403,7 @@ public class RenderDataFactory {
                         mb.skip(skipB); skipB = 0;
 
                         //TODO: LIGHTING
-                        long lightData = ((neighborId&(0xFFL<<56))>>>1);//A;
+                        long lightData = maxQuadLight(A, (neighborId&(0xFFL<<56))>>>1);
                         //if (!ModelQueries.faceUsesSelfLighting(Am, facingForward|(axis*2))) {//TODO: check this is right
                         //    lighter = this.sectionData[bi];
                         //}
@@ -1615,13 +1632,6 @@ public class RenderDataFactory {
         for (var mesher : this.xAxisMeshers) {
             mesher.finish();
         }
-
-        this.generateXInnerFluidGeometry();
-        this.generateXOuterFluidGeometry();
-
-        for (var mesher : this.xAxisMeshers) {
-            mesher.finish();
-        }
         if (CHECK_NEIGHBOR_FACE_OCCLUSION) {
             this.generateXNonOpaqueInnerGeometry();
             this.generateXNonOpaqueOuterGeometry();
@@ -1633,6 +1643,29 @@ public class RenderDataFactory {
                 mesher.finish();
             }
         }
+    }
+
+    private void generateFluidFaces() {
+        // All translucent fluid faces share the same geometry bucket, so submission
+        // order becomes the effective in-section sort order. Emit the lateral walls
+        // first and the Y surfaces last so the top water faces do not hide the outer
+        // walls behind them.
+        this.blockMesher.axis = 1;
+        this.generateYZFluidInnerGeometry(1);
+        this.generateYZFluidOuterGeometry(1);
+
+        for (var mesher : this.xAxisMeshers) {
+            mesher.finish();
+        }
+        this.generateXInnerFluidGeometry();
+        this.generateXOuterFluidGeometry();
+        for (var mesher : this.xAxisMeshers) {
+            mesher.finish();
+        }
+
+        this.blockMesher.axis = 0;
+        this.generateYZFluidInnerGeometry(0);
+        this.generateYZFluidOuterGeometry(0);
     }
 
     private final int occupancyBarrier(int index) {
@@ -1740,6 +1773,7 @@ public class RenderDataFactory {
         try {
             this.generateYZFaces();
             this.generateXFaces();
+            this.generateFluidFaces();
         } catch (IdNotYetComputedException e) {
             e.auxBitMsk = neighborMsk;
             e.auxData = this.neighboringFaces;

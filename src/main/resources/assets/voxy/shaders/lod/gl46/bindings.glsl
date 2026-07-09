@@ -3,6 +3,7 @@ layout(binding = 0, std140) uniform SceneUniform {
     ivec3 baseSectionPos;
     uint frameId;
     vec3 cameraSubPos;
+    float seaSurfaceY;//world-space sea surface height, packs into cameraSubPos's std140 pad slot
 };
 
 //TODO: see if making the stride 2*4*4 bytes or something cause you get that 16 byte write

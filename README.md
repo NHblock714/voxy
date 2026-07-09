@@ -1,105 +1,51 @@
-# Voxy NeoForge 1.21.1 非官方移植版
+# voxy — NeoForge 1.21.1 fork
 
-An unofficial NeoForge 1.21.1 port of **Voxy**, the high-performance Level of Detail terrain renderer for Minecraft.
+Unofficial NeoForge 1.21.1 fork of [Voxy](https://github.com/MCRcortex/voxy) by MCRcortex,
+continuing the [neo-voxy](https://github.com/JohnSnow14284/neo-voxy) port lineage.
+Maintained by NHblock714.
 
-这是 **Voxy** 的非官方 NeoForge 1.21.1 移植版本,原地址https://github.com/JohnSnow14284/1.21.1-Neo-Voxy
+## Changes over neo-voxy
 
-通过yarnobachmann的分支进行修改，但其基于的版本过于旧，性能表现很差，因此我结合原作者cortex的最新版（主要）和m3t4f1v3的分支版本进行修改，成功“套壳”到1.21.1Neoforge，且无需信雅互联和Fabricapi。
+Rendering
+- Translucent water: straight-alpha bake (no alpha accumulation), SRC_ALPHA composite, ordered fluid meshing (walls first, surfaces last)
+- Sea surface renders at the true sea height at every lod level instead of rounding up per ring
+- Cross plants (grass, flowers, saplings) render as two crossed mid planes instead of a four-sided box
+- Per-face-tile mip generation with an exact per-pixel tint mask; lightmap sampling parity with 0.2.14
+- Underwater the LOD blit is skipped so the water fog occludes properly
 
-> All original Voxy credit belongs to [MCRcortex](https://github.com/MCRcortex), the creator of Voxy.
-> Voxy 原作者为 [MCRcortex](https://github.com/MCRcortex)，本项目仅为非官方 NeoForge 移植与兼容性维护版本。
+Lighting
+- Above-surface air carries sky light at all lod levels: light probe for sections without a DataLayer,
+  sky-lit empty sections, self/neighbor light max for fluid faces, max-based sky mip
+- Nearest-rounding terrain mips (no systematic +1 surface bias at lod rings)
 
----
+Storage / lifecycle
+- Re-ingest walks the whole mip chain, so stale or corrupt higher levels heal on revisit
+- Instance shutdown flushes pending section saves before closing the storages
+- Block states from removed mods fall back to air instead of crashing world join
+- World engines close when leaving a world (worlds are deletable again)
+- Dynamically registered mixins are dist-gated (dedicated servers boot clean)
 
-## What Works / 已实现功能
+Integrations
+- sable: contraption LOD rendering out to a configurable percentage of voxy's render distance
+- EclipticSeasons: seasonal snow LOD (code adapted from the VoxyCompat addon by TeamTea, BSD-3-Clause)
+- VSS (voxy server side): terrain streaming compatibility; `/voxy debug probe` for storage inspection
+- In-game "Integrations" options page (Sodium 0.8 video settings)
 
-* Distant Level of Detail terrain rendering
-  远距离 LOD 地形渲染
+## Building
 
-* Sodium-based rendering integration
-  基于 Sodium 的渲染集成
+```
+gradlew build
+python tools/trim_jar.py
+```
 
-* Sodium 0.8.12 video settings UI integration
-  已集成到 Sodium 0.8.12 视频设置界面
+`trim_jar.py` produces the `-slim` jar: it keeps only the win64/linux64 rocksdb natives and strips
+the lwjgl extension `module-info` so dedicated servers can boot (JPMS).
 
-* Client configuration through Sodium/Voxy settings
-  可通过 Sodium / Voxy 设置界面调整配置
+Compile-only jars for sable / EclipticSeasons belong in `libs/aero-spike/` and are not part of
+this repository.
 
-* FakeSight-style extended chunk request support, Thanks for song_5007
-  集成 FakeSight 风格的扩展区块请求功能，感谢大佬song_5007
-  
-* 已初步兼容Domum Ornamentum，修复模拟殖民地Domum Ornamentum方块颜色消失问题
+## License
 
----
-## Pre / 计划实现
-
-*兼容voxy worldgen
-
-*兼容Continuity
-
----
-
-
-## Requirements / 运行需求
-
-| Requirement | Version                                        |
-| ----------- | ---------------------------------------------- |
-| Minecraft   | 1.21.1                                         |
-| NeoForge    | 21.1.x                                         |
-| Java        | 21                                             |
-| Sodium      | mc1.21.1-0.8.12-alpha.4-neoforge or compatible |
-
-
-This version no longer requires Forgified Fabric API as a mandatory dependency.
-
-当前版本不再强制要求 Forgified Fabric API 作为前置依赖。
-
-Recommended optional mods:
-
-推荐可选 Mod：
-
-| Mod                    | Why                                        |
-| ---------------------- | ------------------------------------------ |
-| Lithium                | General game performance improvements      |
-| Iris                   | Shader testing, if supported by your setup |
-| Reese's Sodium Options | Optional Sodium settings UI enhancement    |
-
----
-
-## Credits / 鸣谢
-
-* [MCRcortex](https://github.com/MCRcortex) - Original Voxy author
-  Voxy 原作者
-* [m3t4f1v3](https://github.com/m3t4f1v3) [yarnobachmann](https://github.com/yarnobachmann)- Forked Voxy author
-  Voxy 分支作者
-
-* [Original Voxy repository](https://github.com/MCRcortex/voxy)
-  原版 Voxy 仓库
-  
-* NeoForge contributors
-  NeoForge 贡献者
-
-* Sodium contributors
-  Sodium 贡献者
-
-* Iris contributors
-  Iris 贡献者
-  
-* FakeSight contributors
-  FakeSight 贡献者
-
-* The Minecraft modding community
-  Minecraft Mod 开发社区
-
----
-
-## License / 许可证
-
-See [LICENSE.md](LICENSE.md).
-
-请查看 [LICENSE.md](LICENSE.md)。
-
-This is an unofficial port and is not affiliated with Mojang, Microsoft, NeoForge, Sodium, Iris, or the original Voxy project.
-
-这是一个非官方移植版本，与 Mojang、Microsoft、NeoForge、Sodium、Iris 或原版 Voxy 项目无官方关联。
-
+Upstream Voxy is "All rights reserved — do not redistribute" (see LICENSE.md). This repository
+exists as a GitHub fork for development and review; no built jars are distributed here.
+All original Voxy credit belongs to [MCRcortex](https://github.com/MCRcortex).

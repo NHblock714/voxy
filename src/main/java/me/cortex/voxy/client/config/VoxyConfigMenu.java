@@ -37,7 +37,8 @@ public class VoxyConfigMenu implements ConfigEntryPoint {
                         if (instance != null) {
                             instance.updateDedicatedThreads();
                         }
-                    }, "voxy:enabled").register("voxy:iris_reload", ()->IrisUtil.reload());
+                    }, "voxy:enabled").register("voxy:iris_reload", ()->IrisUtil.reload())
+                            .register("voxy:sable_refresh", me.cortex.voxy.client.compat.sable.SableClientRenderDistance::refreshSableRenderData);
                 },
                 new Page(Component.translatable("voxy.config.general"),
                         new Group(
@@ -171,25 +172,46 @@ public class VoxyConfigMenu implements ConfigEntryPoint {
                                         ()->CFG.skyFogDistance, v->CFG.skyFogDistance=v,
                                         new Range(0, 1024, 1))
                                         .setImpact(OptionImpact.LOW)
-                                        .setPostChangeFlags(RENDER_RELOAD)
+                                        .setPostChangeFlags(RENDER_RELOAD),
+                                new IntOption(
+                                        "voxy:fog_distance",
+                                        Component.translatable("voxy.config.general.fog_distance"),
+                                        ()->CFG.fogDistancePercent, v->CFG.fogDistancePercent=v,
+                                        new Range(25, 2000, 5))
+                                        .setFormatter(v->Component.literal(v+"%"))
+                                        .setImpact(OptionImpact.LOW)
                         )
                         .setEnablerInherit(s->!IrisUtil.irisShadersEnabledInConfig(), ConfigState.UPDATE_ON_REBUILD)
                 ).setEnablerAND("voxy:enabled", "voxy:rendering"),
-                new Page(Component.translatable("voxy.config.fakesight"),
+                new Page(Component.translatable("voxy.config.compat"),
                         new Group(
                                 new BoolOption(
-                                        "voxy:fakesight_enabled",
-                                        Component.translatable("voxy.config.fakesight.enabled"),
-                                        ()->CFG.enableExtendedRequestDistance, v->CFG.enableExtendedRequestDistance=v)
-                                        .setImpact(OptionImpact.HIGH),
+                                        "voxy:sable_lod",
+                                        Component.translatable("voxy.config.compat.sableLod"),
+                                        ()->CFG.sableLodRendering, v->CFG.sableLodRendering=v)
+                                        .setPostChangeFlags("voxy:sable_refresh"),
                                 new IntOption(
-                                        "voxy:fakesight_request_distance",
-                                        Component.translatable("voxy.config.fakesight.distance"),
-                                        ()->CFG.requestDistance, v->CFG.requestDistance=v,
-                                        new Range(8, 127, 1))
-                                        .setFormatter(v->Component.literal(Integer.toString(v)))
-                                        .setImpact(OptionImpact.HIGH)
-                                        .setEnabler("voxy:fakesight_enabled")
+                                        "voxy:sable_lod_distance",
+                                        Component.translatable("voxy.config.compat.sableLodDistance"),
+                                        ()->CFG.simulatedContraptionRenderDistancePercent,
+                                        v->CFG.simulatedContraptionRenderDistancePercent=v,
+                                        new Range(0, 100, 5))
+                                        .setFormatter(v->Component.literal(v+"%"))
+                                        .setImpact(OptionImpact.MEDIUM)
+                                        .setPostChangeFlags("voxy:sable_refresh")
+                        ), new Group(
+                                new BoolOption(
+                                        "voxy:es_snow_lod",
+                                        Component.translatable("voxy.config.compat.esSnowLod"),
+                                        ()->CFG.eclipticSeasonsSnowLod, v->CFG.eclipticSeasonsSnowLod=v),
+                                new BoolOption(
+                                        "voxy:es_lod_auto_reload",
+                                        Component.translatable("voxy.config.compat.esLodAutoReload"),
+                                        ()->CFG.eclipticSeasonsLodAutoReload, v->CFG.eclipticSeasonsLodAutoReload=v),
+                                new BoolOption(
+                                        "voxy:es_reload_on_season_change",
+                                        Component.translatable("voxy.config.compat.esReloadOnSeasonChange"),
+                                        ()->CFG.eclipticSeasonsReloadOnSeasonChange, v->CFG.eclipticSeasonsReloadOnSeasonChange=v)
                         )
                 ).setEnabler("voxy:enabled"));
 

@@ -34,9 +34,17 @@
   "voxy.config.general.fogDensity.tooltip": "雾效密度，数值越高雾越浓",
   "voxy.config.general.skyFogDistance": "天空雾距离",
   "voxy.config.general.skyFogDistance.tooltip": "天空雾开始渲染的距离，单位为区块",
-  "voxy.config.fakesight": "扩展区块请求",
-  "voxy.config.fakesight.enabled": "启用扩展区块请求",
-  "voxy.config.fakesight.enabled.tooltip": "FakeSight 风格支持：向服务端报告更大的视距/请求距离，让服务端发送更多区块供 Voxy 生成 LOD。",
-  "voxy.config.fakesight.distance": "请求距离",
-  "voxy.config.fakesight.distance.tooltip": "向服务端或集成服务器报告的区块请求距离。数值越高，CPU、内存和网络负载越大。"
+  "voxy.config.general.fog_distance": "雾距离",
+  "voxy.config.general.fog_distance.tooltip": "缩放 voxy 的 LOD 雾距离（100% = 在渲染边缘达到满雾）。数值越高，远景 LOD 越晚淡入天空色、能看得越远。",
+  "voxy.config.compat": "联动",
+  "voxy.config.compat.sableLod": "Sable 远景载具渲染",
+  "voxy.config.compat.sableLod.tooltip": "让模拟载具（船只、载具等）在原版视距外继续渲染，延伸到 LOD 距离",
+  "voxy.config.compat.sableLodDistance": "载具渲染距离",
+  "voxy.config.compat.sableLodDistance.tooltip": "远景载具保持渲染的距离，按 voxy 渲染距离的百分比计算。0% 等同关闭延伸",
+  "voxy.config.compat.esSnowLod": "节气积雪 LOD",
+  "voxy.config.compat.esSnowLod.tooltip": "远景 LOD 地形随节气显示积雪。对新摄取的区块生效",
+  "voxy.config.compat.esLodAutoReload": "换季自动重导入 LOD",
+  "voxy.config.compat.esLodAutoReload.tooltip": "季节变化时自动重新导入区域 LOD，让远景积雪保持最新",
+  "voxy.config.compat.esReloadOnSeasonChange": "换季重建渲染器",
+  "voxy.config.compat.esReloadOnSeasonChange.tooltip": "季节变化时重建 LOD 渲染器，让已加载的远景立即换色"
 }

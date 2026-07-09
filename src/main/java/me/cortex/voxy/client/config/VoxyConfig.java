@@ -7,6 +7,7 @@ import me.cortex.voxy.client.core.SSAO;
 import me.cortex.voxy.common.Logger;
 import me.cortex.voxy.common.util.cpu.CpuLayout;
 import me.cortex.voxy.commonImpl.VoxyCommon;
+import me.cortex.voxy.commonImpl.compat.sable.SableContraptionRenderDistance;
 import net.neoforged.fml.loading.FMLPaths;
 
 import java.io.FileReader;
@@ -29,11 +30,17 @@ public class VoxyConfig {
     public boolean enableRendering = true;
     public boolean ingestEnabled = true;
     public float sectionRenderDistance = 16;
+    // Aero/sable: master switch for extending simulated-contraption rendering out to LOD distances.
+    public boolean sableLodRendering = true;
+    // Aero/sable: render simulated contraptions within this % of voxy's LOD render distance.
+    public int simulatedContraptionRenderDistancePercent = 50;
     public int serviceThreads = (int) Math.max(CpuLayout.getCoreCount()/1.5, 1);
     public float subDivisionSize = 28;
     public int skyFogDistance = 96;
     public float fogIntensity = 1.0f;
     public float fogDensity = 0.0f;
+    // Scales voxy's self-defined LOD fog distance (100 = fog reaches full at voxy's render edge).
+    public int fogDistancePercent = 100;
     public boolean adaptCloudDistance = true;
     public int cloudDistance = 0;
     public boolean dontUseSodiumBuilderThreads = false;
@@ -44,13 +51,16 @@ public class VoxyConfig {
     // World curvature effect; 0 disables it.
     public int earthCurveRatio = 0;
 
-    // FakeSight-style extended chunk request support.
-    public boolean enableExtendedRequestDistance = true;
-    public int requestDistance = 48;
-
     public String ssaoMode;
 
     public boolean useEnvironmentalFog = true;
+
+    // EclipticSeasons compat: recolor LOD terrain with seasonal snow (master switch for the eclipticseasons mixins).
+    public boolean eclipticSeasonsSnowLod = true;
+    // EclipticSeasons compat: re-import region LODs when the season changes.
+    public boolean eclipticSeasonsLodAutoReload = false;
+    // EclipticSeasons compat: rebuild the LOD renderer when the season changes.
+    public boolean eclipticSeasonsReloadOnSeasonChange = false;
 
     public SSAO.SSAOMode getSSAOMode() {
         if (this.ssaoMode == null) return SSAO.SSAOMode.AUTO;
@@ -94,6 +104,7 @@ public class VoxyConfig {
     public void save() {
         if (!VoxyCommon.isAvailable()) {
             Logger.info("Not saving config since voxy is unavalible");
+            this.syncSableContraptionRenderDistance();
             return;
         }
 
@@ -102,6 +113,18 @@ public class VoxyConfig {
         } catch (IOException e) {
             Logger.error("Failed to write config file", e);
         }
+
+        this.syncSableContraptionRenderDistance();
+    }
+
+    // Aero/sable: push the live render-distance/percent to the sable contraption-LOD calculator.
+    // SableContraptionRenderDistance has no sable-type references, so this is safe even without sable.
+    public void syncSableContraptionRenderDistance() {
+        SableContraptionRenderDistance.updateClientConfig(
+                this.isRenderingEnabled() && this.sableLodRendering,
+                this.sectionRenderDistance,
+                this.simulatedContraptionRenderDistancePercent
+        );
     }
 
     private static Path getConfigPath() {

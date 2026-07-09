@@ -78,9 +78,12 @@ public class WorldUpdater {
                     worldSection.release();
                 }
             } else {
-                //If nothing changed just need to release, dont need to update parent mips
+                //Keep walking the remaining mip levels even when nothing changed here: each level compares the
+                //fresh mip against storage, so stale parents get detected and rewritten. Unchanged levels write
+                //identical data and mark nothing dirty.
+                shouldCheckEmptiness = false;
+                previousSection = null;
                 worldSection.release();
-                break;
             }
         }
 

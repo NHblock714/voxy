@@ -13,3 +13,12 @@ bin/
 .settings/
 
 .vscode/
+
+# compile-only third-party jars, drop them in yourself (see README)
+/libs/
+
+# local workspace notes
+/ARCHITECTURE.md
+/HANDOFF.md
+/VOXY-0216-PROGRESS.md
+/VOXY-0216-REBASE-PLAN.md

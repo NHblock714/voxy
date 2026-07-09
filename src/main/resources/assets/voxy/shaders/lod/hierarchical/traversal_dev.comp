@@ -18,6 +18,7 @@ layout(binding = SCENE_UNIFORM_BINDING, std140) uniform SceneUniform {
     uint frameId;
     uint requestQueueSize;
     float renderDistance;
+    float fullDetailDistSq;
 };
 
 #import <voxy:lod/hierarchical/queue.glsl>
@@ -115,6 +116,14 @@ bool isWithinRenderDistance(in UnpackedNode node) {
     return xzDist <= renderDistance;
 }
 
+//Force subdivision to lvl0 just inside the vanilla render distance regardless of the
+//screen-space threshold, so the seam ring geometry (water surface height) matches vanilla.
+bool isWithinFullDetail(in UnpackedNode node) {
+    if (fullDetailDistSq<=0.0f) return false;
+    vec3 close = closestPointToCamera(node);
+    return (close.x*close.x+close.z*close.z) <= fullDetailDistSq;
+}
+
 
 void traverse(in UnpackedNode node) {
     #ifdef HAS_STATISTICS
@@ -131,7 +140,7 @@ void traverse(in UnpackedNode node) {
         //It is visible, TODO: maybe do a more detailed hiz test? (or make it so that )
 
         //Only decend if not a root node
-        if (node.lodLevel!=0 && shouldDecend()) {
+        if (node.lodLevel!=0 && (shouldDecend() || isWithinFullDetail(node))) {
             if (hasChildren(node)) {
                 //printf("A");
                 enqueueChildren(node);

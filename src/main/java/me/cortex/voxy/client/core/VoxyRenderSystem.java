@@ -490,6 +490,10 @@ public class VoxyRenderSystem {
         return this.viewportSelector.getViewport();
     }
 
+    public int getSableOcclusionDepthTexture() {
+        return this.pipeline.getSableOcclusionDepthTexture();
+    }
+
     public void addDebugInfo(List<String> debug) {
         debug.add("Buf/Tex [#/Mb]: [" + GlBuffer.getCount() + "/" + (GlBuffer.getTotalSize()/1_000_000) + "],[" + GlTexture.getCount() + "/" + (GlTexture.getEstimatedTotalSize()/1_000_000)+"]");
         {

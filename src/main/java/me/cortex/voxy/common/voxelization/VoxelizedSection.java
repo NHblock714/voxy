@@ -54,4 +54,11 @@ public class VoxelizedSection {
         Arrays.fill(this.section, 0);
         return this;
     }
+
+    //Fill every mip level with the given (air) voxel - lets implied-lighting all-air sections carry sky light
+    public VoxelizedSection uniformAir(long airVoxel) {
+        this.lvl0NonAirCount = 0;
+        Arrays.fill(this.section, airVoxel);
+        return this;
+    }
 }

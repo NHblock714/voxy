@@ -81,51 +81,67 @@ public class ActiveSectionTracker {
 
         {
             long stamp = lock.readLock();
-            holder = cache.get(key);
-            if (holder != null) {//Return already loaded entry
-                section = holder.obj;
-                if (section != null) {
-                    section.acquire();
+            try {
+                holder = cache.get(key);
+                if (holder != null) {//Return already loaded entry
+                    section = holder.obj;
+                    if (section != null) {
+                        section.acquire();
+                        lock.unlockRead(stamp);
+                        stamp = 0;
+                        return section;
+                    }
                     lock.unlockRead(stamp);
-                    return section;
+                    stamp = 0;
+                } else {//Try to create holder
+                    holder = new VolatileHolder<>();
+                    long ws = lock.tryConvertToWriteLock(stamp);
+                    if (ws == 0) {//Failed to convert, unlock read and get write
+                        lock.unlockRead(stamp);
+                        stamp = lock.writeLock();
+                    } else {
+                        stamp = ws;
+                    }
+                    var eHolder = cache.putIfAbsent(key, holder);//We put if absent because on failure to convert to write, it leaves race condition
+                    lock.unlockWrite(stamp);
+                    stamp = 0;
+                    if (eHolder == null) {//We are the loader
+                        isLoader = true;
+                    } else {
+                        holder = eHolder;
+                    }
                 }
-                lock.unlockRead(stamp);
-            } else {//Try to create holder
-                holder = new VolatileHolder<>();
-                long ws = lock.tryConvertToWriteLock(stamp);
-                if (ws == 0) {//Failed to convert, unlock read and get write
-                    lock.unlockRead(stamp);
-                    stamp = lock.writeLock();
-                } else {
-                    stamp = ws;
-                }
-                var eHolder = cache.putIfAbsent(key, holder);//We put if absent because on failure to convert to write, it leaves race condition
-                lock.unlockWrite(stamp);
-                if (eHolder == null) {//We are the loader
-                    isLoader = true;
-                } else {
-                    holder = eHolder;
+            } finally {
+                //Guard against leaking the shard lock if section.acquire() throws (unloaded-section race). stamp may be a read or write stamp here, so use the generic unlock.
+                if (stamp != 0) {
+                    lock.unlock(stamp);
                 }
             }
         }
 
         if (isLoader) {
             this.loadedSections.incrementAndGet();
-            long stamp2 = lock.readLock();
-            long stamp = this.lruLock.writeLock();
-            section = this.lruSecondaryCache.remove(key);
-
             WorldSection removal = null;
-            if (section == null && (!this.lruSecondaryCache.isEmpty()) && this.lruSize+100<this.lruSecondaryCache.size()+this.getLoadedCacheCount()) {//Add a self clamping lru case for when there are alot of loaded sections
-                removal = this.lruSecondaryCache.removeFirst();
-            }
+            long stamp2 = lock.readLock();
+            try {
+                long stamp = this.lruLock.writeLock();
+                try {
+                    section = this.lruSecondaryCache.remove(key);
 
-            this.lruLock.unlockWrite(stamp);
-            if (section != null) {
-                section.primeForReuse();
-                section.acquire(1);
+                    if (section == null && (!this.lruSecondaryCache.isEmpty()) && this.lruSize+100<this.lruSecondaryCache.size()+this.getLoadedCacheCount()) {//Add a self clamping lru case for when there are alot of loaded sections
+                        removal = this.lruSecondaryCache.removeFirst();
+                    }
+                } finally {
+                    this.lruLock.unlockWrite(stamp);
+                }
+                if (section != null) {
+                    section.primeForReuse();
+                    section.acquire(1);
+                }
+            } finally {
+                //Guard against leaking the shard read lock if section.acquire() throws.
+                lock.unlockRead(stamp2);
             }
-            lock.unlockRead(stamp2);
 
             if (removal != null) {
                 removal._releaseArray();
@@ -228,7 +244,7 @@ public class ActiveSectionTracker {
         final var lock = this.locks[index];
         long stamp = lock.writeLock();
         boolean shouldRetryExit = false;
-        {
+        try {
             VarHandle.loadLoadFence();
             if (this.engine != null && section.shouldSave()) {//Last call for saving
                 if (section.tryAcquire()) {
@@ -259,6 +275,7 @@ public class ActiveSectionTracker {
             //This is a painful case, we need to abort here if there was a funky thing that happened
             if (shouldRetryExit) {
                 lock.unlockWrite(stamp);
+                stamp = 0;
                 //retry
                 this.tryUnload(section, hints);
                 return;
@@ -275,33 +292,46 @@ public class ActiveSectionTracker {
                 }
                 sec = section;
             }
-        }
 
-        WorldSection aa = null;
-        if (sec != null) {
-            long stamp2 = this.lruLock.writeLock();
-            lock.unlockWrite(stamp);
-            WorldSection a = this.lruSecondaryCache.put(section.key, section);
-            if (a != null) {
-                throw new IllegalStateException("duplicate sections in cache is impossible");
+            WorldSection aa = null;
+            if (sec != null) {
+                long stamp2 = this.lruLock.writeLock();
+                try {
+                    lock.unlockWrite(stamp);
+                    stamp = 0;
+                    WorldSection a = this.lruSecondaryCache.put(section.key, section);
+                    if (a != null) {
+                        throw new IllegalStateException("duplicate sections in cache is impossible");
+                    }
+                    //If cache is bigger than its ment to be, remove the least recently used and free it
+                    if (this.lruSize < this.lruSecondaryCache.size()) {
+                        aa = this.lruSecondaryCache.removeFirst();
+                    }
+                } finally {
+                    this.lruLock.unlockWrite(stamp2);
+                }
+
+            } else {
+                lock.unlockWrite(stamp);
+                stamp = 0;
             }
-            //If cache is bigger than its ment to be, remove the least recently used and free it
-            if (this.lruSize < this.lruSecondaryCache.size()) {
-                aa = this.lruSecondaryCache.removeFirst();
+
+
+            if (aa != null) {
+                aa._releaseArray();
             }
-            this.lruLock.unlockWrite(stamp2);
 
-        } else {
-            lock.unlockWrite(stamp);
-        }
-
-
-        if (aa != null) {
-            aa._releaseArray();
-        }
-
-        if (sec != null) {
-            this.loadedSections.decrementAndGet();
+            if (sec != null) {
+                this.loadedSections.decrementAndGet();
+            }
+        } finally {
+            //Guard: never leak the shard write lock. Without this, an exception above (saveSection, or the IllegalState invariant
+            //checks) permanently leaks the StampedLock, stalling every acquire()/tryUnload() on this shard and deadlocking the whole
+            //voxy worker pool (incl. the sodium chunk-build threads hijacked via SemaphoreBlockImpersonator) -> client freezes on the
+            //next renderer reload (e.g. SereneSeasons allChanged). stamp is zeroed after each manual unlock so this never double-unlocks.
+            if (stamp != 0) {
+                lock.unlockWrite(stamp);
+            }
         }
     }
 

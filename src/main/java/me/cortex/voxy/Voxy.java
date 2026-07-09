@@ -1,13 +1,13 @@
 package me.cortex.voxy;
 
 import me.cortex.voxy.client.config.VoxyNeoForgeConfig;
-import me.cortex.voxy.common.Logger;
 import net.neoforged.api.distmarker.Dist;
 import net.neoforged.bus.api.IEventBus;
 import net.neoforged.fml.ModContainer;
 import net.neoforged.fml.ModList;
 import net.neoforged.fml.common.Mod;
 import net.neoforged.fml.loading.FMLLoader;
+import net.neoforged.neoforge.common.NeoForge;
 import net.neoforged.neoforge.client.gui.IConfigScreenFactory;
 import net.neoforged.neoforge.client.gui.ConfigurationScreen;
 
@@ -19,8 +19,12 @@ import net.neoforged.neoforge.client.gui.ConfigurationScreen;
  */
 @Mod("voxy")
 public class Voxy {
+    public static final String MODID = "voxy";
 
     public Voxy(IEventBus modEventBus, ModContainer container) {
+        //Terrain streaming is handled by the external VSS mod; on a dedicated server voxy only
+        //provides the sable contraption ticket hook (MixinServerLevel). Everything else is client side.
+
         // Only register client config on client side
         if (FMLLoader.getDist() == Dist.CLIENT) {
             // Register NeoForge config
@@ -29,33 +33,14 @@ public class Voxy {
             // Register the built-in NeoForge config screen
             container.registerExtensionPoint(IConfigScreenFactory.class, ConfigurationScreen::new);
 
-            // Register Sodium Options API integration if available
-            // This adds Voxy settings to Sodium's Video Settings menu
-            // Uses reflection to avoid hard dependency - graceful fallback if not present
-            tryRegisterSodiumOptionsIntegration();
-        }
-    }
+            // Voxy's Sodium video-settings page is registered by VoxyConfigMenu (@ConfigEntryPointForge,
+            // Sodium 0.8 native config API), not here.
 
-    /**
-     * Attempts to register the Sodium Options API integration.
-     * Uses reflection to avoid class loading errors when the API is not present.
-     * Falls back gracefully to NeoForge config screen if unavailable.
-     */
-    private static void tryRegisterSodiumOptionsIntegration() {
-        if (!ModList.get().isLoaded("sodiumoptionsapi")) {
-            Logger.info("SodiumOptionsAPI not found - Voxy settings available via Mods menu");
-            return;
-        }
-
-        try {
-            // Load and invoke the integration class only when we know the API is present
-            // This prevents NoClassDefFoundError when SodiumOptionsAPI is not installed
-            Class<?> sodiumOptionsClass = Class.forName("me.cortex.voxy.client.config.VoxySodiumOptions");
-            sodiumOptionsClass.getMethod("register").invoke(null);
-            Logger.info("Registered Voxy settings in Sodium Video Settings menu");
-        } catch (Throwable e) {
-            Logger.warn("Failed to register Sodium Options integration: " + e.getMessage());
-            Logger.info("Voxy settings available via Mods menu instead");
+            // EclipticSeasons compat: rebuild the LOD renderer on season change. Gated on the mod being present
+            // so the snow-LOD code (which references EclipticSeasons client classes) never loads without it.
+            if (ModList.get().isLoaded("eclipticseasons")) {
+                NeoForge.EVENT_BUS.register(me.cortex.voxy.client.core.compat.eclipticseasons.VoxyEsHandler.INSTANCE);
+            }
         }
     }
 }

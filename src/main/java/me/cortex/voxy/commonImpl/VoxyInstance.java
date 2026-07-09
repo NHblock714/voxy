@@ -233,31 +233,37 @@ public abstract class VoxyInstance {
         }
 
         try {this.ingestService.shutdown();} catch (Exception e) {Logger.error(e);}
-        try {this.savingService.shutdown();} catch (Exception e) {Logger.error(e);}
 
-
-        long stamp = this.activeWorldLock.writeLock();
-
-        if (!this.activeWorlds.isEmpty()) {
+        //Wait for every world to become unused before shutting the saving service down - sections save
+        //on unload, so the cache drain during this wait is what enqueues the final saves.
+        {
+            long stamp = this.activeWorldLock.readLock();
+            var worlds = new ArrayList<>(this.activeWorlds.values());
+            this.activeWorldLock.unlockRead(stamp);
             boolean printedNotice = false;
-            for (var world : new ArrayList<>(this.activeWorlds.values())) {
-                if (world.isWorldUsed()) {
+            for (var world : worlds) {
+                while (world.isWorldUsed()) {
                     if (!printedNotice) {
                         printedNotice = true;
                         Logger.error("Not all worlds shutdown, force closing worlds");
                     }
-                    //Dont lock in the loopy thing, this should basicly never happen if it does something horrific happened
-                    this.activeWorldLock.unlockWrite(stamp);
-                    while (world.isWorldUsed()) {
-                        try {
-                            //noinspection BusyWait
-                            Thread.sleep(10);
-                        } catch (InterruptedException e) {
-                            throw new RuntimeException(e);
-                        }
+                    try {
+                        //noinspection BusyWait
+                        Thread.sleep(10);
+                    } catch (InterruptedException e) {
+                        throw new RuntimeException(e);
                     }
-                    stamp = this.activeWorldLock.writeLock();
                 }
+            }
+        }
+
+        //All pending saves are queued by now; flush them to disk before closing the storages
+        try {this.savingService.shutdown();} catch (Exception e) {Logger.error(e);}
+
+        long stamp = this.activeWorldLock.writeLock();
+
+        if (!this.activeWorlds.isEmpty()) {
+            for (var world : new ArrayList<>(this.activeWorlds.values())) {
                 //Free the world
                 world.free();
             }

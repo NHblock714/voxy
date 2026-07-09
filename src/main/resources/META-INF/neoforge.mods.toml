@@ -1,14 +1,15 @@
 modLoader="javafml"
 loaderVersion="[4,)"
 license="All-Rights-Reserved"
-issueTrackerURL="https://github.com/JohnSnow14284/neo-voxy/issues"
+issueTrackerURL="https://github.com/NHblock714/voxy/issues"
 
 [[mods]]
 modId="voxy"
 version="${version}"
-displayName="neo-voxy"
-description="NeoForge port of Voxy, a far distance rendering mod utilising LoDs"
+displayName="voxy-sable-EclipticSeasons"
+description="NeoForge Voxy fork (far-distance LOD rendering) with bundled sable contraption-LOD compat and EclipticSeasons seasonal-snow compat"
 authors="Cortex"
+credits="Fork maintained by NHblock"
 logoFile="assets/voxy/icon.png"
 
 [[dependencies.voxy]]
@@ -27,7 +28,7 @@ side="BOTH"
 
 [[dependencies.voxy]]
 modId="sodium"
-type="required"
+type="optional"
 versionRange="[0.6.13,)"
 ordering="AFTER"
 side="CLIENT"
@@ -48,7 +49,4 @@ config="iris.voxy.mixins.json"
 
 [[mixins]]
 config="common.voxy.mixins.json"
-
-[[mixins]]
-config="fakesight.voxy.mixins.json"
 

@@ -228,6 +228,10 @@ public class HierarchicalOcclusionTraverser {
         //Put the render distance here so that it can generate a correct circle, TODO: make it not top level section sized
         MemoryUtil.memPutFloat(ptr, (float) Math.pow(VoxyConfig.CONFIG.sectionRenderDistance*16*32,2));ptr += 4;
 
+        //Nodes inside vanilla render distance (+2 chunks) always subdivide to lvl0 so the seam ring
+        //geometry matches vanilla. Kept narrow, widening it costs real section counts.
+        float fullDetailDist = (net.minecraft.client.Minecraft.getInstance().options.renderDistance().get() + 2) * 16f;
+        MemoryUtil.memPutFloat(ptr, fullDetailDist*fullDetailDist);ptr += 4;
 
     }
 

@@ -15,4 +15,13 @@ public class MixinMinecraft {
             ClientSessionEvents.sessionEnd();
         }
     }
+
+    //Quitting to the title screen goes through clearClientLevel, not disconnect; without this hook
+    //the RocksDB LOCK outlives the world until the idle cleaner and world deletion fails.
+    @Inject(method = "clearClientLevel", at = @At("TAIL"))
+    private void voxy$injectLevelClear(CallbackInfo ci) {
+        if (ClientSessionEvents.inSession) {
+            ClientSessionEvents.sessionEnd();
+        }
+    }
 }

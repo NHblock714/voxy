@@ -42,7 +42,10 @@ public class VoxelIngestService {
             var vs = SECTION_CACHE.get().setPosition(task.cx, task.cy, task.cz);
 
             if (section.hasOnlyAir() && task.blockLight==null && task.skyLight==null) {//If the chunk section has lighting data, propagate it
-                WorldUpdater.insertUpdate(task.world, vs.zero());
+                //All-air sections with no light data are treated as above-surface sky (vanilla stores no
+                //DataLayer there; chunk senders push exactly this shape for the sections they skip). Zero-lit
+                //air would black out neighbor-lit surfaces at the higher lod levels.
+                WorldUpdater.insertUpdate(task.world, vs.uniformAir(me.cortex.voxy.common.world.other.Mapper.airWithLight(0x0F)));
             } else {
                 VoxelizedSection csec = WorldConversionFactory.convert(
                         vs,
@@ -160,6 +163,14 @@ public class VoxelIngestService {
             var sl = slp.getDataLayerData(pos);
             if (sl != null) {
                 sl = sl.copy();
+            } else {
+                //Sections above the sky-light storage range have no DataLayer but are implicitly fully lit.
+                //Null-data sections are uniform, so probe one block for the value; dark sections and
+                //skylight-less dimensions probe 0 and stay unchanged.
+                int uniform = slp.getLightValue(pos.origin());
+                if (uniform > 0) {
+                    sl = new DataLayer(uniform);
+                }
             }
 
             //If its null for either, assume failure to obtain lighting and ignore section

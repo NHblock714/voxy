@@ -2,6 +2,7 @@ package me.cortex.voxy.client.config;
 
 import me.cortex.voxy.client.RenderStatistics;
 import me.cortex.voxy.common.util.cpu.CpuLayout;
+import net.neoforged.api.distmarker.Dist;
 import net.neoforged.bus.api.SubscribeEvent;
 import net.neoforged.fml.ModContainer;
 import net.neoforged.fml.common.EventBusSubscriber;
@@ -15,7 +16,7 @@ import net.neoforged.neoforge.common.ModConfigSpec;
  *
  * This wraps the existing VoxyConfig and syncs values between the two systems.
  */
-@EventBusSubscriber(modid = "voxy", bus = EventBusSubscriber.Bus.MOD)
+@EventBusSubscriber(modid = "voxy", bus = EventBusSubscriber.Bus.MOD, value = Dist.CLIENT)
 public class VoxyNeoForgeConfig {
 
     private static final ModConfigSpec.Builder BUILDER = new ModConfigSpec.Builder();
@@ -77,18 +78,6 @@ public class VoxyNeoForgeConfig {
                      "Inspired by Distant Horizons' earth curvature feature")
             .defineInRange("earthCurveRatio", 0, 0, 5000);
 
-    // FakeSight integration
-    private static final ModConfigSpec.BooleanValue ENABLE_EXTENDED_REQUEST_DISTANCE = BUILDER
-            .comment("Enable FakeSight-style extended chunk requests",
-                     "When enabled, Voxy reports a larger render/request distance so the server sends more chunks for LOD ingestion.")
-            .define("enableExtendedRequestDistance", true);
-
-    private static final ModConfigSpec.IntValue REQUEST_DISTANCE = BUILDER
-            .comment("FakeSight request distance in chunks",
-                     "This is the chunk distance reported to the server/integrated server.",
-                     "Large values increase server/network/client load. Recommended: 32-64.")
-            .defineInRange("requestDistance", 48, 8, 127);
-
     // Debug settings
     private static final ModConfigSpec.BooleanValue RENDER_STATISTICS = BUILDER
             .comment("Show render statistics in F3 debug screen",
@@ -124,9 +113,6 @@ public class VoxyNeoForgeConfig {
         VoxyConfig.CONFIG.dontUseSodiumBuilderThreads = DONT_USE_SODIUM_BUILDER_THREADS.get();
         VoxyConfig.CONFIG.lodBoundaryBuffer = LOD_BOUNDARY_BUFFER.get();
         VoxyConfig.CONFIG.earthCurveRatio = EARTH_CURVE_RATIO.get();
-        VoxyConfig.CONFIG.enableExtendedRequestDistance = ENABLE_EXTENDED_REQUEST_DISTANCE.get();
-        VoxyConfig.CONFIG.requestDistance = REQUEST_DISTANCE.get();
-
         // RenderStatistics is a runtime-only setting (not saved to JSON)
         RenderStatistics.enabled = RENDER_STATISTICS.get();
 
@@ -153,9 +139,6 @@ public class VoxyNeoForgeConfig {
         DONT_USE_SODIUM_BUILDER_THREADS.set(VoxyConfig.CONFIG.dontUseSodiumBuilderThreads);
         LOD_BOUNDARY_BUFFER.set(VoxyConfig.CONFIG.lodBoundaryBuffer);
         EARTH_CURVE_RATIO.set(VoxyConfig.CONFIG.earthCurveRatio);
-        ENABLE_EXTENDED_REQUEST_DISTANCE.set(VoxyConfig.CONFIG.enableExtendedRequestDistance);
-        REQUEST_DISTANCE.set(VoxyConfig.CONFIG.requestDistance);
-
         // RenderStatistics remains NeoForge/TOML-only.
         RenderStatistics.enabled = RENDER_STATISTICS.get();
     }
@@ -217,13 +200,5 @@ public class VoxyNeoForgeConfig {
 
     public static int getEarthCurveRatio() {
         return EARTH_CURVE_RATIO.get();
-    }
-
-    public static boolean isExtendedRequestDistanceEnabled() {
-        return ENABLE_EXTENDED_REQUEST_DISTANCE.get();
-    }
-
-    public static int getRequestDistance() {
-        return REQUEST_DISTANCE.get();
     }
 }

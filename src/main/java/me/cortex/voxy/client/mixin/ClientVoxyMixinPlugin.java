@@ -1,5 +1,7 @@
 package me.cortex.voxy.client.mixin;
 
+import net.neoforged.api.distmarker.Dist;
+import net.neoforged.fml.loading.FMLLoader;
 import net.neoforged.fml.loading.LoadingModList;
 import org.objectweb.asm.tree.ClassNode;
 import org.spongepowered.asm.mixin.extensibility.IMixinConfigPlugin;
@@ -13,6 +15,8 @@ public class ClientVoxyMixinPlugin implements IMixinConfigPlugin {
     private static boolean valkyrienSkiesInstalled;
     private static boolean nvidiumInstalled;
     private static boolean connectorInstalled = false;
+    private static boolean sableInstalled;
+    private static boolean eclipticSeasonsInstalled;
 
     private static boolean isLoadedEarly(String modId) {
         var list = LoadingModList.get();
@@ -24,6 +28,8 @@ public class ClientVoxyMixinPlugin implements IMixinConfigPlugin {
         valkyrienSkiesInstalled = isLoadedEarly("valkyrienskies");
         nvidiumInstalled = isLoadedEarly("nvidium");
         connectorInstalled = isLoadedEarly("connector");
+        sableInstalled = isLoadedEarly("sable");
+        eclipticSeasonsInstalled = isLoadedEarly("eclipticseasons");
     }
 
     @Override
@@ -31,10 +37,34 @@ public class ClientVoxyMixinPlugin implements IMixinConfigPlugin {
 
     @Override public List<String> getMixins() {
         List<String> mixins = new ArrayList<>();
+        // client.voxy.mixins.json is entirely client-rendering (sodium/iris/sable/eclipticseasons targets).
+        // None of it applies on a dedicated server and the targets don't exist there, so add nothing server-side.
+        if (FMLLoader.getDist() != Dist.CLIENT) {
+            return mixins;
+        }
+        //(sable.MixinSableSubLevelRenderSectionManager omitted: its sable target class was removed in
+        // sable 2.0.3 and its sodium ctor target no longer matches sodium 0.8.12.)
+        if (sableInstalled) {
+            mixins.add("minecraft.MixinGameRendererSableRenderDistance");
+            mixins.add("sable.MixinSableReacharoundCulling");
+            mixins.add("sable.MixinSableDepthShim");
+        }
         if (valkyrienSkiesInstalled && !nvidiumInstalled) {
             mixins.add("sodium.MixinSodiumWorldRendererVS");
         } else {
             mixins.add("sodium.MixinDefaultChunkRenderer");
+        }
+
+        // EclipticSeasons snow-LOD compat: client-gated even for the common-class targets, because the shared
+        // VoxyTool references EclipticSeasons client classes (ClientCon) and our delta-sync server also runs ingest.
+        if (eclipticSeasonsInstalled && FMLLoader.getDist() == Dist.CLIENT) {
+            mixins.add("eclipticseasons.MixinClientLevel");
+            mixins.add("eclipticseasons.MixinMapping");
+            mixins.add("eclipticseasons.MixinModelBakerySubsystem");
+            mixins.add("eclipticseasons.MixinModelFactory");
+            mixins.add("eclipticseasons.MixinModelTextureBakery");
+            mixins.add("eclipticseasons.MixinWorldConversionFactory");
+            mixins.add("eclipticseasons.MixinWorldImporter");
         }
 
         return mixins;

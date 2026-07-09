@@ -471,8 +471,15 @@ public class Mapper {
                 var state = BlockState.CODEC.parse(NbtOps.INSTANCE, bsc);
                 if (state.isError()) {
                     Logger.info("Could not decode blockstate, attempting fixes, error: "+ state.error().get().message());
-                    bsc = (CompoundTag) DataFixers.getDataFixer().update(References.BLOCK_STATE, new Dynamic<>(NbtOps.INSTANCE,bsc),0, SharedConstants.getCurrentVersion().getDataVersion().getVersion()).getValue();
-                    state = BlockState.CODEC.parse(NbtOps.INSTANCE, bsc);
+                    try {
+                        bsc = (CompoundTag) DataFixers.getDataFixer().update(References.BLOCK_STATE, new Dynamic<>(NbtOps.INSTANCE,bsc),0, SharedConstants.getCurrentVersion().getDataVersion().getVersion()).getValue();
+                        state = BlockState.CODEC.parse(NbtOps.INSTANCE, bsc);
+                    } catch (Exception fixError) {
+                        //DataFixer can throw (the update runs from version 0, which predates the block_state type).
+                        //Drop to air instead of crashing world join when a stored mapping points at a now-absent block.
+                        Logger.error("Could not fix blockstate setting to air. id:" + id + " error: " + fixError);
+                        return new StateEntry(id, Blocks.AIR.defaultBlockState());
+                    }
                     if (state.isError()) {
                         Logger.error("Could not decode blockstate setting to air. id:" + id + " error: " + state.error().get().message());
                         return new StateEntry(id, Blocks.AIR.defaultBlockState());

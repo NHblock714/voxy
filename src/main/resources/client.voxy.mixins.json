@@ -3,6 +3,9 @@
   "package": "me.cortex.voxy.client.mixin",
   "plugin": "me.cortex.voxy.client.mixin.ClientVoxyMixinPlugin",
   "compatibilityLevel": "JAVA_21",
+  "mixinextras": {
+    "minVersion": "0.5.0"
+  },
   "client": [
     "minecraft.MixinClientChunkCache",
     "minecraft.MixinClientCommonPacketListenerImpl",
@@ -20,7 +23,8 @@
     "sodium.MixinChunkJobQueue",
     "sodium.MixinCloudRenderer",
     "sodium.MixinRenderSectionManager",
-    "sodium.MixinSodiumWorldRenderer"
+    "sodium.MixinSodiumWorldRenderer",
+    "sodium.MixinShaderLoader"
   ],
   "injectors": {
     "defaultRequire": 1

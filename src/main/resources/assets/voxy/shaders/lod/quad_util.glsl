@@ -118,7 +118,8 @@ uvec3 makeRemainingAttributes(const in BlockModel model, const in Quad quad, uin
 void setupQuad(out QuadData quad, const in Quad rawQuad, uvec2 sPos, bool generateAttributes) {
     uint lodLevel = getLoDLevel(sPos);
     float lodScale = 1<<lodLevel;
-    ivec3 baseSection = (getLoDPosition(sPos)<<lodLevel) - baseSectionPos;
+    ivec3 lodPos = getLoDPosition(sPos);
+    ivec3 baseSection = (lodPos<<lodLevel) - baseSectionPos;
 
     uint face = extractFace(rawQuad);
     uint modelId = extractStateId(rawQuad);
@@ -137,6 +138,16 @@ void setupQuad(out QuadData quad, const in Quad rawQuad, uvec2 sPos, bool genera
     #endif
     vec3 quadStart = extractPos(rawQuad);
     float depthOffset = extractFaceIndentation(faceData);
+    //Sea surface snap: the mip promotes a surface-straddling fluid voxel to a full coarse voxel,
+    //rounding the sea surface up at every ring. For fluid up-faces straddling the dimension sea
+    //surface, recompute the indentation so it sits at the true sea height (reduces to the baked
+    //7/64 at lvl0). Water away from sea level is untouched.
+    if (face == 1u && (model.flagsA & 16u) != 0u) {
+        float voxelBottomY = quadStart.y*lodScale + float((lodPos.y << lodLevel) << 5);
+        if (voxelBottomY < seaSurfaceY && seaSurfaceY <= voxelBottomY + lodScale) {
+            depthOffset = clamp(1.0 - (seaSurfaceY - voxelBottomY)/lodScale, 0.0, 62.0/64.0);
+        }
+    }
     quadStart += swizzelDataAxis(face>>1, vec3(faceSize.xz, mix(depthOffset, 1-depthOffset, float(face&1u))));
 
     quad.lodScale = lodScale;

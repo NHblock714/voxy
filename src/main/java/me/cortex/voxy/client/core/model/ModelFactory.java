@@ -225,7 +225,7 @@ public class ModelFactory {
         if (bake == null) return false;
         ColourDepthTextureData[] textureData = new ColourDepthTextureData[6];
 
-        int flags = this.bakery2.renderToOutput(bake.blockId, bake.state, this.bakeScratchBuffer);
+        int flags = this.bakery2.renderToOutput(bake.state, this.bakeScratchBuffer);
 
 
         {//Create texture data
@@ -256,28 +256,9 @@ public class ModelFactory {
         boolean isShaded = (flags&1)!=0;
         RenderType layer = null;
         if (layer==null && (flags&4)!=0) {
-            //we do an extra check here to be sure texture is translucent
-
-            //TODO: check this is right
-            boolean anyTranslucent = false;
-            for (var face : textureData) {
-                anyTranslucent|=TextureUtils.hasTranslucentPixel(face);
-                if (anyTranslucent) break;
-            }
-            if (anyTranslucent) {
-                layer = RenderType.translucent();
-            } else {
-                boolean solid = true;
-                for (var face : textureData) {
-                    solid&=TextureUtils.isSolidWhereDrawn(face);
-                    if (!solid) break;
-                }
-                if (solid) {
-                    layer = RenderType.solid();
-                } else {
-                    layer = RenderType.cutout();
-                }
-            }
+            //Blocks with a translucent render type (water, ice, stained glass) stay translucent even when
+            //the baked texture is fully opaque - the transparency comes from the render layer, not texture alpha.
+            layer = RenderType.translucent();
         }
         if (layer==null && (flags&8)!=0) {
             layer = RenderType.cutout();
@@ -290,7 +271,7 @@ public class ModelFactory {
         }
 
 
-        var bakeResult = this.processTextureBakeResult(bake.blockId, bake.state, textureData, isShaded, hasDarkenedTextures, layer);
+        var bakeResult = this.processTextureBakeResult(bake.blockId, bake.state, textureData, isShaded, hasDarkenedTextures, layer, (flags&16)!=0);
         if (bakeResult!=null) {
             this.uploadResults.add(bakeResult);
         }
@@ -385,7 +366,7 @@ public class ModelFactory {
         }
     }
 
-    private ModelBakeResultUpload processTextureBakeResult(int blockId, BlockState blockState, ColourDepthTextureData[] textureData, boolean isShaded, boolean darkenedTinting, RenderType layer) {
+    private ModelBakeResultUpload processTextureBakeResult(int blockId, BlockState blockState, ColourDepthTextureData[] textureData, boolean isShaded, boolean darkenedTinting, RenderType layer, boolean crossPlant) {
         if (this.idMappings[blockId] != -1) {
             //This should be impossible to reach as it means that multiple bakes for the same blockId happened and where inflight at the same time!
             throw new IllegalStateException("Block id already added: " + blockId + " for state: " + blockState);
@@ -480,6 +461,15 @@ public class ModelFactory {
         // since that would help alot with perf of lots of vines, can be done by having one of the faces just not exist and the other be in no occlusion mode
 
         var depths = computeModelDepth(textureData, checkMode, layer!=RenderType.solid()?TextureUtils.DEPTH_MODE_MIN:TextureUtils.DEPTH_MODE_AVG);
+
+        if (crossPlant) {
+            //Cross plants project onto all four side views and bake into a boxy shell; pull the side faces
+            //to the cell centre so they render as two crossed mid planes. The 0.5 offset also clears both
+            //occlusion flags via the thresholds below.
+            for (int f = 2; f < 6; f++) {
+                if (depths[f] > -0.1f) depths[f] = 0.5f;
+            }
+        }
 
         //TODO: THIS, note this can be tested for in 2 ways, re render the model with quad culling disabled and see if the result
         // is the same, (if yes then needs double sided quads)
@@ -636,6 +626,7 @@ public class ModelFactory {
 
         //TODO: THIS
         modelFlags |= isShaded?8:0;//model has AO and shade
+        modelFlags |= isFluid?16:0;//Is a fluid, used by the sea-level surface snap in quad_util.glsl
 
         //modelFlags |= blockRenderLayer == RenderLayer.getSolid()?0:1;// should discard alpha
         MemoryUtil.memPutInt(uploadPtr, modelFlags); uploadPtr += 4;

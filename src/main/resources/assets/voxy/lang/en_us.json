@@ -34,9 +34,17 @@
   "voxy.config.general.fogDensity.tooltip": "Density of the fog, higher values make the fog thicker",
   "voxy.config.general.skyFogDistance": "Sky fog distance",
   "voxy.config.general.skyFogDistance.tooltip": "Distance at which sky fog starts to render in chunks",
-  "voxy.config.fakesight": "Extended Chunk Request",
-  "voxy.config.fakesight.enabled": "Enable extended chunk request",
-  "voxy.config.fakesight.enabled.tooltip": "FakeSight-style support: reports a larger view/request distance so the server sends more chunks for Voxy LOD ingestion.",
-  "voxy.config.fakesight.distance": "Request distance",
-  "voxy.config.fakesight.distance.tooltip": "Chunk distance reported to the server or integrated server. Higher values load more chunks and increase CPU, memory and network load."
+  "voxy.config.general.fog_distance": "Fog distance",
+  "voxy.config.general.fog_distance.tooltip": "Scales voxy's LOD fog distance (100% = fog reaches full at the render edge). Higher = see further before the distant LOD fades to the sky colour.",
+  "voxy.config.compat": "Integrations",
+  "voxy.config.compat.sableLod": "Sable distant contraptions",
+  "voxy.config.compat.sableLod.tooltip": "Keep simulated contraptions (ships, vehicles) rendered out to LOD distances instead of only within vanilla render distance",
+  "voxy.config.compat.sableLodDistance": "Contraption render distance",
+  "voxy.config.compat.sableLodDistance.tooltip": "How far distant contraptions stay rendered, as a percentage of voxy's render distance. 0% disables the extension",
+  "voxy.config.compat.esSnowLod": "Seasonal snow LOD",
+  "voxy.config.compat.esSnowLod.tooltip": "Recolor LOD terrain with Ecliptic Seasons snow cover. Applies to newly ingested chunks",
+  "voxy.config.compat.esLodAutoReload": "Re-import LODs on season change",
+  "voxy.config.compat.esLodAutoReload.tooltip": "Automatically re-import region LODs when the season changes so distant snow cover stays current",
+  "voxy.config.compat.esReloadOnSeasonChange": "Rebuild renderer on season change",
+  "voxy.config.compat.esReloadOnSeasonChange.tooltip": "Rebuild the LOD renderer when the season changes so already-loaded LODs recolor immediately"
 }

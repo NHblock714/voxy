@@ -1,4 +1,4 @@
-package me.cortex.voxy.client.mixin.fakesight;
+package me.cortex.voxy.client.mixin.sodium;
 
 import net.caffeinemc.mods.sodium.client.gl.shader.ShaderLoader;
 import org.spongepowered.asm.mixin.Mixin;
@@ -8,9 +8,8 @@ import org.spongepowered.asm.mixin.injection.Redirect;
 import java.io.InputStream;
 
 /**
- * Allows Sodium's shader loader to resolve resources from the active class loader.
- * This mirrors FakeSight's Sodium shader-loader compatibility fix and is harmless
- * when Sodium's own lookup already succeeds.
+ * Lets Sodium's shader loader resolve resources via its own class loader so cross-module
+ * shader lookups still succeed. Harmless when Sodium's default lookup already works.
  */
 @Mixin(value = ShaderLoader.class, remap = false)
 public class MixinShaderLoader {

@@ -165,6 +165,15 @@ public class MDICSectionRenderer extends AbstractSectionRenderer<MDICViewport, B
         MemoryUtil.memPutInt(ptr, viewport.frameId&0x7fffffff); ptr += 4;
         viewport.innerTranslation.getToAddress(ptr); ptr += 4*3;
 
+        //Sea surface height for the fluid surface snap in quad_util.glsl. getSeaLevel() is the first
+        //air block above the fluid column and the baked fluid top face sits 7/64 below the block top.
+        float seaSurface = -1.0e9f;
+        var level = net.minecraft.client.Minecraft.getInstance().level;
+        if (level != null) {
+            seaSurface = level.getSeaLevel() - 1 + (1.0f - 7.0f/64.0f);
+        }
+        MemoryUtil.memPutFloat(ptr, seaSurface); ptr += 4;
+
         UploadStream.INSTANCE.commit();
     }
 

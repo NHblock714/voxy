@@ -7,7 +7,6 @@ import com.mojang.blaze3d.vertex.VertexConsumer;
 
 import me.cortex.voxy.client.core.model.ModelFactory;
 import me.cortex.voxy.common.util.UnsafeUtil;
-import me.cortex.voxy.commonImpl.compat.DomumOrnamentumCompat;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.renderer.ItemBlockRenderTypes;
 import net.minecraft.client.renderer.RenderType;
@@ -26,7 +25,6 @@ import net.minecraft.world.level.block.entity.BlockEntity;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.levelgen.SingleThreadedRandomSource;
 import net.minecraft.world.level.lighting.LevelLightEngine;
-import net.neoforged.neoforge.client.model.data.ModelData;
 import net.minecraft.world.level.material.FluidState;
 import org.jetbrains.annotations.Nullable;
 import org.joml.Matrix4f;
@@ -56,8 +54,8 @@ public class SoftwareModelTextureBakery {
     private static final Matrix4f[] VIEWS = new Matrix4f[6];
 
     private final ReuseVertexConsumer opaqueVC = new ReuseVertexConsumer();
-    private final ReuseVertexConsumer translucentVC = new ReuseVertexConsumer(1/*has discard*/);
-    private final SoftwareRasterizer rasterizer = new SoftwareRasterizer(ModelFactory.MODEL_TEXTURE_SIZE);
+    private final ReuseVertexConsumer translucentVC = new ReuseVertexConsumer(1/* has discard */);
+    private final SoftwareRasterizer rasterizer = new SoftwareRasterizer();
 
 
     public SoftwareModelTextureBakery() {
@@ -97,7 +95,39 @@ public class SoftwareModelTextureBakery {
         this.rasterizer.setSamplerTexture(pixels, width, height);
     }
 
-    private void bakeBlockModel(int blockId, BlockState state, RenderType layer) {
+    //Cross plants bake into a boxy four-sided shell, so detect the cross shape: every quad
+    //uncullable and a vertical plane rotated off-axis. Axis-aligned planes (vines, crops) and
+    //horizontal quads (lily pads) are left untouched.
+    private static boolean isCrossPlantModel(BlockState state) {
+        if (state.getRenderShape() == RenderShape.INVISIBLE) return false;
+        var model = Minecraft.getInstance().getModelManager().getBlockModelShaper().getBlockModel(state);
+        for (Direction direction : Direction.values()) {
+            if (!model.getQuads(state, direction, new SingleThreadedRandomSource(42L)).isEmpty()) {
+                return false;
+            }
+        }
+        var quads = model.getQuads(state, null, new SingleThreadedRandomSource(42L));
+        if (quads.isEmpty()) return false;
+        for (var quad : quads) {
+            int[] vd = quad.getVertices();
+            int stride = vd.length / 4;
+            float x0 = Float.intBitsToFloat(vd[0]),          y0 = Float.intBitsToFloat(vd[1]),            z0 = Float.intBitsToFloat(vd[2]);
+            float x1 = Float.intBitsToFloat(vd[stride]),     y1 = Float.intBitsToFloat(vd[stride+1]),     z1 = Float.intBitsToFloat(vd[stride+2]);
+            float x2 = Float.intBitsToFloat(vd[stride*2]),   y2 = Float.intBitsToFloat(vd[stride*2+1]),   z2 = Float.intBitsToFloat(vd[stride*2+2]);
+            float ax = x1-x0, ay = y1-y0, az = z1-z0;
+            float bx = x2-x0, by = y2-y0, bz = z2-z0;
+            float nx = ay*bz - az*by;
+            float ny = az*bx - ax*bz;
+            float nz = ax*by - ay*bx;
+            float len = (float) Math.sqrt(nx*nx + ny*ny + nz*nz);
+            if (!(len > 0)) return false;
+            if (Math.abs(ny) > 0.3f*len) return false;
+            if (Math.abs(nx) < 0.3f*len || Math.abs(nz) < 0.3f*len) return false;
+        }
+        return true;
+    }
+
+    private void bakeBlockModel(BlockState state, RenderType layer) {
         if (state.getRenderShape() == RenderShape.INVISIBLE) {
             return;// Dont bake if invisible
         }
@@ -106,16 +136,12 @@ public class SoftwareModelTextureBakery {
                 .getBlockModelShaper()
                 .getBlockModel(state);
 
-        ModelData modelData = DomumOrnamentumCompat.getModelData(blockId, state);
         for (Direction direction : new Direction[] { Direction.DOWN, Direction.UP, Direction.NORTH, Direction.SOUTH,
                 Direction.WEST, Direction.EAST, null }) {
-            var random = new SingleThreadedRandomSource(42L);
-            var quads = modelData == ModelData.EMPTY
-                    ? model.getQuads(state, direction, random)
-                    : model.getQuads(state, direction, random, modelData, layer);
+            var quads = model.getQuads(state, direction, new SingleThreadedRandomSource(42L));
             for (var quad : quads) {
                 (layer == RenderType.translucent() ? this.translucentVC : this.opaqueVC)
-                        .quad(quad, state.is(BlockTags.LEAVES), layer, state);
+                        .quad(quad, state.is(BlockTags.LEAVES), layer);
             }
         }
     }
@@ -222,7 +248,7 @@ public class SoftwareModelTextureBakery {
     // in this version the values are simply appended
     // (0,0),(1,0),(2,0),(0,1),(1,1),(2,1)
 
-    public int renderToOutput(int blockId, BlockState state, long outputBuffer) {
+    public int renderToOutput(BlockState state, long outputBuffer) {
         MemoryUtil.memSet(outputBuffer, 0, 16 * 16 * 8 * 6);
 
         boolean isBlock = true;
@@ -254,7 +280,7 @@ public class SoftwareModelTextureBakery {
         if (isBlock) {
             this.opaqueVC.reset();
             this.translucentVC.reset();
-            this.bakeBlockModel(blockId, state, blockRenderLayer);
+            this.bakeBlockModel(state, blockRenderLayer);
             isAnyShaded |= this.opaqueVC.anyShaded | this.translucentVC.anyShaded;
             isAnyDarkend |= this.opaqueVC.anyDarkendTex | this.translucentVC.anyDarkendTex;
             anyTranslucent |= !this.translucentVC.isEmpty();
@@ -299,7 +325,8 @@ public class SoftwareModelTextureBakery {
             }
         }
 
-        return (isAnyShaded ? 1 : 0) | (isAnyDarkend ? 2 : 0) | (anyTranslucent ? 4 : 0) | (anyDiscard ? 8 : 0);
+        boolean crossPlant = isBlock && isCrossPlantModel(state);
+        return (isAnyShaded ? 1 : 0) | (isAnyDarkend ? 2 : 0) | (anyTranslucent ? 4 : 0) | (anyDiscard ? 8 : 0) | (crossPlant ? 16 : 0);
     }
 
     static {
@@ -320,7 +347,7 @@ public class SoftwareModelTextureBakery {
         stack.mulPose(makeQuatFromAxisExact(new Vector3f(0, 0, 1), rotation));
         stack.mulPose(makeQuatFromAxisExact(new Vector3f(1, 0, 0), pitch));
         stack.mulPose(makeQuatFromAxisExact(new Vector3f(0, 1, 0), yaw));
-        stack.mulPose(new Matrix4f().scale(1 - 2 * (flip & 1), 1 - (flip & 2), 1 - ((flip >> 1) & 2)));
+        stack.last().pose().mul(new Matrix4f().scale(1 - 2 * (flip & 1), 1 - (flip & 2), 1 - ((flip >> 1) & 2)));
         stack.translate(-0.5f, -0.5f, -0.5f);
         var mat = new Matrix4f(stack.last().pose());
 
