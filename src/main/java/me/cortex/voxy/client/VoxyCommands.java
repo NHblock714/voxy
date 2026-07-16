@@ -72,13 +72,157 @@ public class VoxyCommands {
                         .then(Commands.argument("x", IntegerArgumentType.integer())
                                 .then(Commands.argument("y", IntegerArgumentType.integer())
                                         .then(Commands.argument("z", IntegerArgumentType.integer())
-                                                .executes(VoxyCommands::probeStorage)))));
+                                                .executes(VoxyCommands::probeStorage)))))
+                .then(Commands.literal("trains")
+                        .executes(VoxyCommands::dumpTrains)
+                        .then(Commands.literal("occlusion")
+                                .executes(ctx -> occlusionCapture(ctx, 20))
+                                .then(Commands.argument("seconds", IntegerArgumentType.integer(1, 120))
+                                        .executes(ctx -> occlusionCapture(ctx, IntegerArgumentType.getInteger(ctx, "seconds"))))))
+                .then(Commands.literal("kinetics")
+                        .executes(VoxyCommands::dumpKinetics))
+                .then(Commands.literal("ship")
+                        .executes(VoxyCommands::dumpShipContraptions));
 
         return Commands.literal("voxy")//.requires((ctx)-> VoxyCommon.getInstance() != null)
                 .then(Commands.literal("reload")
                         .executes(VoxyCommands::reloadInstance))
                 .then(imports)
                 .then(debug);
+    }
+
+    //Arms (or stops early) the per-frame occlusion recorder; the dump file lands in the game dir
+    private static int occlusionCapture(CommandContext<CommandSourceStack> ctx, int seconds) {
+        String msg;
+        if (me.cortex.voxy.client.compat.create.DistantOcclusionDebug.isActive()) {
+            msg = me.cortex.voxy.client.compat.create.DistantOcclusionDebug.stopAndDump();
+        } else {
+            msg = me.cortex.voxy.client.compat.create.DistantOcclusionDebug.start(seconds);
+        }
+        ctx.getSource().sendSuccess(() -> Component.literal(msg), false);
+        return 1;
+    }
+
+    //Dumps the kinetic snapshot pipeline: config gates, draw counters, queue/sweep state, recent
+    //capture attempts (renderer + vertex counts) and the buckets near the camera. Run it standing at
+    //a broken machine: it distinguishes captured-nothing / captured-garbage / captured-but-not-drawn.
+    private static int dumpKinetics(CommandContext<CommandSourceStack> ctx) {
+        if (!net.neoforged.fml.ModList.get().isLoaded("create")) {
+            ctx.getSource().sendSuccess(() -> Component.literal("create not loaded"), false);
+            return 0;
+        }
+        var cfg = me.cortex.voxy.client.config.VoxyConfig.CONFIG;
+        var mc = net.minecraft.client.Minecraft.getInstance();
+        var cam = mc.gameRenderer.getMainCamera().getPosition();
+        double reach = mc.options.getEffectiveRenderDistance() * 16.0;
+        var sb = new StringBuilder("distant kinetics: rendering=").append(cfg.isRenderingEnabled())
+                .append(" distantKinetics=").append(cfg.distantKinetics)
+                .append(" enclosedCulling=").append(cfg.kineticEnclosedCulling)
+                .append(" reach=").append((int) reach)
+                .append(" lodMax=").append((int) cfg.createRenderDistance(0))
+                .append(" sectionsDrawnLastFrame=").append(me.cortex.voxy.client.compat.create.DistantKineticRenderer.lastFrameSectionsDrawn)
+                .append('\n')
+                .append(me.cortex.voxy.client.compat.create.KineticSnapshots.debugDump(cam.x, cam.y, cam.z));
+        String msg = sb.toString();
+        me.cortex.voxy.common.Logger.info("[kinetics debug]\n" + msg);
+        ctx.getSource().sendSuccess(() -> Component.literal(msg), false);
+        return 1;
+    }
+
+    //Splits "ship contraptions don't render" into its two possible worlds: exempt counters moving
+    //while the structure stays invisible means we let it through and the problem is past us
+    //(transform/depth); a renderer that is never even called clears our culls entirely.
+    private static int dumpShipContraptions(CommandContext<CommandSourceStack> ctx) {
+        if (!net.neoforged.fml.ModList.get().isLoaded("create")) {
+            ctx.getSource().sendSuccess(() -> Component.literal("create not loaded"), false);
+            return 0;
+        }
+        String msg = me.cortex.voxy.client.compat.create.ShipContraptionDebug.dump();
+        me.cortex.voxy.common.Logger.info("[ship debug]\n" + msg);
+        ctx.getSource().sendSuccess(() -> Component.literal(msg), false);
+        return 1;
+    }
+
+    //Dumps the client-side distant-train state: render gates plus every tracked train with sample
+    //age and distance. Zero tracked trains with a moving train 192-3072 blocks away means the
+    //server side is not sampling (old jar or no voxy on the server).
+    private static int dumpTrains(CommandContext<CommandSourceStack> ctx) {
+        var cfg = me.cortex.voxy.client.config.VoxyConfig.CONFIG;
+        var sb = new StringBuilder("distant trains: rendering=").append(cfg.isRenderingEnabled())
+                .append(" distantTrains=").append(cfg.distantTrains)
+                .append(" renderDist=").append((int) (32 * cfg.sectionRenderDistance))
+                .append(" bogeyMeshes=").append(me.cortex.voxy.client.compat.create.DistantTrainRenderer.bogeyMeshProvider != null)
+                .append(" drawnLastFrame=").append(me.cortex.voxy.client.compat.create.DistantTrainRenderer.lastFrameCarriagesDrawn)
+                .append(" shapesReceived=").append(me.cortex.voxy.client.compat.create.DistantTrainManager.shapesReceived)
+                .append(" bakesFailed=").append(me.cortex.voxy.client.compat.create.DistantTrainManager.bakesFailed)
+                .append(" meshCount=").append(me.cortex.voxy.client.compat.create.DistantTrainManager.meshCount());
+        if (net.neoforged.fml.ModList.get().isLoaded("create")) {
+            sb.append(" trackTiles=").append(me.cortex.voxy.client.compat.create.DistantTrackRenderer.tileCount)
+                    .append(" tilesDrawn=").append(me.cortex.voxy.client.compat.create.DistantTrackRenderer.lastFrameTilesDrawn);
+        }
+        //One-shot depth probe: aim the crosshair at LOD terrain, run this command twice - the
+        //second run prints the depth values captured right after our draws
+        me.cortex.voxy.client.compat.LodPipelineHooks.depthProbeRequested = true;
+        if (me.cortex.voxy.client.compat.LodPipelineHooks.depthProbeResult != null) {
+            sb.append("\ndepthProbe: ").append(me.cortex.voxy.client.compat.LodPipelineHooks.depthProbeResult);
+        }
+        sb.append("\nshaders=").append(me.cortex.voxy.client.core.util.IrisUtil.irisShaderPackEnabled());
+        var voxyRenderer = me.cortex.voxy.client.core.IGetVoxyRenderSystem.getNullable();
+        if (voxyRenderer != null) {
+            sb.append(" sableDepthTex=").append(voxyRenderer.getSableOcclusionDepthTexture())
+                    .append(" (0 means the LOD depth already lands in the vanilla depth buffer)");
+        }
+        sb.append("\nmesh keys:");
+        for (long key : me.cortex.voxy.client.compat.create.DistantTrainManager.meshKeys()) {
+            sb.append(' ').append(Long.toHexString(key));
+        }
+        var trains = me.cortex.voxy.client.compat.create.DistantTrainManager.trains();
+        sb.append("\ntracked trains=").append(trains.size());
+        var player = Minecraft.getInstance().player;
+        long now = System.nanoTime();
+        for (var e : trains.entrySet()) {
+            var state = e.getValue();
+            sb.append("\n ").append(e.getKey().toString(), 0, 8)
+                    .append(" dim=").append(state.dimension)
+                    .append(" carriages=").append(state.carriages.size());
+            for (var ce : state.carriages.entrySet()) {
+                var track = ce.getValue();
+                if (track.cur == null) {
+                    continue;
+                }
+                long ageMs = (now - track.curTimeNanos) / 1_000_000L;
+                int dist = -1;
+                if (player != null) {
+                    double dx = track.cur.x() - player.getX(), dy = track.cur.y() - player.getY(), dz = track.cur.z() - player.getZ();
+                    dist = (int) Math.sqrt(dx * dx + dy * dy + dz * dz);
+                }
+                sb.append("\n  #").append(ce.getKey())
+                        .append(" dist=").append(dist)
+                        .append(" age=").append(ageMs).append("ms")
+                        .append(" shapeId=").append(Long.toHexString(track.shapeId))
+                        .append(" mesh=").append(me.cortex.voxy.client.compat.create.DistantTrainManager.shape(track.shapeId) != null)
+                        .append(" bogeys=").append(track.cur.bogeys().size());
+            }
+        }
+        if (trains.isEmpty()) {
+            sb.append("\n(no packets received: check the SERVER runs this voxy build, a train sits beyond your view distance, and the server log for 'Distant train')");
+        }
+        var integrated = Minecraft.getInstance().getSingleplayerServer();
+        if (integrated != null && net.neoforged.fml.ModList.get().isLoaded("create") && player != null) {
+            try {
+                var serverPlayer = integrated.getPlayerList().getPlayer(player.getUUID());
+                if (serverPlayer != null) {
+                    sb.append("\n---- integrated server ----\n")
+                            .append(me.cortex.voxy.commonImpl.compat.create.CreateTrainSampler.debugDump(serverPlayer));
+                }
+            } catch (Throwable t) {
+                sb.append("\nserver-side dump failed: ").append(t);
+            }
+        }
+        String out = sb.toString();
+        Logger.info(out);
+        ctx.getSource().sendSuccess(() -> Component.literal(out), false);
+        return 0;
     }
 
     //Dumps the stored voxel (block + light nibbles) at every lod level for a position, plus the

@@ -17,6 +17,7 @@ public class ClientVoxyMixinPlugin implements IMixinConfigPlugin {
     private static boolean connectorInstalled = false;
     private static boolean sableInstalled;
     private static boolean eclipticSeasonsInstalled;
+    private static boolean createInstalled;
 
     private static boolean isLoadedEarly(String modId) {
         var list = LoadingModList.get();
@@ -30,6 +31,7 @@ public class ClientVoxyMixinPlugin implements IMixinConfigPlugin {
         connectorInstalled = isLoadedEarly("connector");
         sableInstalled = isLoadedEarly("sable");
         eclipticSeasonsInstalled = isLoadedEarly("eclipticseasons");
+        createInstalled = isLoadedEarly("create");
     }
 
     @Override
@@ -53,6 +55,38 @@ public class ClientVoxyMixinPlugin implements IMixinConfigPlugin {
             mixins.add("sodium.MixinSodiumWorldRendererVS");
         } else {
             mixins.add("sodium.MixinDefaultChunkRenderer");
+        }
+
+        //Distance-cull Create's distant track rendering so it hands over to the LOD copy instead of
+        //floating past the view distance (references Create + Flywheel classes). MixinTrackVisual is
+        //the real fix under Flywheel (default + iris/colorwheel); MixinTrackRenderer covers the
+        //vanilla-BER fallback path when the Flywheel backend is off.
+        if (createInstalled) {
+            mixins.add("create.MixinTrackRenderer");
+            mixins.add("create.MixinTrackVisual");
+            mixins.add("create.AccessorContraptionVisual");
+            mixins.add("create.AccessorAbstractEntityVisual");
+            mixins.add("create.MixinCarriageContraptionVisual");
+            mixins.add("create.MixinCarriageContraptionEntityRenderer");
+            mixins.add("create.MixinStationRenderer");
+            mixins.add("create.MixinContraptionEntityRenderer");
+            mixins.add("create.MixinContraptionVisual");
+            //Placed kinetic machine blocks: their Flywheel moving parts (rotating shafts/cogs/machine
+            //animations) have no distance limit and float over LOD past the render distance. These cull
+            //them there - Mixin1 the shaft/cog/belt/fan family via a base beginFrame, MachineVisuals the
+            //ones that override beginFrame, the Renderer the backend-off BER; the accessor feeds `pos`.
+            mixins.add("create.AccessorAbstractBlockEntityVisual");
+            mixins.add("create.MixinKineticBlockEntityVisual");
+            mixins.add("create.MixinKineticMachineVisuals");
+            mixins.add("create.MixinBnbKineticVisuals");
+            mixins.add("create.MixinAzimuthBehaviourVisual");
+            mixins.add("create.MixinVisualizationManagerImpl");
+            mixins.add("create.MixinSafeBlockEntityRenderer");
+            //Ship-borne contraptions: force open the plot-coordinate render gates that kill them
+            //(vanilla dispatcher distance/frustum + EntityCulling, update-rate banding)
+            mixins.add("create.MixinEntityRenderDispatcherShip");
+            mixins.add("create.MixinBandedPrimeLimiter");
+            mixins.add("create.AccessorControlledContraptionEntity");
         }
 
         // EclipticSeasons snow-LOD compat: client-gated even for the common-class targets, because the shared

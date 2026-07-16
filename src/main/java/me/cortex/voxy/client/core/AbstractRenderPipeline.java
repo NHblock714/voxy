@@ -55,6 +55,7 @@ public abstract class AbstractRenderPipeline extends TrackedObject {
     protected AbstractSectionRenderer<?,?> sectionRenderer;
 
     private final FullscreenBlit depthStencilSetup;
+    private final FullscreenBlit sentinelRestore;
 
     public final DepthFramebuffer fb = new DepthFramebuffer(GL_DEPTH24_STENCIL8);
 
@@ -64,6 +65,11 @@ public abstract class AbstractRenderPipeline extends TrackedObject {
     static {
         glSamplerParameteri(DEPTH_SAMPLER, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
         glSamplerParameteri(DEPTH_SAMPLER, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        //The stencil-setup pass samples the source depth at UV*scaleFactor; when a shader pipeline
+        //renders at a scaled resolution the factor is not 1 and unclamped sampling wraps around
+        //(default REPEAT), smearing the vanilla-coverage sentinel over sky/LOD regions
+        glSamplerParameteri(DEPTH_SAMPLER, org.lwjgl.opengl.GL12C.GL_TEXTURE_WRAP_S, org.lwjgl.opengl.GL12C.GL_CLAMP_TO_EDGE);
+        glSamplerParameteri(DEPTH_SAMPLER, org.lwjgl.opengl.GL12C.GL_TEXTURE_WRAP_T, org.lwjgl.opengl.GL12C.GL_CLAMP_TO_EDGE);
     }
 
     protected AbstractRenderPipeline(RenderProperties properties, AsyncNodeManager nodeManager, NodeCleaner nodeCleaner, HierarchicalOcclusionTraverser traversal, BooleanSupplier frexSupplier, boolean deferTranslucency) {
@@ -75,6 +81,7 @@ public abstract class AbstractRenderPipeline extends TrackedObject {
         this.deferTranslucency = deferTranslucency;
 
         this.depthStencilSetup = new FullscreenBlit(properties, "voxy:post/fullscreen2.vert", "voxy:post/setup_stencil_depth.frag");
+        this.sentinelRestore = new FullscreenBlit(properties, "voxy:post/fullscreen2.vert", "voxy:post/depth0.frag");
     }
 
     //Allows pipelines to configure model baking system
@@ -121,7 +128,15 @@ public abstract class AbstractRenderPipeline extends TrackedObject {
 
         rs.postOpaquePreperation(viewport);
 
+        //Opaque extras (distant trains/tracks) draw into the opaque target here, on BOTH pipelines:
+        //the depth attachment holds full LOD depth in voxy's far-projection space so occlusion is
+        //per-pixel, and on the iris pipeline the renderers use the shader pack's patched fragment
+        //shader to fill the whole g-buffer. Running before postOpaquePreTranslucent means the depth
+        //copy/composite passes carry our geometry too.
+        me.cortex.voxy.client.compat.LodPipelineHooks.beforeTranslucent(this, viewport, this.properties.closerEqualDepthCompare());
+
         this.postOpaquePreTranslucent(viewport, sourceFrameBuffer);
+
         GPUTiming.INSTANCE.marker("RT");
 
         if (!this.deferTranslucency) {
@@ -133,13 +148,13 @@ public abstract class AbstractRenderPipeline extends TrackedObject {
         glBindFramebuffer(GL_FRAMEBUFFER, sourceFrameBuffer);
     }
 
-    protected void initDepthStencil(int sourceFrameBuffer, int targetFb, int srcWidth, int srcHeight, int width, int height) {
+    protected void initDepthStencil(Viewport<?> viewport, int sourceFrameBuffer, int targetFb, int srcWidth, int srcHeight, int width, int height) {
         glClearNamedFramebufferfi(targetFb, GL_DEPTH_STENCIL, 0, this.properties.clearDepth(), 1);
         // using blit to copy depth from mismatched depth formats is not portable so instead a full screen pass is performed for a depth copy
         // the mismatched formats in this case is the d32 to d24s8
         glBindFramebuffer(GL30.GL_FRAMEBUFFER, targetFb);
 
-        //If pixel passes, update stencil to 0 and set depth to 0
+        //If pixel passes, update stencil to 0 and set depth to the reprojected source depth
         glEnable(GL_DEPTH_TEST);
         glDepthFunc(GL_ALWAYS);
 
@@ -151,9 +166,27 @@ public abstract class AbstractRenderPipeline extends TrackedObject {
 
         this.depthStencilSetup.bind();
         int depthTexture = glGetNamedFramebufferAttachmentParameteri(sourceFrameBuffer, GL_DEPTH_ATTACHMENT, GL_FRAMEBUFFER_ATTACHMENT_OBJECT_NAME);
+        this.lastSourceDepthTex = depthTexture;
+        this.lastSrcWidth = srcWidth;
+        this.lastSrcHeight = srcHeight;
         glBindTextureUnit(0, depthTexture);
         glBindSampler(0, DEPTH_SAMPLER);
         glUniform2f(1,((float)width)/srcWidth, ((float)height)/srcHeight);
+        new Matrix4f(viewport.vanillaProjection).mul(viewport.modelView).invert().getToAddress(SCRATCH);
+        nglUniformMatrix4fv(2, 1, false, SCRATCH);
+        viewport.MVP.getToAddress(SCRATCH);
+        nglUniformMatrix4fv(3, 1, false, SCRATCH);
+        //ndc-z -> window-z of rasterized geometry: the projection's ndc range alone does not change
+        //the fixed-function 0.5*z+0.5 map, and gl_FragDepth writes must land in the same space as
+        //rasterized depth or mixed comparisons flip. Queried per frame - it is one glGetInteger and
+        //stale caching would silently skew every reprojected depth if anything flips clip control.
+        boolean halfNdc = RenderProperties.windowIsHalfNdc();
+        float ndcRemapScale = halfNdc ? 0.5f : 1.0f;
+        float ndcRemapBias = halfNdc ? 0.5f : 0.0f;
+        //xy: voxy ndc->window; zw: the inverse map for the source depth being unprojected - both
+        //sides share the one clip-control mode, and only z is affected by it
+        glUniform4f(4, ndcRemapScale, ndcRemapBias,
+                1.0f / ndcRemapScale, -ndcRemapBias / ndcRemapScale);
         glDepthMask(true);
         glColorMask(false,false,false,false);
         this.depthStencilSetup.blit();
@@ -162,9 +195,31 @@ public abstract class AbstractRenderPipeline extends TrackedObject {
         glDepthFunc(this.properties.closerEqualDepthCompare());
         glColorMask(true,true,true,true);
 
-        //Make voxy terrain render only where there isnt mc terrain
+        //Make voxy terrain render only where there isnt mc terrain. The compare mask is bit0 only:
+        //the pre-translucent hook tags its mesh pixels 3 (bit0 kept set), and translucent LOD must
+        //still composite in front of them - a full-mask EQUAL,1 would punch mesh-shaped holes in
+        //distant water. Bit1 is the hook's "keep my depth" mark, tested full-mask where it matters.
         glStencilOp(GL_KEEP, GL_KEEP, GL_KEEP);
-        glStencilFunc(GL_EQUAL, 1, 0xFF);
+        glStencilFunc(GL_EQUAL, 1, 0x1);
+    }
+
+    //Rewrites every vanilla-covered (stencil==0) pixel back to the NEAR sentinel. The setup pass
+    //stamps reprojected real depth there so the pre-translucent hook geometry occludes correctly,
+    //but downstream consumers (SSAO, the composite cutout blit, shader-pack protocols) identify
+    //vanilla coverage by the exact sentinel value - call this once the hook has drawn.
+    protected void restoreSentinelDepth() {
+        glEnable(GL_DEPTH_TEST);
+        glDepthFunc(GL_ALWAYS);
+        glDepthMask(true);
+        glColorMask(false,false,false,false);
+        glEnable(GL_STENCIL_TEST);
+        //Full-mask EQUAL,0: only untouched vanilla-covered pixels revert; pixels the hook meshes
+        //tagged (3) keep their real depth so SSAO/composite/the vanilla handback carry them
+        glStencilFunc(GL_EQUAL, 0, 0xFF);
+        this.sentinelRestore.blit();
+        glStencilFunc(GL_EQUAL, 1, 0x1);
+        glDepthFunc(this.properties.closerEqualDepthCompare());
+        glColorMask(true,true,true,true);
     }
 
     private static final long SCRATCH = MemoryUtil.nmemAlloc(4*4*4);
@@ -222,6 +277,7 @@ public abstract class AbstractRenderPipeline extends TrackedObject {
         this.fb.free();
         this.sectionRenderer.free();
         this.depthStencilSetup.delete();
+        this.sentinelRestore.delete();
         super.free0();
     }
 
@@ -274,5 +330,12 @@ public abstract class AbstractRenderPipeline extends TrackedObject {
     public int getSableOcclusionDepthTexture() {
         return 0;
     }
+
+    //Inputs of the last initDepthStencil, for the occlusion debug recorder
+    private int lastSourceDepthTex;
+    private int lastSrcWidth, lastSrcHeight;
+    public final int debugSourceDepthTex() { return this.lastSourceDepthTex; }
+    public final int debugSrcWidth() { return this.lastSrcWidth; }
+    public final int debugSrcHeight() { return this.lastSrcHeight; }
 
 }

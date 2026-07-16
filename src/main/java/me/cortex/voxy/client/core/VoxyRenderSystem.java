@@ -494,6 +494,12 @@ public class VoxyRenderSystem {
         return this.pipeline.getSableOcclusionDepthTexture();
     }
 
+    //The pipeline type is fixed at world entry (shader state at creation time); path selection for
+    //the distant train/track renderers must follow it, not the live shader toggle.
+    public boolean isIrisPipeline() {
+        return this.pipeline instanceof IrisVoxyRenderPipeline;
+    }
+
     public void addDebugInfo(List<String> debug) {
         debug.add("Buf/Tex [#/Mb]: [" + GlBuffer.getCount() + "/" + (GlBuffer.getTotalSize()/1_000_000) + "],[" + GlTexture.getCount() + "/" + (GlTexture.getEstimatedTotalSize()/1_000_000)+"]");
         {

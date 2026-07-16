@@ -177,9 +177,9 @@ configurations {
     sodiumDistribution
 }
 
-def sodiumVersion = "mc1.21.1-0.8.12-alpha.4-neoforge"
-def sodiumNestedJar = "META-INF/jarjar/net.caffeinemc.sodium-neoforge-0.8.12-alpha.4+mc1.21.1-mod.jar"
-def sodiumCompileJar = layout.buildDirectory.file("generated/compile-deps/sodium-neoforge-0.8.12-alpha.4-mod.jar")
+def sodiumVersion = "mc1.21.1-0.8.12-neoforge"
+def sodiumNestedJar = "META-INF/jarjar/net.caffeinemc.sodium-neoforge-0.8.12+mc1.21.1-mod.jar"
+def sodiumCompileJar = layout.buildDirectory.file("generated/compile-deps/sodium-neoforge-0.8.12-mod.jar")
 
 tasks.register("extractSodiumCompileJar", Copy) {
     from({
@@ -192,7 +192,7 @@ tasks.register("extractSodiumCompileJar", Copy) {
         path = name
     }
     includeEmptyDirs = false
-    rename { "sodium-neoforge-0.8.12-alpha.4-mod.jar" }
+    rename { "sodium-neoforge-0.8.12-mod.jar" }
 }
 
 dependencies {
@@ -207,6 +207,11 @@ dependencies {
 
     // Lithium for NeoForge (0.15.1 - latest for MC 1.21.1)
     implementation("maven.modrinth:lithium:mc1.21.1-0.15.1-neoforge")
+
+    // Create (distant train sampler on the server; client render path is Create-free)
+    compileOnly files("../_Migration-Toolkit-1.21/lib-1.21/create-1.21.1-6.0.10.jar")
+    compileOnly files("../_Migration-Toolkit-1.21/lib-1.21/Ponder-NeoForge-1.21.1-1.0.64.jar")
+    compileOnly files("../_Migration-Toolkit-1.21/lib-1.21/flywheel-neoforge-api-1.21.1-1.0.6.jar")
 
     // SodiumOptionsAPI for Video Settings integration
     // Provides event API to add custom pages to Sodium's options GUI
@@ -228,6 +233,16 @@ dependencies {
 
     // EclipticSeasons (compileOnly): native snow-LOD compat, gated at runtime on "eclipticseasons".
     compileOnly files("libs/aero-spike/eclipticseasons-1.21.1-neoforge-0.13.8.4.1.jar")
+
+    // bits_n_bobs + its azimuth framework, for the cogwheel-chain LOD snapshot (optional at runtime)
+    compileOnly files("libs/aero-spike/bits_n_bobs-2.1.11-beta.jar")
+    compileOnly files("libs/aero-spike/azimuth-1.4.1.jar")
+
+    // flywheel impl (jarjar'd inside Create at runtime), for the capture gate bypass mixin target
+    compileOnly files("libs/aero-spike/flywheel-neoforge-impl-1.21.1-1.0.6.jar")
+
+    // EntityCulling (nowheel's base), to read its culled flag for the contraption handover
+    compileOnly files("libs/aero-spike/entityculling-neoforge-1.10.5.jar")
     //compileOnly("maven.modrinth:chunky:1.4.54-neoforge")
     //compileOnly("maven.modrinth:vivecraft:1.21.9-1.3.2-neoforge")
     //compileOnly("maven.modrinth:flashback:rNCr1Rbs")

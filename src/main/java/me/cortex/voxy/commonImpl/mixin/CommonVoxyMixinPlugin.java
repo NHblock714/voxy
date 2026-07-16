@@ -16,6 +16,7 @@ import java.util.Set;
 //Adding them dynamically here means they are never even loaded when sable is absent.
 public class CommonVoxyMixinPlugin implements IMixinConfigPlugin {
     private boolean sableInstalled;
+    private boolean createInstalled;
 
     private static boolean modOnLoadingList(String id) {
         try {
@@ -36,6 +37,7 @@ public class CommonVoxyMixinPlugin implements IMixinConfigPlugin {
     @Override
     public void onLoad(String mixinPackage) {
         sableInstalled = modOnLoadingList("sable");
+        createInstalled = modOnLoadingList("create");
     }
 
     @Override
@@ -53,6 +55,11 @@ public class CommonVoxyMixinPlugin implements IMixinConfigPlugin {
             mixins.add("sable.MixinSubLevelHoldingChunkMap");
             mixins.add("sable.MixinSubLevelTrackingSystem");
             mixins.add("sable.SableSubLevelHoldingChunkMapAccessor");
+            if (createInstalled) {
+                //Ship-borne contraption entities must track as far as their ship's hull does, or the
+                //structure pops off the distant hull at the entity view distance (references Create)
+                mixins.add("sable.MixinChunkMapTrackedEntityShip");
+            }
         }
         return mixins;
     }

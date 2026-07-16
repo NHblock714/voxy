@@ -366,6 +366,8 @@ public class ModelFactory {
         }
     }
 
+    private static final java.util.Set<Object> LOGGED_SELF_CULL_PROBE_FAILURE = java.util.concurrent.ConcurrentHashMap.newKeySet();
+
     private ModelBakeResultUpload processTextureBakeResult(int blockId, BlockState blockState, ColourDepthTextureData[] textureData, boolean isShaded, boolean darkenedTinting, RenderType layer, boolean crossPlant) {
         if (this.idMappings[blockId] != -1) {
             //This should be impossible to reach as it means that multiple bakes for the same blockId happened and where inflight at the same time!
@@ -479,7 +481,7 @@ public class ModelFactory {
 
         boolean cullsSame = false;
 
-        {
+        try {
             //TODO: Could also move this into the RenderDataFactory and do it on the actual blockstates instead of a guestimation
             boolean allTrue = true;
             boolean allFalse = true;
@@ -500,6 +502,14 @@ public class ModelFactory {
 
             if (allTrue) {
                 cullsSame = true;
+            }
+        } catch (Throwable e) {
+            //skipRendering is a popular mixin target (e.g. culling mods poking sodium internals) and
+            //a broken third party there must not kill the bake thread; worst case is redundant faces
+            //between identical neighbors.
+            cullsSame = false;
+            if (LOGGED_SELF_CULL_PROBE_FAILURE.add(blockState.getBlock())) {
+                Logger.error("skipRendering probe threw for " + blockState + ", assuming no self culling", e);
             }
         }
 

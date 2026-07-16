@@ -128,7 +128,7 @@ public class IrisVoxyRenderPipeline extends AbstractRenderPipeline {
             srcWidth = viewport.width;
             srcHeight = viewport.height;
         }
-        this.initDepthStencil(sourceFramebuffer, this.fb.framebuffer.id, srcWidth, srcHeight, viewport.width, viewport.height);
+        this.initDepthStencil(viewport, sourceFramebuffer, this.fb.framebuffer.id, srcWidth, srcHeight, viewport.width, viewport.height);
         return this.fb.getDepthTex().id;
     }
 
@@ -139,11 +139,17 @@ public class IrisVoxyRenderPipeline extends AbstractRenderPipeline {
             glEnable(GL_DEPTH_TEST);
             glColorMask(false, false, false, false);
             glDepthFunc(GL_ALWAYS);
-            glStencilFunc(GL_EQUAL, 0, 0xFF);//set the depth to 1 where the mask is 0
+            glStencilFunc(GL_EQUAL, 0, 0xFF);//set the depth to 1 where the mask is 0 (hook-tagged pixels keep theirs)
             this.shaderDepthHackFixTransformBlit.blit();
-            glStencilFunc(GL_EQUAL, 1, 0xFF);//revert the mask test
+            glStencilFunc(GL_EQUAL, 1, 0x1);//revert to the bit0 contract test
             glDepthFunc(this.properties.closerEqualDepthCompare());
             glColorMask(true, true, true, true);
+        } else {
+            //Packs that skip the depth-hack consume the raw sentinel protocol at vanilla-covered
+            //pixels; the setup pass stamped reprojected depth there for the hook geometry, so
+            //restore the value they expect
+            this.fb.bind();
+            this.restoreSentinelDepth();
         }
 
         glTextureBarrier();
@@ -163,11 +169,22 @@ public class IrisVoxyRenderPipeline extends AbstractRenderPipeline {
 
     @Override
     protected void finish(Viewport<?> viewport, int sourceFrameBuffer, int srcWidth, int srcHeight) {
-        if (this.data.renderToVanillaDepth && srcWidth == viewport.width  && srcHeight == viewport.height) {//We can only depthblit out if destination size is the same
+        boolean sizeMismatch = srcWidth != viewport.width || srcHeight != viewport.height;
+        //With useViewportDims the blit is valid under a size mismatch too (render-scaled packs) if the
+        //viewport is pinned around it; skipping it there left the LOD out of the vanilla depth buffer,
+        //so anything depth-tested against vanilla (Flywheel machine parts, ship kinetics) floated over
+        //the LOD.
+        if (this.data.renderToVanillaDepth && (this.data.useViewportDims || !sizeMismatch)) {
             glColorMask(false, false, false, false);
+            if (sizeMismatch) {
+                org.lwjgl.opengl.GL11C.glViewport(0, 0, viewport.width, viewport.height);
+            }
             AbstractRenderPipeline.transformBlitDepth(this.depthBlit,
                     this.fbTranslucent.getDepthTex().id, sourceFrameBuffer,
                     viewport, new Matrix4f(viewport.vanillaProjection).mul(viewport.modelView));
+            if (sizeMismatch) {
+                org.lwjgl.opengl.GL11C.glViewport(0, 0, srcWidth, srcHeight);
+            }
             glColorMask(true, true, true, true);
         } else {
             // normally disabled by AbstractRenderPipeline but since we are skipping it we do it here

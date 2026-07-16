@@ -239,7 +239,16 @@ public final class SableLodChunkManager {
             if (holdingChunkMap != null) {
                 LongIterator iterator = trackedHoldingChunks.iterator();
                 while (iterator.hasNext()) {
-                    holdingChunkMap.updateChunkStatus(new ChunkPos(iterator.nextLong()), false);
+                    ChunkPos chunkPos = new ChunkPos(iterator.nextLong());
+                    //Only hand back the chunks we were artificially holding. Reporting one that vanilla
+                    //still has loaded as gone makes sable serialise and remove every sub-level standing in
+                    //it, and it is only restored on the next FullChunkStatus transition - a ship right next
+                    //to the player would disappear until its chunk happens to cycle. Same guard as
+                    //removeStaleHoldingChunkLoads.
+                    if (PhysicsChunkTicketManager.isChunkLoadedEnough(level, chunkPos.x, chunkPos.z)) {
+                        continue;
+                    }
+                    holdingChunkMap.updateChunkStatus(chunkPos, false);
                 }
             }
         } catch (RuntimeException | LinkageError e) {

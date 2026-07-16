@@ -95,55 +95,108 @@ public class SoftwareModelTextureBakery {
         this.rasterizer.setSamplerTexture(pixels, width, height);
     }
 
-    //Cross plants bake into a boxy four-sided shell, so detect the cross shape: every quad
-    //uncullable and a vertical plane rotated off-axis. Axis-aligned planes (vines, crops) and
-    //horizontal quads (lily pads) are left untouched.
-    private static boolean isCrossPlantModel(BlockState state) {
-        if (state.getRenderShape() == RenderShape.INVISIBLE) return false;
-        var model = Minecraft.getInstance().getModelManager().getBlockModelShaper().getBlockModel(state);
-        for (Direction direction : Direction.values()) {
-            if (!model.getQuads(state, direction, new SingleThreadedRandomSource(42L)).isEmpty()) {
-                return false;
-            }
-        }
-        var quads = model.getQuads(state, null, new SingleThreadedRandomSource(42L));
-        if (quads.isEmpty()) return false;
-        for (var quad : quads) {
-            int[] vd = quad.getVertices();
-            int stride = vd.length / 4;
-            float x0 = Float.intBitsToFloat(vd[0]),          y0 = Float.intBitsToFloat(vd[1]),            z0 = Float.intBitsToFloat(vd[2]);
-            float x1 = Float.intBitsToFloat(vd[stride]),     y1 = Float.intBitsToFloat(vd[stride+1]),     z1 = Float.intBitsToFloat(vd[stride+2]);
-            float x2 = Float.intBitsToFloat(vd[stride*2]),   y2 = Float.intBitsToFloat(vd[stride*2+1]),   z2 = Float.intBitsToFloat(vd[stride*2+2]);
-            float ax = x1-x0, ay = y1-y0, az = z1-z0;
-            float bx = x2-x0, by = y2-y0, bz = z2-z0;
-            float nx = ay*bz - az*by;
-            float ny = az*bx - ax*bz;
-            float nz = ax*by - ay*bx;
-            float len = (float) Math.sqrt(nx*nx + ny*ny + nz*nz);
-            if (!(len > 0)) return false;
-            if (Math.abs(ny) > 0.3f*len) return false;
-            if (Math.abs(nx) < 0.3f*len || Math.abs(nz) < 0.3f*len) return false;
-        }
-        return true;
-    }
 
-    private void bakeBlockModel(BlockState state, RenderType layer) {
-        if (state.getRenderShape() == RenderShape.INVISIBLE) {
-            return;// Dont bake if invisible
+    //Returns whether the model is a centred ground cross (two diagonal cards - flowers, saplings,
+    //tall grass): the probe rides the quad lists the bake already walks, so it costs no extra model
+    //lookups. Axis-aligned cards (crops, wall vines), horizontal cards (lily pads) and models with
+    //any direction-culled quads are rejected.
+    private boolean bakeBlockModel(BlockState state, RenderType layer) {
+        if (state.getRenderShape() != RenderShape.MODEL) {
+            //Vanilla only draws the json model for MODEL-shaped states. ENTITYBLOCK_ANIMATED blocks
+            //(Create cogwheels and friends) still carry a full json the game never renders - baking it
+            //shows up at LOD range as a boxy ghost of geometry that does not exist up close. Their
+            //distant look is owned by the kinetic snapshots, which capture the real rendered parts.
+            return false;
         }
         var model = Minecraft.getInstance()
                 .getModelManager()
                 .getBlockModelShaper()
                 .getBlockModel(state);
 
+        boolean crossCandidate = true;
+        int diagonalFamilies = 0;
+        int unculledQuadCount = 0;
+
         for (Direction direction : new Direction[] { Direction.DOWN, Direction.UP, Direction.NORTH, Direction.SOUTH,
                 Direction.WEST, Direction.EAST, null }) {
-            var quads = model.getQuads(state, direction, new SingleThreadedRandomSource(42L));
+            //Chunk-semantics query (render type passed): NeoForge models can answer differently per
+            //render type - Create's kinetic blocks return their full json to type-less queries (the
+            //BER's spin model) but NOTHING to the chunk layers, which is why they don't double-render
+            //up close. Baking type-less pulled that json in and boxed cogwheels at LOD range.
+            var quads = model.getQuads(state, direction, new SingleThreadedRandomSource(42L),
+                    net.neoforged.neoforge.client.model.data.ModelData.EMPTY, layer);
+            if (direction != null && !quads.isEmpty()) {
+                crossCandidate = false;
+            }
             for (var quad : quads) {
+                if (direction == null && crossCandidate) {
+                    int family = classifyGroundCrossQuad(quad.getVertices());
+                    if (family == 0) {
+                        crossCandidate = false;
+                    } else {
+                        diagonalFamilies |= family;
+                        unculledQuadCount++;
+                    }
+                }
                 (layer == RenderType.translucent() ? this.translucentVC : this.opaqueVC)
                         .quad(quad, state.is(BlockTags.LEAVES), layer);
             }
         }
+        //Both diagonal families must be present: a single slanted card is decoration, not a plant
+        return crossCandidate && unculledQuadCount >= 2 && diagonalFamilies == 0b11;
+    }
+
+    //Bit 0/1 for the two diagonal plane families, or zero when the quad is not a centred vertical
+    //diagonal card; opposite winding lands in the same family.
+    private static int classifyGroundCrossQuad(int[] vertices) {
+        if (vertices.length < 16 || (vertices.length & 3) != 0) {
+            return 0;
+        }
+        int stride = vertices.length / 4;
+        float x0 = Float.intBitsToFloat(vertices[0]);
+        float y0 = Float.intBitsToFloat(vertices[1]);
+        float z0 = Float.intBitsToFloat(vertices[2]);
+        float x1 = Float.intBitsToFloat(vertices[stride]);
+        float y1 = Float.intBitsToFloat(vertices[stride + 1]);
+        float z1 = Float.intBitsToFloat(vertices[stride + 2]);
+        float x2 = Float.intBitsToFloat(vertices[stride * 2]);
+        float y2 = Float.intBitsToFloat(vertices[stride * 2 + 1]);
+        float z2 = Float.intBitsToFloat(vertices[stride * 2 + 2]);
+        float x3 = Float.intBitsToFloat(vertices[stride * 3]);
+        float y3 = Float.intBitsToFloat(vertices[stride * 3 + 1]);
+        float z3 = Float.intBitsToFloat(vertices[stride * 3 + 2]);
+
+        float ax = x1 - x0, ay = y1 - y0, az = z1 - z0;
+        float bx = x2 - x0, by = y2 - y0, bz = z2 - z0;
+        float nx = ay * bz - az * by;
+        float ny = az * bx - ax * bz;
+        float nz = ax * by - ay * bx;
+        float normalLengthSq = nx * nx + ny * ny + nz * nz;
+        if (normalLengthSq < 1.0e-8f) {
+            return 0;
+        }
+        float normalLength = (float) Math.sqrt(normalLengthSq);
+
+        //Lily pads and other horizontal cards have a mostly vertical normal
+        if (Math.abs(ny) > normalLength * 0.12f) {
+            return 0;
+        }
+        //Crops and vines use axis-aligned cards; ground crosses have balanced X/Z normals
+        float major = Math.max(Math.abs(nx), Math.abs(nz));
+        float minor = Math.min(Math.abs(nx), Math.abs(nz));
+        if (major < 1.0e-5f || minor < major * 0.55f) {
+            return 0;
+        }
+        //The plane must pass through the middle of the cell - rejects slanted decorative faces that
+        //merely happen to have a diagonal normal
+        float centerX = (x0 + x1 + x2 + x3) * 0.25f - 0.5f;
+        float centerY = (y0 + y1 + y2 + y3) * 0.25f - 0.5f;
+        float centerZ = (z0 + z1 + z2 + z3) * 0.25f - 0.5f;
+        float planeDistance = Math.abs(nx * centerX + ny * centerY + nz * centerZ) / normalLength;
+        if (planeDistance > 0.0625f) {
+            return 0;
+        }
+        return nx * nz >= 0.0f ? 0b01 : 0b10;
     }
 
     private void bakeFluidState(BlockState state, int face, RenderType layer) {
@@ -277,10 +330,11 @@ public class SoftwareModelTextureBakery {
         boolean isAnyDarkend = false;
         boolean anyTranslucent = false;
         boolean anyDiscard = false;
+        boolean crossPlant = false;
         if (isBlock) {
             this.opaqueVC.reset();
             this.translucentVC.reset();
-            this.bakeBlockModel(state, blockRenderLayer);
+            crossPlant = this.bakeBlockModel(state, blockRenderLayer);
             isAnyShaded |= this.opaqueVC.anyShaded | this.translucentVC.anyShaded;
             isAnyDarkend |= this.opaqueVC.anyDarkendTex | this.translucentVC.anyDarkendTex;
             anyTranslucent |= !this.translucentVC.isEmpty();
@@ -325,7 +379,6 @@ public class SoftwareModelTextureBakery {
             }
         }
 
-        boolean crossPlant = isBlock && isCrossPlantModel(state);
         return (isAnyShaded ? 1 : 0) | (isAnyDarkend ? 2 : 0) | (anyTranslucent ? 4 : 0) | (anyDiscard ? 8 : 0) | (crossPlant ? 16 : 0);
     }
 

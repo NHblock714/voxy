@@ -89,6 +89,7 @@ public class NodeManager {
     private final IntOpenHashSet topLevelNodeIds = new IntOpenHashSet();
     private final LongOpenHashSet topLevelNodes = new LongOpenHashSet();
     private int activeNodeRequestCount;
+    private boolean loggedLevel0Refusal;
 
     private IntConsumer topLevelNodeIdAddedCallback;
     private IntConsumer topLevelNodeIdRemovedCallback;
@@ -1085,7 +1086,21 @@ public class NodeManager {
 
 
         if (WorldEngine.getLevel(pos) == 0) {
-            Logger.error("Requests cannot exist for bottom level nodes. at: " + WorldEngine.pprintPos(pos) + ". Ignoring request");
+            //A level-0 node cannot subdivide, so the only legitimate cause of its request is a
+            //missing mesh - route it to the geometry repair path. The GPU-side request flag stays
+            //set while the geometry is inbound (stops the traversal re-emitting every frame); the
+            //geometry result rewrites the node, which clears it.
+            if (nodeType == NODE_TYPE_LEAF && this.nodeData.getNodeGeometry(nodeId) == NULL_GEOMETRY_ID) {
+                this.watcher.watch(pos, WorldEngine.UPDATE_TYPE_BLOCK_BIT);
+                return;
+            }
+            //Otherwise the GPU thinks the node is meshless while the CPU disagrees - rewriting the
+            //node uploads the CPU-side mesh pointer, which also stops the re-request
+            if (!this.loggedLevel0Refusal) {
+                this.loggedLevel0Refusal = true;
+                Logger.error("Unexpected request for bottom level node at: " + WorldEngine.pprintPos(pos) + " (logged once)");
+            }
+            this.invalidateNode(nodeId);
             return;
         }
 

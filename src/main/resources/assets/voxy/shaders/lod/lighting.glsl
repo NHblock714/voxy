@@ -11,7 +11,8 @@ vec2 getLightmapUv(uint index) {
 layout(binding = LIGHTING_SAMPLER_BINDING) uniform sampler2D lightSampler;
 
 vec4 getLighting(uint index) {
-    return texture(lightSampler, getLightmapUv(index));
+    // Base level only - the lightmap's mip selection jitters at LOD range and flickers the blocks
+    return textureLod(lightSampler, getLightmapUv(index), 0.0);
 }
 #endif
 

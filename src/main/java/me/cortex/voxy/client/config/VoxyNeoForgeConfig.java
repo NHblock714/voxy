@@ -84,6 +84,42 @@ public class VoxyNeoForgeConfig {
                      "Displays LOD traversal counts, visible sections, and quad counts")
             .define("renderStatistics", false);
 
+    // Create mod integration: render distant trains/tracks/contraptions and cull placed kinetic parts.
+    // The *MaxChunks caps are in chunks; 0 = follow voxy's LOD radius (2 * sectionRenderDistance chunks).
+    // Lowering a cap renders that integration nearer to save GPU; the train cap also shrinks the
+    // server's pose-stream window on the integrated server (less bandwidth).
+    private static final ModConfigSpec.BooleanValue DISTANT_TRAINS = BUILDER
+            .comment("Render Create trains beyond the vanilla view distance, in the LOD")
+            .define("distantTrains", true);
+
+    private static final ModConfigSpec.IntValue DISTANT_TRAIN_MAX_CHUNKS = BUILDER
+            .comment("Max distance to render distant trains, in chunks. 0 = follow the LOD radius.",
+                     "Lower renders trains nearer; on the integrated server it also shrinks the",
+                     "server's train pose-stream window, cutting bandwidth.")
+            .defineInRange("distantTrainMaxChunks", 0, 0, 192);
+
+    private static final ModConfigSpec.BooleanValue DISTANT_TRACKS = BUILDER
+            .comment("Render the Create track network beyond the view distance, in the LOD")
+            .define("distantTracks", true);
+
+    private static final ModConfigSpec.IntValue DISTANT_TRACK_MAX_CHUNKS = BUILDER
+            .comment("Max distance to render the distant track network, in chunks. 0 = follow the LOD radius.")
+            .defineInRange("distantTrackMaxChunks", 0, 0, 192);
+
+    private static final ModConfigSpec.BooleanValue DISTANT_CONTRAPTIONS = BUILDER
+            .comment("Render snapshots of Create contraptions (bearings/pistons/gantries/mounted)",
+                     "beyond the view distance, in the LOD")
+            .define("distantContraptions", true);
+
+    private static final ModConfigSpec.IntValue DISTANT_CONTRAPTION_MAX_CHUNKS = BUILDER
+            .comment("Max distance to render distant contraptions, in chunks. 0 = follow the LOD radius.")
+            .defineInRange("distantContraptionMaxChunks", 0, 0, 192);
+
+    private static final ModConfigSpec.BooleanValue DISTANT_KINETICS = BUILDER
+            .comment("Cull placed kinetic machine moving parts (rotating shafts/gears) beyond the render",
+                     "distance so they stop floating over the LOD. Off = Create draws them natively.")
+            .define("distantKinetics", true);
+
     public static final ModConfigSpec SPEC = BUILDER.build();
 
     /**
@@ -113,10 +149,19 @@ public class VoxyNeoForgeConfig {
         VoxyConfig.CONFIG.dontUseSodiumBuilderThreads = DONT_USE_SODIUM_BUILDER_THREADS.get();
         VoxyConfig.CONFIG.lodBoundaryBuffer = LOD_BOUNDARY_BUFFER.get();
         VoxyConfig.CONFIG.earthCurveRatio = EARTH_CURVE_RATIO.get();
+        // Create integration
+        VoxyConfig.CONFIG.distantTrains = DISTANT_TRAINS.get();
+        VoxyConfig.CONFIG.distantTrainMaxChunks = DISTANT_TRAIN_MAX_CHUNKS.get();
+        VoxyConfig.CONFIG.distantTracks = DISTANT_TRACKS.get();
+        VoxyConfig.CONFIG.distantTrackMaxChunks = DISTANT_TRACK_MAX_CHUNKS.get();
+        VoxyConfig.CONFIG.distantContraptions = DISTANT_CONTRAPTIONS.get();
+        VoxyConfig.CONFIG.distantContraptionMaxChunks = DISTANT_CONTRAPTION_MAX_CHUNKS.get();
+        VoxyConfig.CONFIG.distantKinetics = DISTANT_KINETICS.get();
         // RenderStatistics is a runtime-only setting (not saved to JSON)
         RenderStatistics.enabled = RENDER_STATISTICS.get();
 
-        // Also save to the JSON config for compatibility
+        // Also save to the JSON config for compatibility (this also pushes the distant-train render
+        // distance to the server-side sampler bridge via VoxyConfig.syncDistantTrainConfig).
         VoxyConfig.CONFIG.save();
     }
 
@@ -139,6 +184,14 @@ public class VoxyNeoForgeConfig {
         DONT_USE_SODIUM_BUILDER_THREADS.set(VoxyConfig.CONFIG.dontUseSodiumBuilderThreads);
         LOD_BOUNDARY_BUFFER.set(VoxyConfig.CONFIG.lodBoundaryBuffer);
         EARTH_CURVE_RATIO.set(VoxyConfig.CONFIG.earthCurveRatio);
+        // Create integration
+        DISTANT_TRAINS.set(VoxyConfig.CONFIG.distantTrains);
+        DISTANT_TRAIN_MAX_CHUNKS.set(VoxyConfig.CONFIG.distantTrainMaxChunks);
+        DISTANT_TRACKS.set(VoxyConfig.CONFIG.distantTracks);
+        DISTANT_TRACK_MAX_CHUNKS.set(VoxyConfig.CONFIG.distantTrackMaxChunks);
+        DISTANT_CONTRAPTIONS.set(VoxyConfig.CONFIG.distantContraptions);
+        DISTANT_CONTRAPTION_MAX_CHUNKS.set(VoxyConfig.CONFIG.distantContraptionMaxChunks);
+        DISTANT_KINETICS.set(VoxyConfig.CONFIG.distantKinetics);
         // RenderStatistics remains NeoForge/TOML-only.
         RenderStatistics.enabled = RENDER_STATISTICS.get();
     }

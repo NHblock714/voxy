@@ -38,6 +38,7 @@ import static org.lwjgl.opengl.GL11C.glViewport;
 import static org.lwjgl.opengl.GL13C.GL_ACTIVE_TEXTURE;
 import static org.lwjgl.opengl.GL13C.GL_TEXTURE0;
 import static org.lwjgl.opengl.GL13C.GL_TEXTURE1;
+import static org.lwjgl.opengl.GL13C.GL_TEXTURE2;
 import static org.lwjgl.opengl.GL13C.glActiveTexture;
 import static org.lwjgl.opengl.GL14C.GL_DEPTH_COMPONENT24;
 import static org.lwjgl.opengl.GL14C.GL_TEXTURE_COMPARE_MODE;
@@ -77,9 +78,15 @@ public final class VoxySableDepthShim {
     private static final DepthFramebuffer BEFORE_SABLE_DEPTH = new DepthFramebuffer(GL_DEPTH_COMPONENT24);
     private static final GlFramebuffer DRAW_FRAMEBUFFER = new GlFramebuffer().name("Sable Voxy depth shim");
 
+    //In-place variant scratch (see beginInPlace): snapshots of the target's own depth texture
+    private static final DepthFramebuffer IN_PLACE_BEFORE = new DepthFramebuffer(GL_DEPTH_COMPONENT24);
+    private static final DepthFramebuffer IN_PLACE_MERGED = new DepthFramebuffer(GL_DEPTH_COMPONENT24);
+    private static final DepthFramebuffer IN_PLACE_AFTER = new DepthFramebuffer(GL_DEPTH_COMPONENT24);
+
     private static final FullscreenBlit COPY_DEPTH = new FullscreenBlit(RenderProperties.getRenderProperties(), "voxy:post/depth_copy.frag");
     private static final FullscreenBlit TRANSFORM_DEPTH = new FullscreenBlit(RenderProperties.getRenderProperties(), "voxy:post/blit_texture_depth_cutout.frag");
     private static final FullscreenBlit COPY_CHANGED_DEPTH = new FullscreenBlit(RenderProperties.getRenderProperties(), "voxy:post/depth_copy_changed.frag");
+    private static final FullscreenBlit RESTORE_UNCHANGED_DEPTH = new FullscreenBlit(RenderProperties.getRenderProperties(), "voxy:post/depth_restore_unchanged.frag");
 
     private static final int DEPTH_SAMPLER = glGenSamplers();
     private static final long MATRIX_SCRATCH = MemoryUtil.nmemAlloc(16L * Float.BYTES);
@@ -87,6 +94,8 @@ public final class VoxySableDepthShim {
     private static State activeState;
     private static boolean loggedEnabled;
     private static boolean loggedUnsupportedFramebuffer;
+    //Diagnostics for /voxy debug ship: why the last begin bailed
+    public static volatile String lastSkipReason = "never called";
 
     static {
         glSamplerParameteri(DEPTH_SAMPLER, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
@@ -105,27 +114,32 @@ public final class VoxySableDepthShim {
 
         VoxyRenderSystem renderer = IGetVoxyRenderSystem.getNullable();
         if (renderer == null) {
+            lastSkipReason = "no renderer";
             return;
         }
 
         int voxyDepthTexture = renderer.getSableOcclusionDepthTexture();
         if (voxyDepthTexture == 0) {
+            lastSkipReason = "no LOD depth texture";
             return;
         }
 
         Viewport<?> viewport = renderer.getViewport();
         if (viewport == null || viewport.width <= 0 || viewport.height <= 0) {
+            lastSkipReason = "no viewport";
             return;
         }
 
         State state = State.capture();
         if (state.drawFramebuffer == 0 || state.width <= 0 || state.height <= 0 || state.x != 0 || state.y != 0) {
+            lastSkipReason = "bad GL state: fb=" + state.drawFramebuffer + " viewport=" + state.x + ',' + state.y + ' ' + state.width + 'x' + state.height;
             return;
         }
 
         int vanillaDepthType = glGetNamedFramebufferAttachmentParameteri(state.drawFramebuffer, GL_DEPTH_ATTACHMENT, GL_FRAMEBUFFER_ATTACHMENT_OBJECT_TYPE);
         int vanillaDepthTexture = glGetNamedFramebufferAttachmentParameteri(state.drawFramebuffer, GL_DEPTH_ATTACHMENT, GL_FRAMEBUFFER_ATTACHMENT_OBJECT_NAME);
         if (vanillaDepthType != GL_TEXTURE || vanillaDepthTexture == 0) {
+            lastSkipReason = "depth attachment not a texture";
             if (!loggedUnsupportedFramebuffer) {
                 Logger.warn("Skipping Sable/Voxy depth shim because the active depth attachment is not a texture");
                 loggedUnsupportedFramebuffer = true;
@@ -137,9 +151,11 @@ public final class VoxySableDepthShim {
         BEFORE_SABLE_DEPTH.resize(state.width, state.height);
 
         if (!prepareDrawFramebuffer(state.drawFramebuffer)) {
+            lastSkipReason = "draw framebuffer prepare failed";
             state.restoreAll();
             return;
         }
+        lastSkipReason = "ok";
 
         copyDepth(vanillaDepthTexture, COMBINED_DEPTH.framebuffer.id, state.width, state.height);
         mergeVoxyDepth(voxyDepthTexture, COMBINED_DEPTH.framebuffer.id, state.width, state.height, viewport, modelView, projection);
@@ -166,6 +182,115 @@ public final class VoxySableDepthShim {
         copyChangedDepth(BEFORE_SABLE_DEPTH.getDepthTex().id, COMBINED_DEPTH.getDepthTex().id, state);
         state.restoreAll();
         activeState = null;
+    }
+
+    private static State activeInPlaceState;
+    private static int inPlaceDepthTexture;
+
+    //In-place variant for passes whose framebuffer binding we cannot own (Flywheel under Iris rebinds
+    //mid-pass, evicting the redirect that begin() relies on): instead of swapping the draw framebuffer,
+    //temporarily merge the LOD depth INTO the target's own depth texture, let the pass render against
+    //it, then restore every pixel the pass did not write. The pass can rebind framebuffers freely - the
+    //depth texture it tests against is the one we edited.
+    public static void beginInPlace(Matrix4f modelView, Matrix4f projection) {
+        if (activeInPlaceState != null) {
+            activeInPlaceState.nesting++;
+            return;
+        }
+
+        VoxyRenderSystem renderer = IGetVoxyRenderSystem.getNullable();
+        if (renderer == null) {
+            lastSkipReason = "no renderer";
+            return;
+        }
+
+        int voxyDepthTexture = renderer.getSableOcclusionDepthTexture();
+        if (voxyDepthTexture == 0) {
+            lastSkipReason = "no LOD depth texture";
+            return;
+        }
+
+        Viewport<?> viewport = renderer.getViewport();
+        if (viewport == null || viewport.width <= 0 || viewport.height <= 0) {
+            lastSkipReason = "no viewport";
+            return;
+        }
+
+        State state = State.capture();
+        if (state.drawFramebuffer == 0 || state.width <= 0 || state.height <= 0 || state.x != 0 || state.y != 0) {
+            lastSkipReason = "bad GL state: fb=" + state.drawFramebuffer + " viewport=" + state.x + ',' + state.y + ' ' + state.width + 'x' + state.height;
+            return;
+        }
+
+        int depthType = glGetNamedFramebufferAttachmentParameteri(state.drawFramebuffer, GL_DEPTH_ATTACHMENT, GL_FRAMEBUFFER_ATTACHMENT_OBJECT_TYPE);
+        int depthTexture = glGetNamedFramebufferAttachmentParameteri(state.drawFramebuffer, GL_DEPTH_ATTACHMENT, GL_FRAMEBUFFER_ATTACHMENT_OBJECT_NAME);
+        if (depthType != GL_TEXTURE || depthTexture == 0) {
+            lastSkipReason = "depth attachment not a texture";
+            return;
+        }
+
+        IN_PLACE_BEFORE.resize(state.width, state.height);
+        IN_PLACE_MERGED.resize(state.width, state.height);
+        IN_PLACE_AFTER.resize(state.width, state.height);
+
+        copyDepth(depthTexture, IN_PLACE_BEFORE.framebuffer.id, state.width, state.height);
+        mergeVoxyDepth(voxyDepthTexture, state.drawFramebuffer, state.width, state.height, viewport, modelView, projection);
+        copyDepth(depthTexture, IN_PLACE_MERGED.framebuffer.id, state.width, state.height);
+
+        state.restoreAll();
+        inPlaceDepthTexture = depthTexture;
+        activeInPlaceState = state;
+        lastSkipReason = "ok";
+
+        if (!loggedEnabled) {
+            Logger.info("Enabled Sable/Voxy combined depth shim");
+            loggedEnabled = true;
+        }
+    }
+
+    public static void endInPlace() {
+        State state = activeInPlaceState;
+        if (state == null) {
+            return;
+        }
+        if (--state.nesting > 0) {
+            return;
+        }
+        activeInPlaceState = null;
+
+        //State only tracks units 0/1; the restore blit also uses unit 2
+        State current = State.capture();
+        int prevActive = glGetInteger(GL_ACTIVE_TEXTURE);
+        glActiveTexture(GL_TEXTURE2);
+        int savedTexture2 = glGetInteger(GL_TEXTURE_BINDING_2D);
+        glActiveTexture(prevActive);
+        int savedSampler2 = glGetIntegeri(GL_SAMPLER_BINDING, 2);
+
+        copyDepth(inPlaceDepthTexture, IN_PLACE_AFTER.framebuffer.id, state.width, state.height);
+        restoreUnchangedDepth(state);
+
+        glBindTextureUnit(2, savedTexture2);
+        glBindSampler(2, savedSampler2);
+        current.restoreAll();
+    }
+
+    private static void restoreUnchangedDepth(State state) {
+        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, state.drawFramebuffer);
+        glViewport(0, 0, state.width, state.height);
+        glDisable(GL_STENCIL_TEST);
+        glEnable(GL_DEPTH_TEST);
+        glDepthFunc(GL_ALWAYS);
+        glDepthMask(true);
+        glColorMask(false, false, false, false);
+
+        RESTORE_UNCHANGED_DEPTH.bind();
+        glBindTextureUnit(0, IN_PLACE_BEFORE.getDepthTex().id);
+        glBindSampler(0, DEPTH_SAMPLER);
+        glBindTextureUnit(1, IN_PLACE_MERGED.getDepthTex().id);
+        glBindSampler(1, DEPTH_SAMPLER);
+        glBindTextureUnit(2, IN_PLACE_AFTER.getDepthTex().id);
+        glBindSampler(2, DEPTH_SAMPLER);
+        RESTORE_UNCHANGED_DEPTH.blit();
     }
 
     private static boolean prepareDrawFramebuffer(int sourceFramebuffer) {
