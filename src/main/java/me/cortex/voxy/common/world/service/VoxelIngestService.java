@@ -37,7 +37,7 @@ public class VoxelIngestService {
         task.world.markActive();
 
         var section = task.section;
-        DomumOrnamentumCompat.beginSection(task.chunk, task.cy);
+        DomumOrnamentumCompat.beginSection(task.world.getMapper(), task.chunk, task.section, task.cy);
         try {
             var vs = SECTION_CACHE.get().setPosition(task.cx, task.cy, task.cz);
 

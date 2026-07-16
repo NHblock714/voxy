@@ -74,6 +74,28 @@ bool useDiscard() {
     return (interData.x&1u)==1u;
 }
 
+bool useBalancedLeafCutout() {
+    return ((interData.x >> 1u) & 1u) == 1u;
+}
+
+vec2 varyBalancedLeafUV(vec2 localUV, vec2 tile, out uint transform) {
+    uvec2 tilePos = uvec2(max(tile, vec2(0.0f)));
+    uint hash = interData.w >> 16u;
+    hash ^= tilePos.x * 0x9e3779b9u;
+    hash ^= tilePos.y * 0x85ebca6bu;
+    hash ^= hash >> 16u;
+    hash *= 0x7feb352du;
+    hash ^= hash >> 15u;
+    transform = hash & 7u;
+
+    // Eight stable rotations/reflections preserve the resource-pack alpha
+    // pattern while avoiding mirrored pairs and repeated symmetric canopies.
+    if ((transform & 1u) != 0u) localUV = localUV.yx;
+    if ((transform & 2u) != 0u) localUV.x = 1.0f - localUV.x;
+    if ((transform & 4u) != 0u) localUV.y = 1.0f - localUV.y;
+    return localUV;
+}
+
 uint getFace() {
     return (interData.x>>4)&7u;
 }
@@ -138,7 +160,12 @@ void main() {
     #endif
     #endif
 
-    vec2 uv2 = modf(uv, tile)*(1.0/(vec2(3.0,2.0)*256.0));
+    uint leafTransform = 0u;
+    vec2 localUV = modf(uv, tile);
+    if (useBalancedLeafCutout()) {
+        localUV = varyBalancedLeafUV(localUV, tile, leafTransform);
+    }
+    vec2 uv2 = localUV*(1.0/(vec2(3.0,2.0)*256.0));
     vec4 colour;
     vec2 texPos = uv2 + getBaseUV();
 //This is deprecated, TODO: remove the non mip code path
@@ -147,6 +174,18 @@ void main() {
         vec2 uvSmol = uv*(1.0/(vec2(3.0,2.0)*256.0));
         vec2 dx = dFdx(uvSmol);//vec2(lDx, dDx);
         vec2 dy = dFdy(uvSmol);//vec2(lDy, dDy);
+        if ((leafTransform & 1u) != 0u) {
+            dx = dx.yx;
+            dy = dy.yx;
+        }
+        if ((leafTransform & 2u) != 0u) {
+            dx.x = -dx.x;
+            dy.x = -dy.x;
+        }
+        if ((leafTransform & 4u) != 0u) {
+            dx.y = -dx.y;
+            dy.y = -dy.y;
+        }
         colour = textureGrad(blockModelAtlas, texPos, dx, dy);
         colour = clearTintMaskFromColour(colour);
     }// else {
@@ -178,9 +217,12 @@ void main() {
 
     //Also, small quad is really fking over the mipping level somehow
     #ifndef TRANSLUCENT
+    float cutoutAlpha = useBalancedLeafCutout()
+            ? colour.a
+            : textureLod(blockModelAtlas, texPos, 0).a;
+    float cutoutThreshold = useBalancedLeafCutout() ? 0.42f : 0.1f;
     colour.a = 1.0f;
-    if (useDiscard() && (textureLod(blockModelAtlas, texPos, 0).a <= 0.1f)) {
-    //if (useDiscard() && (colour.a <= 0.1f)) {
+    if (useDiscard() && cutoutAlpha <= cutoutThreshold) {
     #else
     if (textureLod(blockModelAtlas, texPos, 0).a == 0.0f) {
     #endif
@@ -259,4 +301,3 @@ colour = textureGrad(blockModelAtlas, texPos, dx, dy);
 
 //Undefine the depth stuff
 #import <voxy:util/depthutils.glsl>
-

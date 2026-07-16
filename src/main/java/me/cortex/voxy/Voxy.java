@@ -21,12 +21,20 @@ import net.neoforged.neoforge.client.gui.ConfigurationScreen;
 public class Voxy {
     public static final String MODID = "voxy";
 
+    private final me.cortex.voxy.compat.far.FarEntityService farEntityService = new me.cortex.voxy.compat.far.FarEntityService();
+
     public Voxy(IEventBus modEventBus, ModContainer container) {
         //Terrain streaming is handled by the external VSS mod; on a dedicated server voxy only
         //provides the sable contraption ticket hook (MixinServerLevel) and, with Create installed,
         //the distant-train pose sampler. Everything else is client side.
 
         modEventBus.addListener(Voxy::registerPayloads);
+
+        //Far players / ridden vehicles: server samples player snapshots, client renders lightweight
+        //proxies past the entity view distance (upstream neo-voxy feature)
+        modEventBus.addListener(this::registerFarEntityPayloads);
+        NeoForge.EVENT_BUS.addListener(this.farEntityService::onServerTick);
+        NeoForge.EVENT_BUS.addListener(this.farEntityService::onPlayerLoggedOut);
 
         if (ModList.get().isLoaded("create")) {
             //Server-side train sampling (works on the integrated server too). The sampler class is
@@ -115,5 +123,29 @@ public class Voxy {
                         ctx.enqueueWork(() -> me.cortex.voxy.client.compat.create.DistantTrainManager.handlePoses(payload));
                     }
                 });
+    }
+
+    private void registerFarEntityPayloads(net.neoforged.neoforge.network.event.RegisterPayloadHandlersEvent event) {
+        var registrar = event.registrar("voxy")
+                .versioned(Integer.toString(me.cortex.voxy.compat.far.FarEntityProtocol.VERSION))
+                .optional();
+
+        registrar.playToServer(
+                me.cortex.voxy.compat.far.FarEntityProtocol.HelloPayload.TYPE,
+                me.cortex.voxy.compat.far.FarEntityProtocol.HelloPayload.STREAM_CODEC,
+                (payload, context) -> context.enqueueWork(() ->
+                        this.farEntityService.handleHello((net.minecraft.server.level.ServerPlayer) context.player(), payload.hello())));
+
+        if (FMLLoader.getDist() == Dist.CLIENT) {
+            registrar.playToClient(
+                    me.cortex.voxy.compat.far.FarEntityProtocol.PlayersPayload.TYPE,
+                    me.cortex.voxy.compat.far.FarEntityProtocol.PlayersPayload.STREAM_CODEC,
+                    (payload, context) -> context.enqueueWork(() -> me.cortex.voxy.compat.far.FarEntityClient.handle(payload.batch())));
+        } else {
+            registrar.playToClient(
+                    me.cortex.voxy.compat.far.FarEntityProtocol.PlayersPayload.TYPE,
+                    me.cortex.voxy.compat.far.FarEntityProtocol.PlayersPayload.STREAM_CODEC,
+                    (payload, context) -> { });
+        }
     }
 }

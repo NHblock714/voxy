@@ -14,18 +14,34 @@ import net.neoforged.fml.loading.FMLPaths;
 import java.io.FileReader;
 import java.io.IOException;
 import java.lang.reflect.Modifier;
+import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.util.Locale;
 
 public class VoxyConfig {
+    public enum LeafLodMode {
+        FAST,
+        BALANCED,
+        QUALITY
+    }
+
+    public static final int MIN_REQUEST_DISTANCE = 8;
+    // ClientInformation carries view distance in one signed byte. Keeping the
+    // singleplayer extension at 127 avoids wraparound while removing the old 48 cap.
+    public static final int MAX_REQUEST_DISTANCE = 127;
+    public static final int MAX_CLOUD_DISTANCE = 128;
+    public static final float MIN_SUBDIVISION_SIZE = 28.0f;
+    public static final float MAX_SUBDIVISION_SIZE = 256.0f;
+
     private static final Gson GSON = new GsonBuilder()
             .setFieldNamingPolicy(FieldNamingPolicy.LOWER_CASE_WITH_UNDERSCORES)
             .setPrettyPrinting()
-            .excludeFieldsWithModifiers(Modifier.PRIVATE)
+            .excludeFieldsWithModifiers(Modifier.PRIVATE, Modifier.STATIC, Modifier.TRANSIENT)
             .create();
 
-    public static VoxyConfig CONFIG = loadOrCreate();
+    public static final VoxyConfig CONFIG = loadOrCreate();
 
     public boolean enabled = true;
     public boolean enableRendering = true;
@@ -66,16 +82,49 @@ public class VoxyConfig {
     public boolean adaptCloudDistance = true;
     public int cloudDistance = 0;
     public boolean dontUseSodiumBuilderThreads = false;
-
-    // LOD boundary buffer: controls the safety margin between vanilla chunks and LOD rendering.
+    public int renderPressure = 2;
     public int lodBoundaryBuffer = 1;
-
-    // World curvature effect; 0 disables it.
     public int earthCurveRatio = 0;
-
+    public boolean enableExtendedRequestDistance = true;
+    public int requestDistance = 48;
     public String ssaoMode;
-
     public boolean useEnvironmentalFog = true;
+    public String leafLodMode = "balanced";
+    public boolean enableFarPlayerRendering = true;
+    public boolean renderFarPlayerNames = true;
+    public int farPlayerAnimationDistance = 1024;
+    public boolean shareFarPlayerPosition = true;
+
+    public int getRequestDistance() {
+        return Math.clamp(this.requestDistance, MIN_REQUEST_DISTANCE, MAX_REQUEST_DISTANCE);
+    }
+
+    public int getFarEntityRenderDistanceBlocks() {
+        return Math.clamp(Math.round(this.sectionRenderDistance * 32.0f * 16.0f), 64, 32768);
+    }
+
+    public int getRenderPressureLevel() {
+        if (this.renderPressure < 0 || this.renderPressure > 4) {
+            this.renderPressure = 2;
+        }
+        return this.renderPressure;
+    }
+
+    public LeafLodMode getLeafLodMode() {
+        if (this.leafLodMode == null) {
+            return LeafLodMode.BALANCED;
+        }
+
+        try {
+            return LeafLodMode.valueOf(this.leafLodMode.toUpperCase(Locale.ROOT));
+        } catch (IllegalArgumentException ignored) {
+            return LeafLodMode.BALANCED;
+        }
+    }
+
+    public void setLeafLodMode(LeafLodMode mode) {
+        this.leafLodMode = mode.name().toLowerCase(Locale.ROOT);
+    }
 
     // EclipticSeasons compat: recolor LOD terrain with seasonal snow (master switch for the eclipticseasons mixins).
     public boolean eclipticSeasonsSnowLod = true;
@@ -89,10 +138,15 @@ public class VoxyConfig {
     public boolean showJoinMessage = true;
 
     public SSAO.SSAOMode getSSAOMode() {
-        if (this.ssaoMode == null) return SSAO.SSAOMode.AUTO;
+        if (this.ssaoMode == null) {
+            return SSAO.SSAOMode.AUTO;
+        }
+
         try {
             return SSAO.SSAOMode.valueOf(this.ssaoMode.toUpperCase(Locale.ROOT));
-        } catch (Exception e) { return SSAO.SSAOMode.AUTO; }
+        } catch (IllegalArgumentException ignored) {
+            return SSAO.SSAOMode.AUTO;
+        }
     }
 
     public void setSSAOMode(SSAO.SSAOMode mode) {
@@ -100,31 +154,44 @@ public class VoxyConfig {
     }
 
     private static VoxyConfig loadOrCreate() {
-        if (VoxyCommon.isAvailable()) {
-            var path = getConfigPath();
-            if (Files.exists(path)) {
-                try (FileReader reader = new FileReader(path.toFile())) {
-                    var conf = GSON.fromJson(reader, VoxyConfig.class);
-                    if (conf != null) {
-                        conf.save();
-                        return conf;
-                    } else {
-                        Logger.error("Failed to load voxy config, resetting");
-                    }
-                } catch (IOException e) {
-                    Logger.error("Could not parse config", e);
-                }
-            }
-            Logger.info("Config doesnt exist, creating new");
-            var config = new VoxyConfig();
-            config.save();
-            return config;
-        } else {
+        if (!VoxyCommon.isAvailable()) {
             var config = new VoxyConfig();
             config.enabled = false;
             config.enableRendering = false;
             return config;
         }
+
+        Path path = getConfigPath();
+        if (Files.exists(path)) {
+            try (FileReader reader = new FileReader(path.toFile())) {
+                VoxyConfig config = GSON.fromJson(reader, VoxyConfig.class);
+                if (config != null) {
+                    config.sanitize();
+                    config.save();
+                    return config;
+                }
+                Logger.error("Failed to load Voxy config; resetting it");
+            } catch (IOException | RuntimeException e) {
+                Logger.error("Could not load Voxy config; resetting it", e);
+                backupInvalidConfig(path);
+            }
+        }
+
+        Logger.info("Config does not exist; creating a new one");
+        var config = new VoxyConfig();
+        config.save();
+        return config;
+    }
+
+    public void sanitize() {
+        this.subDivisionSize = Math.clamp(this.subDivisionSize, MIN_SUBDIVISION_SIZE, MAX_SUBDIVISION_SIZE);
+        this.requestDistance = Math.clamp(this.requestDistance, MIN_REQUEST_DISTANCE, MAX_REQUEST_DISTANCE);
+        this.skyFogDistance = Math.clamp(this.skyFogDistance, 0, 1024);
+        this.cloudDistance = Math.clamp(this.cloudDistance, 0, MAX_CLOUD_DISTANCE);
+        this.fogIntensity = Math.clamp(this.fogIntensity, 0.0f, 1.0f);
+        this.fogDensity = Math.clamp(this.fogDensity, 0.0f, 1.0f);
+        this.setLeafLodMode(this.getLeafLodMode());
+        this.farPlayerAnimationDistance = Math.clamp(this.farPlayerAnimationDistance, 0, 32768);
     }
 
     public void save() {
@@ -135,14 +202,37 @@ public class VoxyConfig {
             return;
         }
 
+        this.sanitize();
+        Path path = getConfigPath();
+        Path temporary = path.resolveSibling(path.getFileName() + ".tmp");
+
         try {
-            Files.writeString(getConfigPath(), GSON.toJson(this));
+            Files.createDirectories(path.getParent());
+            Files.writeString(temporary, GSON.toJson(this));
+            try {
+                Files.move(temporary, path, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+            } catch (AtomicMoveNotSupportedException ignored) {
+                Files.move(temporary, path, StandardCopyOption.REPLACE_EXISTING);
+            }
         } catch (IOException e) {
-            Logger.error("Failed to write config file", e);
+            Logger.error("Failed to write Voxy config", e);
+            try {
+                Files.deleteIfExists(temporary);
+            } catch (IOException ignored) {
+            }
         }
 
         this.syncSableContraptionRenderDistance();
         this.syncDistantTrainConfig();
+    }
+
+    private static void backupInvalidConfig(Path path) {
+        try {
+            Path backup = path.resolveSibling(path.getFileName() + ".invalid");
+            Files.move(path, backup, StandardCopyOption.REPLACE_EXISTING);
+        } catch (IOException e) {
+            Logger.error("Failed to back up invalid Voxy config", e);
+        }
     }
 
     // Aero/sable: push the live render-distance/percent to the sable contraption-LOD calculator.

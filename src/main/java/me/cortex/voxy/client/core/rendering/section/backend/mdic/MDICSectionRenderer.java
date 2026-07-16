@@ -96,9 +96,13 @@ public class MDICSectionRenderer extends AbstractSectionRenderer<MDICViewport, B
     private final GlBuffer statisticsBuffer = new GlBuffer(1024).zero();
 
     private final AbstractRenderPipeline pipeline;
+    private final float fluidDatumY;
+    private final Matrix4f uniformMatrix = new Matrix4f();
     public MDICSectionRenderer(AbstractRenderPipeline pipeline, ModelStore modelStore, BasicSectionGeometryData geometryData) {
         super(pipeline.properties, modelStore, geometryData);
         this.pipeline = pipeline;
+        var level = Minecraft.getInstance().level;
+        this.fluidDatumY = level == null ? -1.0e9f : level.getSeaLevel() - (7.0f / 64.0f);
         //The pipeline can be used to transform the renderer in abstract ways
 
         String vertex = ShaderLoader.parse("voxy:lod/gl46/quads3.vert");
@@ -152,7 +156,7 @@ public class MDICSectionRenderer extends AbstractSectionRenderer<MDICViewport, B
     private void uploadUniformBuffer(MDICViewport viewport) {
         long ptr = UploadStream.INSTANCE.upload(this.uniform, 0, 1024);
         
-        var mat = new Matrix4f(viewport.MVP);
+        var mat = this.uniformMatrix.set(viewport.MVP);
         mat.translate(-viewport.innerTranslation.x, -viewport.innerTranslation.y, -viewport.innerTranslation.z);
         mat.getToAddress(ptr); ptr += 4*4*4;
 
@@ -164,15 +168,7 @@ public class MDICSectionRenderer extends AbstractSectionRenderer<MDICViewport, B
         }
         MemoryUtil.memPutInt(ptr, viewport.frameId&0x7fffffff); ptr += 4;
         viewport.innerTranslation.getToAddress(ptr); ptr += 4*3;
-
-        //Sea surface height for the fluid surface snap in quad_util.glsl. getSeaLevel() is the first
-        //air block above the fluid column and the baked fluid top face sits 7/64 below the block top.
-        float seaSurface = -1.0e9f;
-        var level = net.minecraft.client.Minecraft.getInstance().level;
-        if (level != null) {
-            seaSurface = level.getSeaLevel() - 1 + (1.0f - 7.0f/64.0f);
-        }
-        MemoryUtil.memPutFloat(ptr, seaSurface); ptr += 4;
+        MemoryUtil.memPutFloat(ptr, this.fluidDatumY); ptr += 4;
 
         UploadStream.INSTANCE.commit();
     }

@@ -1,5 +1,7 @@
 package me.cortex.voxy.client.core.model;
 
+import me.cortex.voxy.client.config.VoxyConfig;
+import me.cortex.voxy.commonImpl.compat.DomumOrnamentumCompat;
 import it.unimi.dsi.fastutil.ints.IntOpenHashSet;
 import it.unimi.dsi.fastutil.objects.Object2IntMap;
 import it.unimi.dsi.fastutil.objects.Object2IntOpenHashMap;
@@ -135,7 +137,7 @@ public class ModelFactory {
     public ModelFactory(Mapper mapper, ModelStore storage) {
         this.mapper = mapper;
         this.storage = storage;
-        this.bakery2 = new SoftwareModelTextureBakery();
+        this.bakery2 = new SoftwareModelTextureBakery(mapper);
         this.bakery2.setupTexture();
 
         this.metadataCache = new long[1<<16];
@@ -177,7 +179,7 @@ public class ModelFactory {
 
         //Before we enqueue the baking of this blockstate, we must check if it has a fluid state associated with it
         // if it does, we must ensure that it is (effectivly) baked BEFORE we bake this blockstate
-        boolean isFluid = blockState.getBlock() instanceof LiquidBlock;
+        boolean isFluid = isFluidBlockState(blockState);
         if ((!isFluid) && (!blockState.getFluidState().isEmpty())) {
             //Insert into the fluid LUT
             var fluidState = blockState.getFluidState().createLegacyBlock();
@@ -225,7 +227,7 @@ public class ModelFactory {
         if (bake == null) return false;
         ColourDepthTextureData[] textureData = new ColourDepthTextureData[6];
 
-        int flags = this.bakery2.renderToOutput(bake.state, this.bakeScratchBuffer);
+        int flags = this.bakery2.renderToOutput(bake.blockId, bake.state, this.bakeScratchBuffer);
 
 
         {//Create texture data
@@ -254,24 +256,17 @@ public class ModelFactory {
 
         boolean hasDarkenedTextures = (flags&2)!=0;
         boolean isShaded = (flags&1)!=0;
-        RenderType layer = null;
-        if (layer==null && (flags&4)!=0) {
-            //Blocks with a translucent render type (water, ice, stained glass) stay translucent even when
-            //the baked texture is fully opaque - the transparency comes from the render layer, not texture alpha.
+        RenderType layer;
+        if ((flags & 4) != 0) {
             layer = RenderType.translucent();
-        }
-        if (layer==null && (flags&8)!=0) {
+        } else if ((flags & 8) != 0) {
             layer = RenderType.cutout();
-        }
-        if (bake.state.is(BlockTags.LEAVES)) {
+        } else {
             layer = RenderType.solid();
         }
-        if (layer == null) {
-            layer = RenderType.solid();
-        }
-
-
-        var bakeResult = this.processTextureBakeResult(bake.blockId, bake.state, textureData, isShaded, hasDarkenedTextures, layer, (flags&16)!=0);
+        boolean centeredGroundCross = (flags & SoftwareModelTextureBakery.FLAG_CENTERED_GROUND_CROSS) != 0;
+        var bakeResult = this.processTextureBakeResult(
+                bake.blockId, bake.state, textureData, isShaded, hasDarkenedTextures, layer, centeredGroundCross);
         if (bakeResult!=null) {
             this.uploadResults.add(bakeResult);
         }
@@ -302,9 +297,10 @@ public class ModelFactory {
         return (this.blockStatesInFlight.size()!=0)||(!this.bakeQueue.isEmpty())||!this.biomeQueue.isEmpty();
     }
 
-    public void processUploads() {
+    public void processUploads(long totalBudgetNanos) {
         var upload = this.uploadResults.poll();
         if (upload==null) return;
+        long deadline = System.nanoTime() + Math.max(0L, totalBudgetNanos);
 
         glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
         glPixelStorei(GL_UNPACK_SKIP_PIXELS, 0);
@@ -314,7 +310,8 @@ public class ModelFactory {
             upload.upload(this.storage);
             upload.free();
             upload = this.uploadResults.poll();
-        } while (upload != null);
+        } while (upload != null && System.nanoTime() < deadline);
+        if (upload != null) this.uploadResults.addFirst(upload);
         UploadStream.INSTANCE.commit();
     }
 
@@ -383,7 +380,10 @@ public class ModelFactory {
 
         //TODO: add thing for `blockState.hasEmissiveLighting()` and `blockState.getLuminance()`
 
-        boolean isFluid = blockState.getBlock() instanceof LiquidBlock;
+        boolean isFluid = isFluidBlockState(blockState);
+        boolean balancedLeaf = isLeafBlockState(blockState)
+                && VoxyConfig.CONFIG.getLeafLodMode() == VoxyConfig.LeafLodMode.BALANCED;
+
         int modelId = -1;
 
 
@@ -401,16 +401,17 @@ public class ModelFactory {
             }
         }
 
-        var colourProvider = getColourProvider(blockState.getBlock());
+        BlockState colourState = DomumOrnamentumCompat.getColourState(this.mapper, blockId, blockState);
+        var colourProvider = colourState == null ? null : getColourProvider(colourState);
 
         boolean isBiomeColourDependent = false;
         if (colourProvider != null) {
-            isBiomeColourDependent = isBiomeDependentColour(colourProvider, blockState);
+            isBiomeColourDependent = isBiomeDependentColour(colourProvider, colourState);
         }
 
         ModelEntry entry;
         {//Deduplicate same entries
-            entry = new ModelEntry(textureData, clientFluidStateId, isBiomeColourDependent||colourProvider==null?-1:captureColourConstant(colourProvider, blockState, DEFAULT_BIOME)|0xFF000000);
+            entry = new ModelEntry(textureData, clientFluidStateId, isBiomeColourDependent||colourProvider==null?-1:captureColourConstant(colourProvider, colourState, DEFAULT_BIOME)|0xFF000000);
             int possibleDuplicate = this.modelTexture2id.getInt(entry);
             if (possibleDuplicate != -1) {//Duplicate found
                 this.idMappings[blockId] = possibleDuplicate;
@@ -511,6 +512,9 @@ public class ModelFactory {
             if (LOGGED_SELF_CULL_PROBE_FAILURE.add(blockState.getBlock())) {
                 Logger.error("skipRendering probe threw for " + blockState + ", assuming no self culling", e);
             }
+        }
+        if (balancedLeaf) {
+            cullsSame = true;
         }
 
 
@@ -636,7 +640,8 @@ public class ModelFactory {
 
         //TODO: THIS
         modelFlags |= isShaded?8:0;//model has AO and shade
-        modelFlags |= isFluid?16:0;//Is a fluid, used by the sea-level surface snap in quad_util.glsl
+        modelFlags |= isFluid?16:0;//Allows coarse LOD fluid tops to use the dimension fluid datum
+        modelFlags |= balancedLeaf ? 32 : 0;
 
         //modelFlags |= blockRenderLayer == RenderLayer.getSolid()?0:1;// should discard alpha
         MemoryUtil.memPutInt(uploadPtr, modelFlags); uploadPtr += 4;
@@ -651,12 +656,12 @@ public class ModelFactory {
             //Populate the list of biomes for the model state
             int biomeIndex = this.modelsRequiringBiomeColours.size() * this.biomes.size();
             MemoryUtil.memPutInt(uploadPtr, biomeIndex);
-            this.modelsRequiringBiomeColours.add(new Pair<>(modelId, blockState));
+            this.modelsRequiringBiomeColours.add(new Pair<>(modelId, colourState));
             if (!this.biomes.isEmpty()) {
                 uploadResult.biomeUploadIndex = biomeIndex;
                 long clrUploadPtr = (uploadResult.biomeUpload = new MemoryBuffer(4L * this.biomes.size())).address;
                 for (var biome : this.biomes) {
-                    MemoryUtil.memPutInt(clrUploadPtr, captureColourConstant(colourProvider, blockState, biome) | 0xFF000000); clrUploadPtr += 4;
+                    MemoryUtil.memPutInt(clrUploadPtr, captureColourConstant(colourProvider, colourState, biome) | 0xFF000000); clrUploadPtr += 4;
                 }
             }
         }
@@ -696,7 +701,7 @@ public class ModelFactory {
     }
 
     private static int getBlockLightEmission(BlockState state) {
-        boolean isEmissive = state.emissiveRendering(new BlockGetter() {
+        BlockGetter blockGetter = new BlockGetter() {
             @Override
             public @Nullable BlockEntity getBlockEntity(BlockPos pos) {
                 return null;
@@ -721,11 +726,12 @@ public class ModelFactory {
             public int getMinBuildHeight() {
                 return 0;
             }
-        }, BlockPos.ZERO);
+        };
+        boolean isEmissive = state.emissiveRendering(blockGetter, BlockPos.ZERO);
         if (isEmissive) {
             return 15;//full bright
         }
-        return Math.clamp(state.getLightEmission(),0,15);
+        return Math.clamp(state.getLightEmission(blockGetter, BlockPos.ZERO),0,15);
     }
 
     private static final class BiomeUploadResult implements ResultUploader {
@@ -786,7 +792,7 @@ public class ModelFactory {
         int i = 0;
         long modelUpPtr = result.modelBiomeIndexPairs.address;
         for (var entry : this.modelsRequiringBiomeColours) {
-            var colourProvider = getColourProvider(entry.right().getBlock());
+            var colourProvider = getColourProvider(entry.right());
             if (colourProvider == null) {
                 throw new IllegalStateException();
             }
@@ -805,10 +811,14 @@ public class ModelFactory {
         return result;
     }
 
-    private static BlockColor getColourProvider(Block block) {
+    private static BlockColor getColourProvider(BlockState blockState) {
+        if (isLumiseneFluidBlockState(blockState)) {
+            return null;
+        }
+        Block block = blockState.getBlock();
         BlockState defaultState = block.defaultBlockState();
         var blockColors = Minecraft.getInstance().getBlockColors();
-        if (block instanceof LiquidBlock) {
+        if (isFluidBlockState(blockState) || isFluidBlockState(defaultState)) {
             return (state, world, pos, tintIndex) -> blockColors.getColor(state, world, pos, tintIndex);
         }
         int color;
@@ -821,6 +831,28 @@ public class ModelFactory {
             return (state, world, pos, tintIndex) -> blockColors.getColor(state, world, pos, tintIndex);
         }
         return null;
+    }
+
+    public static boolean isLeafBlockState(BlockState state) {
+        return state.is(BlockTags.LEAVES) || state.getBlock() instanceof LeavesBlock;
+    }
+
+    public static boolean isFluidBlockState(BlockState state) {
+        if (state.getBlock() instanceof LiquidBlock) {
+            return true;
+        }
+
+        FluidState fluidState = state.getFluidState();
+        return !fluidState.isEmpty() && fluidState.createLegacyBlock().getBlock() == state.getBlock();
+    }
+
+    public static boolean isLumiseneFluidBlockState(BlockState state) {
+        FluidState fluidState = state.getFluidState();
+        if (fluidState.isEmpty()) {
+            return false;
+        }
+        var id = BuiltInRegistries.FLUID.getKey(fluidState.getType());
+        return id != null && id.getNamespace().equals("supplementaries") && id.getPath().equals("lumisene");
     }
 
     //TODO: add a method to detect biome dependent colours (can do by detecting if getColor is ever called)

@@ -1,64 +1,52 @@
 package me.cortex.voxy.client.core.model.bakery;
 
-import com.mojang.blaze3d.platform.NativeImage;
+import me.cortex.voxy.client.config.VoxyConfig;
+
 import com.mojang.blaze3d.systems.RenderSystem;
 import com.mojang.blaze3d.vertex.PoseStack;
 import com.mojang.blaze3d.vertex.VertexConsumer;
-
 import me.cortex.voxy.client.core.model.ModelFactory;
 import me.cortex.voxy.common.util.UnsafeUtil;
+import me.cortex.voxy.common.world.other.Mapper;
+import me.cortex.voxy.commonImpl.compat.DomumOrnamentumCompat;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.renderer.ItemBlockRenderTypes;
 import net.minecraft.client.renderer.RenderType;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.resources.ResourceLocation;
-import net.minecraft.tags.BlockTags;
 import net.minecraft.world.level.BlockAndTintGetter;
 import net.minecraft.world.level.ColorResolver;
 import net.minecraft.world.level.LightLayer;
 import net.minecraft.world.level.block.Blocks;
-import net.minecraft.world.level.block.LeavesBlock;
-import net.minecraft.world.level.block.LiquidBlock;
 import net.minecraft.world.level.block.RenderShape;
 import net.minecraft.world.level.block.entity.BlockEntity;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.levelgen.SingleThreadedRandomSource;
 import net.minecraft.world.level.lighting.LevelLightEngine;
 import net.minecraft.world.level.material.FluidState;
+import net.neoforged.neoforge.client.model.data.ModelData;
 import org.jetbrains.annotations.Nullable;
 import org.joml.Matrix4f;
 import org.joml.Quaternionf;
 import org.joml.Vector3f;
 import org.lwjgl.system.MemoryUtil;
 
-import java.io.IOException;
-import java.nio.file.Path;
-import java.util.ArrayList;
-import java.util.List;
 import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.atomic.AtomicInteger;
-import java.util.function.Function;
 
-import static org.lwjgl.opengl.ARBDirectStateAccess.glGetTextureImage;
 import static org.lwjgl.opengl.GL11.*;
 import static org.lwjgl.opengl.GL11C.GL_RGBA;
-import static org.lwjgl.opengl.GL12.GL_PACK_IMAGE_HEIGHT;
-import static org.lwjgl.opengl.GL15C.glBindBuffer;
-import static org.lwjgl.opengl.GL21.GL_PIXEL_PACK_BUFFER;
-import static org.lwjgl.opengl.GL30C.GL_FRAMEBUFFER;
-import static org.lwjgl.opengl.GL30C.glBindFramebuffer;
 
 public class SoftwareModelTextureBakery {
-    // Note: the first bit of metadata is if alpha discard is enabled
     private static final Matrix4f[] VIEWS = new Matrix4f[6];
 
     private final ReuseVertexConsumer opaqueVC = new ReuseVertexConsumer();
-    private final ReuseVertexConsumer translucentVC = new ReuseVertexConsumer(1/* has discard */);
-    private final SoftwareRasterizer rasterizer = new SoftwareRasterizer();
+    private final ReuseVertexConsumer translucentVC = new ReuseVertexConsumer(1);
+    private final SoftwareRasterizer rasterizer = new SoftwareRasterizer(ModelFactory.MODEL_TEXTURE_SIZE);
+    private final Mapper mapper;
 
-
-    public SoftwareModelTextureBakery() {
+    public SoftwareModelTextureBakery(Mapper mapper) {
+        this.mapper = mapper;
     }
 
     public void setupTexture() {
@@ -95,12 +83,9 @@ public class SoftwareModelTextureBakery {
         this.rasterizer.setSamplerTexture(pixels, width, height);
     }
 
+    public static final int FLAG_CENTERED_GROUND_CROSS = 1 << 4;
 
-    //Returns whether the model is a centred ground cross (two diagonal cards - flowers, saplings,
-    //tall grass): the probe rides the quad lists the bake already walks, so it costs no extra model
-    //lookups. Axis-aligned cards (crops, wall vines), horizontal cards (lily pads) and models with
-    //any direction-culled quads are rejected.
-    private boolean bakeBlockModel(BlockState state, RenderType layer) {
+    private boolean bakeBlockModel(int blockId, BlockState state, RenderType layer, boolean forceSolidLeaves) {
         if (state.getRenderShape() != RenderShape.MODEL) {
             //Vanilla only draws the json model for MODEL-shaped states. ENTITYBLOCK_ANIMATED blocks
             //(Create cogwheels and friends) still carry a full json the game never renders - baking it
@@ -108,26 +93,32 @@ public class SoftwareModelTextureBakery {
             //distant look is owned by the kinetic snapshots, which capture the real rendered parts.
             return false;
         }
+
+        var plan = DomumOrnamentumCompat.getBakePlan(this.mapper, blockId);
+        BlockState modelState = plan.modelState() == null ? state : plan.modelState();
+        ModelData modelData = plan.modelData();
         var model = Minecraft.getInstance()
                 .getModelManager()
                 .getBlockModelShaper()
-                .getBlockModel(state);
+                .getBlockModel(modelState);
+
+        int forcedTint = plan.forceTint() ? plan.fallbackTintAbgr() : -1;
+        this.opaqueVC.setFallbackTintColour(plan.fallbackTintAbgr()).setForcedTintColour(forcedTint);
+        this.translucentVC.setFallbackTintColour(plan.fallbackTintAbgr()).setForcedTintColour(forcedTint);
 
         boolean crossCandidate = true;
         int diagonalFamilies = 0;
-        int unculledQuadCount = 0;
+        int unculledQuads = 0;
 
         for (Direction direction : new Direction[] { Direction.DOWN, Direction.UP, Direction.NORTH, Direction.SOUTH,
                 Direction.WEST, Direction.EAST, null }) {
-            //Chunk-semantics query (render type passed): NeoForge models can answer differently per
-            //render type - Create's kinetic blocks return their full json to type-less queries (the
-            //BER's spin model) but NOTHING to the chunk layers, which is why they don't double-render
-            //up close. Baking type-less pulled that json in and boxed cogwheels at LOD range.
-            var quads = model.getQuads(state, direction, new SingleThreadedRandomSource(42L),
-                    net.neoforged.neoforge.client.model.data.ModelData.EMPTY, layer);
+            var random = new SingleThreadedRandomSource(42L);
+            var quads = model.getQuads(modelState, direction, random, modelData, layer);
+
             if (direction != null && !quads.isEmpty()) {
                 crossCandidate = false;
             }
+
             for (var quad : quads) {
                 if (direction == null && crossCandidate) {
                     int family = classifyGroundCrossQuad(quad.getVertices());
@@ -135,23 +126,23 @@ public class SoftwareModelTextureBakery {
                         crossCandidate = false;
                     } else {
                         diagonalFamilies |= family;
-                        unculledQuadCount++;
+                        unculledQuads++;
                     }
                 }
+
                 (layer == RenderType.translucent() ? this.translucentVC : this.opaqueVC)
-                        .quad(quad, state.is(BlockTags.LEAVES), layer);
+                        .quad(quad, forceSolidLeaves, layer, modelState);
             }
         }
-        //Both diagonal families must be present: a single slanted card is decoration, not a plant
-        return crossCandidate && unculledQuadCount >= 2 && diagonalFamilies == 0b11;
+
+        return crossCandidate && unculledQuads >= 2 && diagonalFamilies == 0b11;
     }
 
-    //Bit 0/1 for the two diagonal plane families, or zero when the quad is not a centred vertical
-    //diagonal card; opposite winding lands in the same family.
     private static int classifyGroundCrossQuad(int[] vertices) {
         if (vertices.length < 16 || (vertices.length & 3) != 0) {
             return 0;
         }
+
         int stride = vertices.length / 4;
         float x0 = Float.intBitsToFloat(vertices[0]);
         float y0 = Float.intBitsToFloat(vertices[1]);
@@ -210,13 +201,13 @@ public class SoftwareModelTextureBakery {
             public int getBrightness(LightLayer type, BlockPos pos) {
                 return 0;
             }
+
             @Override
             public int getBlockTint(BlockPos pos, ColorResolver colorResolver) {
-                //This is such a stupid and bad hack, we can inject tinting state here since this is called
-                // before the quad is added
-                //TODO: need to make a quad once tinting thing
-                translucentVC.setDefaultMeta(translucentVC.getDefaultMeta()|4);//Tinting
-                opaqueVC.setDefaultMeta(opaqueVC.getDefaultMeta()|4);//Tinting
+                translucentVC.setDefaultMeta(translucentVC.getDefaultMeta() | 4);
+                opaqueVC.setDefaultMeta(opaqueVC.getDefaultMeta() | 4);
+                translucentVC.setVertexAlphaOnly(true);
+                opaqueVC.setVertexAlphaOnly(true);
                 return -1;
             }
 
@@ -232,15 +223,6 @@ public class SoftwareModelTextureBakery {
                     return Blocks.AIR.defaultBlockState();
                 }
 
-                //Fixme:
-                // This makes it so that the top face of water is always air, if this is commented out
-                //  the up block will be a liquid state which makes the sides full
-                // if this is uncommented, that issue is fixed but e.g. stacking water layers ontop of eachother
-                //  doesnt fill the side of the block
-
-                //if (pos.getY() == 1) {
-                //    return Blocks.AIR.getDefaultState();
-                //}
                 return state;
             }
 
@@ -265,28 +247,48 @@ public class SoftwareModelTextureBakery {
 
             @Override
             public float getShade(Direction direction, boolean bl) {
-                return 0;
+                return getVanillaLikeFluidShade(direction);
             }
-        
         };
-        
-        VertexConsumer vc = this.opaqueVC;;
 
-        if (layer == RenderType.translucent()) vc = this.translucentVC;
+        VertexConsumer vc = layer == RenderType.translucent() ? this.translucentVC : this.opaqueVC;
         if (layer == RenderType.cutout()) {
-            this.opaqueVC.setDefaultMeta(this.opaqueVC.getDefaultMeta()|1);//set discard
+            this.opaqueVC.setDefaultMeta(this.opaqueVC.getDefaultMeta() | 1);
         } else {
-            this.opaqueVC.setDefaultMeta(this.opaqueVC.getDefaultMeta()&~1);//remove discard
+            this.opaqueVC.setDefaultMeta(this.opaqueVC.getDefaultMeta() & ~1);
         }
-        Minecraft.getInstance().getBlockRenderer().renderLiquid(BlockPos.ZERO, getter, vc, state, state.getFluidState());
-        this.translucentVC.setDefaultMeta(0);//Reset default meta
-        this.opaqueVC.setDefaultMeta(0);//Reset default meta
+        try {
+            Minecraft.getInstance().getBlockRenderer().renderLiquid(BlockPos.ZERO, getter, vc, state, state.getFluidState());
+        } finally {
+            this.opaqueVC.setVertexAlphaOnly(false);
+            this.translucentVC.setVertexAlphaOnly(false);
+            this.translucentVC.setDefaultMeta(0);
+            this.opaqueVC.setDefaultMeta(0);
+        }
+    }
+
+    private static float getVanillaLikeFluidShade(Direction direction) {
+        if (direction == null) {
+            return 1.0f;
+        }
+        return switch (direction) {
+            case DOWN -> 0.5f;
+            case UP -> 1.0f;
+            case NORTH, SOUTH -> 0.8f;
+            case WEST, EAST -> 0.6f;
+        };
     }
 
     private static boolean shouldReturnAirForFluid(BlockPos pos, int face) {
         var fv = Direction.from3DDataValue(face).getNormal();
         int dot = fv.getX() * pos.getX() + fv.getY() * pos.getY() + fv.getZ() * pos.getZ();
         return dot >= 1;
+    }
+
+    private static boolean isHorizontalFluidSideFace(int face) {
+        Direction direction = Direction.from3DDataValue(face);
+        return direction == Direction.NORTH || direction == Direction.SOUTH
+                || direction == Direction.WEST || direction == Direction.EAST;
     }
 
     public void free() {
@@ -296,51 +298,37 @@ public class SoftwareModelTextureBakery {
 
     private static final long SINGLE_FACE_OUTPUT_SIZE = (ModelFactory.MODEL_TEXTURE_SIZE
             * ModelFactory.MODEL_TEXTURE_SIZE) * 8;
-    // The outputBuffer layout is different from the non software rasterized
-    // ModelTextureBakery
-    // in this version the values are simply appended
-    // (0,0),(1,0),(2,0),(0,1),(1,1),(2,1)
+    // Faces are appended in direction order: down, up, north, south, west, east.
 
-    public int renderToOutput(BlockState state, long outputBuffer) {
+    public int renderToOutput(int blockId, BlockState state, long outputBuffer) {
         MemoryUtil.memSet(outputBuffer, 0, 16 * 16 * 8 * 6);
 
-        boolean isBlock = true;
-        if (state.getBlock() instanceof LiquidBlock) {
-            isBlock = false;
-        }
+        boolean isBlock = !ModelFactory.isFluidBlockState(state);
 
-        RenderType blockRenderLayer = null;
-        if (state.getBlock() instanceof LiquidBlock) {
+        RenderType blockRenderLayer;
+        boolean forceSolidLeaves = false;
+        if (!isBlock) {
             blockRenderLayer = ItemBlockRenderTypes.getRenderLayer(state.getFluidState());
+        } else if (ModelFactory.isLeafBlockState(state)) {
+            var leafMode = VoxyConfig.CONFIG.getLeafLodMode();
+            forceSolidLeaves = leafMode == VoxyConfig.LeafLodMode.FAST;
+            blockRenderLayer = forceSolidLeaves ? RenderType.solid() : RenderType.cutout();
         } else {
-            if (state.getBlock() instanceof LeavesBlock) {
-                blockRenderLayer = RenderType.solid();
-            } else {
-                blockRenderLayer = ItemBlockRenderTypes.getChunkRenderType(state);
-            }
-        }
-
-        // TODO: support block model entities
-        // BakedBlockEntityModel bbem = null;
-        if (state.hasBlockEntity()) {
-            // bbem = BakedBlockEntityModel.bake(state);
+            blockRenderLayer = ItemBlockRenderTypes.getChunkRenderType(state);
         }
 
         boolean isAnyShaded = false;
-        boolean isAnyDarkend = false;
         boolean anyTranslucent = false;
         boolean anyDiscard = false;
-        boolean crossPlant = false;
+        boolean centeredGroundCross = false;
         if (isBlock) {
             this.opaqueVC.reset();
             this.translucentVC.reset();
-            crossPlant = this.bakeBlockModel(state, blockRenderLayer);
+            centeredGroundCross = this.bakeBlockModel(blockId, state, blockRenderLayer, forceSolidLeaves);
             isAnyShaded |= this.opaqueVC.anyShaded | this.translucentVC.anyShaded;
-            isAnyDarkend |= this.opaqueVC.anyDarkendTex | this.translucentVC.anyDarkendTex;
             anyTranslucent |= !this.translucentVC.isEmpty();
             anyDiscard |= this.opaqueVC.anyDiscard;
-            if (!(this.opaqueVC.isEmpty() && this.translucentVC.isEmpty())) {// only render if there... is shit to
-                                                                             // render
+            if (!(this.opaqueVC.isEmpty() && this.translucentVC.isEmpty())) {
                 for (int i = 0; i < VIEWS.length; i++) {
                     this.rasterizer.setFaceCull(i == 1 || i == 2 || i == 4);
                     this.rasterizer.clear();
@@ -352,46 +340,50 @@ public class SoftwareModelTextureBakery {
                             outputBuffer + (SINGLE_FACE_OUTPUT_SIZE * i));
                 }
             }
-        } else {// Is fluid, slow path :(
-
-            if (!(state.getBlock() instanceof LiquidBlock))
+        } else {
+            if (!ModelFactory.isFluidBlockState(state)) {
                 throw new IllegalStateException();
+            }
             for (int i = 0; i < VIEWS.length; i++) {
+                // Supplement's Lumisene Fluids use surface-only LOD geometry.
+                if (ModelFactory.isLumiseneFluidBlockState(state) && isHorizontalFluidSideFace(i)) {
+                    continue;
+                }
+
                 this.opaqueVC.reset();
                 this.translucentVC.reset();
                 this.bakeFluidState(state, i, blockRenderLayer);
-                if (this.opaqueVC.isEmpty() && this.translucentVC.isEmpty())
+                if (this.opaqueVC.isEmpty() && this.translucentVC.isEmpty()) {
                     continue;
+                }
                 isAnyShaded |= this.opaqueVC.anyShaded | this.translucentVC.anyShaded;
-                isAnyDarkend |= this.opaqueVC.anyDarkendTex | this.translucentVC.anyDarkendTex;
                 anyTranslucent |= !this.translucentVC.isEmpty();
                 anyDiscard |= this.opaqueVC.anyDiscard;
 
                 this.rasterizer.setFaceCull(i == 1 || i == 2 || i == 4);
 
-                // The projection matrix
                 this.rasterizer.clear();
                 this.rasterizer.setBlending(false);
                 this.rasterizer.raster(VIEWS[i], this.opaqueVC);
-                this.rasterizer.setBlending(true);
+                // Preserve straight alpha when opposite-winding fluid quads overlap.
+                this.rasterizer.setBlending(true, true);
                 this.rasterizer.raster(VIEWS[i], this.translucentVC);
                 UnsafeUtil.memcpy(this.rasterizer.getRawFramebuffer(), outputBuffer + (SINGLE_FACE_OUTPUT_SIZE * i));
             }
         }
 
-        return (isAnyShaded ? 1 : 0) | (isAnyDarkend ? 2 : 0) | (anyTranslucent ? 4 : 0) | (anyDiscard ? 8 : 0) | (crossPlant ? 16 : 0);
+        return (isAnyShaded ? 1 : 0) | (anyTranslucent ? 4 : 0) | (anyDiscard ? 8 : 0) | (centeredGroundCross ? FLAG_CENTERED_GROUND_CROSS : 0);
     }
 
     static {
-        // the face/direction is the face (e.g. down is the down face)
-        addView(0, -90, 0, 0, 0);// Direction.DOWN
-        addView(1, 90, 0, 0, 0b100);// Direction.UP
+        addView(0, -90, 0, 0, 0);
+        addView(1, 90, 0, 0, 0b100);
 
-        addView(2, 0, 180, 0, 0b001);// Direction.NORTH
-        addView(3, 0, 0, 0, 0);// Direction.SOUTH
+        addView(2, 0, 180, 0, 0b001);
+        addView(3, 0, 0, 0, 0);
 
-        addView(4, 0, 90, 270, 0b100);// Direction.WEST
-        addView(5, 0, 270, 270, 0);// Direction.EAST
+        addView(4, 0, 90, 270, 0b100);
+        addView(5, 0, 270, 270, 0);
     }
 
     private static void addView(int i, float pitch, float yaw, float rotation, int flip) {

@@ -7,6 +7,7 @@ import me.cortex.voxy.client.core.SSAO;
 import me.cortex.voxy.client.core.util.IrisUtil;
 import me.cortex.voxy.common.util.cpu.CpuLayout;
 import me.cortex.voxy.commonImpl.VoxyCommon;
+import me.cortex.voxy.compat.far.FarEntityClient;
 import net.caffeinemc.mods.sodium.api.config.ConfigEntryPoint;
 import net.caffeinemc.mods.sodium.api.config.ConfigEntryPointForge;
 import net.caffeinemc.mods.sodium.api.config.ConfigState;
@@ -26,7 +27,7 @@ public class VoxyConfigMenu implements ConfigEntryPoint {
 
         var CFG = VoxyConfig.CONFIG;
 
-        var cc = B.registerModOptions("voxy", "Voxy", VoxyCommon.MOD_VERSION)
+        var cc = B.registerModOptions("voxy", "neo-voxy", VoxyCommon.MOD_VERSION)
                 .setIcon(ResourceLocation.parse("voxy:icon.png"));
 
         final var RENDER_RELOAD = OptionFlag.REQUIRES_RENDERER_RELOAD.getId().toString();
@@ -37,7 +38,15 @@ public class VoxyConfigMenu implements ConfigEntryPoint {
                         if (instance != null) {
                             instance.updateDedicatedThreads();
                         }
-                    }, "voxy:enabled").register("voxy:iris_reload", ()->IrisUtil.reload());
+                    }, "voxy:enabled")
+                            .register("voxy:iris_reload", IrisUtil::reload)
+                            .register("voxy:refresh_far_entities", FarEntityClient::sendHello)
+                            .register("voxy:refresh_chunk_request", ()->{
+                                var minecraft = Minecraft.getInstance();
+                                if (minecraft.getConnection() != null) {
+                                    minecraft.options.broadcastOptions();
+                                }
+                            });
                 },
                 new Page(Component.translatable("voxy.config.general"),
                         new Group(
@@ -123,48 +132,62 @@ public class VoxyConfigMenu implements ConfigEntryPoint {
                                                 }
                                             }
                                         }, "voxy:rendering", RENDER_RELOAD)
+                                        .setImpact(OptionImpact.MEDIUM),
+                                new IntOption(
+                                        "voxy:render_pressure",
+                                        Component.translatable("voxy.config.general.renderPressure"),
+                                        ()->CFG.getRenderPressureLevel(), v->CFG.renderPressure=v,
+                                        new Range(0, 4, 1))
+                                        .setFormatter(v->Component.translatable("voxy.config.general.renderPressure." + v))
+                                        .setImpact(OptionImpact.HIGH),
+                                new EnumOption<>(
+                                        "voxy:leaf_lod_mode",
+                                        VoxyConfig.LeafLodMode.class,
+                                        Component.translatable("voxy.config.general.leafLodMode"),
+                                        CFG::getLeafLodMode,
+                                        CFG::setLeafLodMode)
+                                        .setNameProvider(mode -> Component.translatable(
+                                                "voxy.config.general.leafLodMode." + mode.name().toLowerCase(java.util.Locale.ROOT)))
+                                        .setPostChangeFlags(RENDER_RELOAD)
                                         .setImpact(OptionImpact.MEDIUM)
                         ), new Group(
                                 new BoolOption(
-                                    "voxy:eviromental_fog",
+                                    "voxy:environmental_fog",
                                     Component.translatable("voxy.config.general.environmental_fog"),
                                     () -> CFG.useEnvironmentalFog,
-                                    v -> { CFG.useEnvironmentalFog = v; })
-                                        .setPostChangeFlags(RENDER_RELOAD),
+                                    v -> CFG.useEnvironmentalFog = v),
                                 new EnumOption<>("voxy:ssao_mode",
                                         SSAO.SSAOMode.class,
                                         Component.translatable("voxy.config.general.ssao_mode"),
                                         ()->CFG.getSSAOMode(), v->CFG.setSSAOMode(v))
-                                        .setImpact(OptionImpact.MEDIUM)//TODO make it on igpus this is high
+                                        .setImpact(OptionImpact.MEDIUM)
                                         .setPostChangeFlags(RENDER_RELOAD)
-                        ), new Group(
+                        )
+                        .setEnablerInherit(s->!IrisUtil.irisShaderPackEnabled(), ConfigState.UPDATE_ON_REBUILD), new Group(
                                 new BoolOption(
                                         "voxy:adapt_cloud_distance",
                                         Component.translatable("voxy.config.general.adaptCloudDistance"),
-                                        ()->CFG.adaptCloudDistance, v->CFG.adaptCloudDistance=v)
-                                        .setPostChangeFlags(RENDER_RELOAD),
+                                        ()->CFG.adaptCloudDistance, v->CFG.adaptCloudDistance=v),
                                 new IntOption(
                                         "voxy:cloud_distance",
                                         Component.translatable("voxy.config.general.cloudDistance"),
                                         ()->CFG.cloudDistance, v->CFG.cloudDistance=v,
-                                        new Range(0, 1024, 1))
+                                        new Range(0, VoxyConfig.MAX_CLOUD_DISTANCE, 1))
                                         .setImpact(OptionImpact.LOW)
-                                        .setPostChangeFlags(RENDER_RELOAD)
-                        ), new Group(
+                        )
+                        .setEnablerInherit(s->!IrisUtil.irisShaderPackEnabled(), ConfigState.UPDATE_ON_REBUILD), new Group(
                                 new IntOption(
                                         "voxy:fog_intensity",
                                         Component.translatable("voxy.config.general.fogIntensity"),
                                         ()->Math.round(CFG.fogIntensity * 100), v->CFG.fogIntensity=v / 100.0f,
                                         new Range(0, 100, 1))
-                                        .setImpact(OptionImpact.LOW)
-                                        .setPostChangeFlags(RENDER_RELOAD),
+                                        .setImpact(OptionImpact.LOW),
                                 new IntOption(
                                         "voxy:fog_density",
                                         Component.translatable("voxy.config.general.fogDensity"),
                                         ()->Math.round(CFG.fogDensity * 100), v->CFG.fogDensity=v / 100.0f,
                                         new Range(0, 100, 1))
-                                        .setImpact(OptionImpact.LOW)
-                                        .setPostChangeFlags(RENDER_RELOAD),
+                                        .setImpact(OptionImpact.LOW),
                                 new IntOption(
                                         "voxy:sky_fog_distance",
                                         Component.translatable("voxy.config.general.skyFogDistance"),
@@ -180,7 +203,7 @@ public class VoxyConfigMenu implements ConfigEntryPoint {
                                         .setFormatter(v->Component.literal(v+"%"))
                                         .setImpact(OptionImpact.LOW)
                         )
-                        .setEnablerInherit(s->!IrisUtil.irisShadersEnabledInConfig(), ConfigState.UPDATE_ON_REBUILD)
+                        .setEnablerInherit(s->!IrisUtil.irisShaderPackEnabled(), ConfigState.UPDATE_ON_REBUILD)
                 ).setEnablerAND("voxy:enabled", "voxy:rendering"),
                 new Page(Component.translatable("voxy.config.compat"),
                         new Group(

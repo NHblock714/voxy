@@ -42,3 +42,11 @@ bool modelIsTranslucent(BlockModel model) {
 bool modelIsShaded(BlockModel model) {
     return ((model.flagsA)&8u) != 0;
 }
+
+bool modelUsesFluidDatum(BlockModel model) {
+    return ((model.flagsA)&16u) != 0;
+}
+
+bool modelUsesBalancedLeafCutout(BlockModel model) {
+    return ((model.flagsA)&32u) != 0;
+}
