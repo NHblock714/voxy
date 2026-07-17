@@ -223,6 +223,7 @@ public abstract class AbstractRenderPipeline extends TrackedObject {
     }
 
     private static final long SCRATCH = MemoryUtil.nmemAlloc(4*4*4);
+    private static final Matrix4f INVERSE_MVP = new Matrix4f();
     protected static void transformBlitDepth(FullscreenBlit blitShader, int srcDepthTex, int dstFB, Viewport<?> viewport, Matrix4f targetTransform) {
         // at this point the dst frame buffer doesn't have a stencil attachment so we don't need to keep the stencil test on for the blit
         // in the worst case the dstFB does have a stencil attachment causing this pass to become 'corrupted'
@@ -231,7 +232,7 @@ public abstract class AbstractRenderPipeline extends TrackedObject {
 
         blitShader.bind();
         glBindTextureUnit(0, srcDepthTex);
-        new Matrix4f(viewport.MVP).invert().getToAddress(SCRATCH);
+        viewport.MVP.invert(INVERSE_MVP).getToAddress(SCRATCH);
         nglUniformMatrix4fv(1, 1, false, SCRATCH);//inverse fromProjection
         targetTransform.getToAddress(SCRATCH);//new Matrix4f(tooProjection).mul(vp.modelView).get(data);
         nglUniformMatrix4fv(2, 1, false, SCRATCH);//tooProjection
@@ -322,8 +323,9 @@ public abstract class AbstractRenderPipeline extends TrackedObject {
         return null;
     }
 
-    //Null means no scaling factor
-    public float[] getRenderScalingFactor() {return null;}
+    public float[] getRenderScalingFactor() {
+        return null;
+    }
 
     //Depth texture LOD geometry renders into, for sable contraption depth-occlusion compositing.
     //Default none; only the Iris pipeline provides one.

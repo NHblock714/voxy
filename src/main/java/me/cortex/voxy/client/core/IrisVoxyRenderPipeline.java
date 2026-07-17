@@ -31,6 +31,7 @@ public class IrisVoxyRenderPipeline extends AbstractRenderPipeline {
     private final FullscreenBlit shaderDepthHackFixTransformBlit;
 
     private final GlBuffer shaderUniforms;
+    private final Matrix4f targetTransform = new Matrix4f();
 
     public IrisVoxyRenderPipeline(RenderProperties properties, IrisVoxyRenderPipelineData data, AsyncNodeManager nodeManager, NodeCleaner nodeCleaner, HierarchicalOcclusionTraverser traversal, BooleanSupplier frexSupplier) {
         super(properties, nodeManager, nodeCleaner, traversal, frexSupplier, data.shouldDeferTranslucency());
@@ -117,13 +118,6 @@ public class IrisVoxyRenderPipeline extends AbstractRenderPipeline {
         this.fb.resize(viewport.width, viewport.height);
         this.fbTranslucent.resize(viewport.width, viewport.height);
 
-        if (false) {//TODO: only do this if shader specifies
-            //Clear the colour component
-            glBindFramebuffer(GL_FRAMEBUFFER, this.fb.framebuffer.id);
-            glClearColor(0, 0, 0, 0);
-            glClear(GL_COLOR_BUFFER_BIT);
-        }
-
         if (!this.data.useViewportDims) {
             srcWidth = viewport.width;
             srcHeight = viewport.height;
@@ -155,36 +149,20 @@ public class IrisVoxyRenderPipeline extends AbstractRenderPipeline {
         glTextureBarrier();
 
         int msk = GL_DEPTH_BUFFER_BIT|GL_STENCIL_BUFFER_BIT;
-        if (true) {//TODO: make shader specified
-            if (false) {//TODO: only do this if shader specifies
-                glBindFramebuffer(GL_FRAMEBUFFER, this.fbTranslucent.framebuffer.id);
-                glClearColor(0, 0, 0, 0);
-                glClear(GL_COLOR_BUFFER_BIT);
-            }
-        } else {
-            msk |= GL_COLOR_BUFFER_BIT;
-        }
         glBlitNamedFramebuffer(this.fb.framebuffer.id, this.fbTranslucent.framebuffer.id, 0,0, viewport.width, viewport.height, 0,0, viewport.width, viewport.height, msk, GL_NEAREST);
     }
 
     @Override
     protected void finish(Viewport<?> viewport, int sourceFrameBuffer, int srcWidth, int srcHeight) {
-        boolean sizeMismatch = srcWidth != viewport.width || srcHeight != viewport.height;
-        //With useViewportDims the blit is valid under a size mismatch too (render-scaled packs) if the
-        //viewport is pinned around it; skipping it there left the LOD out of the vanilla depth buffer,
-        //so anything depth-tested against vanilla (Flywheel machine parts, ship kinetics) floated over
-        //the LOD.
-        if (this.data.renderToVanillaDepth && (this.data.useViewportDims || !sizeMismatch)) {
+        // Iris owns the source depth buffer unless the shader pack explicitly
+        // opts in to distant-horizon depth. Writing Voxy's opaque depth into it
+        // unconditionally makes several packs reject/overwrite the later LOD
+        // water composite.
+        if (this.data.renderToVanillaDepth && srcWidth == viewport.width  && srcHeight == viewport.height) {//We can only depthblit out if destination size is the same
             glColorMask(false, false, false, false);
-            if (sizeMismatch) {
-                org.lwjgl.opengl.GL11C.glViewport(0, 0, viewport.width, viewport.height);
-            }
             AbstractRenderPipeline.transformBlitDepth(this.depthBlit,
                     this.fbTranslucent.getDepthTex().id, sourceFrameBuffer,
-                    viewport, new Matrix4f(viewport.vanillaProjection).mul(viewport.modelView));
-            if (sizeMismatch) {
-                org.lwjgl.opengl.GL11C.glViewport(0, 0, srcWidth, srcHeight);
-            }
+                    viewport, this.targetTransform.set(viewport.vanillaProjection).mul(viewport.modelView));
             glColorMask(true, true, true, true);
         } else {
             // normally disabled by AbstractRenderPipeline but since we are skipping it we do it here
@@ -322,4 +300,5 @@ public class IrisVoxyRenderPipeline extends AbstractRenderPipeline {
     public float[] getRenderScalingFactor() {
         return this.data.resolutionScale;
     }
+
 }

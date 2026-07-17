@@ -290,35 +290,53 @@ public class RenderDataFactory {
         return neighborMsk;
     }
 
+    private void clearNeighborFaceSlice(int slice) {
+        Arrays.fill(this.neighboringFaces, slice * 32 * 32, (slice + 1) * 32 * 32, 0L);
+    }
+
     private void acquireNeighborData(WorldSection section, int msk) {
-        //TODO: fixme!!! its probably more efficent to just access the raw section array on demand instead of copying it
+        // Performance-first: do not synchronously load missing neighbor sections while building render meshes.
+        // If a neighbor is not already in the active cache, treat it as air for this build. This avoids storage/IO
+        // stalls during fast flight; when the neighbor is later loaded/updated, normal dirty events can rebuild meshes.
         if ((msk&1)!=0) {//-x
-            var sec = this.world.acquire(section.lvl, section.x - 1, section.y, section.z);
-            //Note this is not thread safe! (but eh, fk it)
-            var raw = sec._unsafeGetRawDataArray();
-            for (int i = 0; i < 32*32; i++) {
-                this.neighboringFaces[i] = raw[(i<<5)+31];//pull the +x faces from the section
+            var sec = this.world.acquireIfExists(section.lvl, section.x - 1, section.y, section.z);
+            if (sec == null) {
+                this.clearNeighborFaceSlice(0);
+            } else {
+                //Note this is not thread safe! (but eh, fk it)
+                var raw = sec._unsafeGetRawDataArray();
+                for (int i = 0; i < 32*32; i++) {
+                    this.neighboringFaces[i] = raw[(i<<5)+31];//pull the +x faces from the section
+                }
+                sec.release(WorldSection.RELEASE_HINT_POSSIBLE_REUSE);
             }
-            sec.release(WorldSection.RELEASE_HINT_POSSIBLE_REUSE);
         }
         if ((msk&2)!=0) {//+x
-            var sec = this.world.acquire(section.lvl, section.x + 1, section.y, section.z);
-            //Note this is not thread safe! (but eh, fk it)
-            var raw = sec._unsafeGetRawDataArray();
-            for (int i = 0; i < 32*32; i++) {
-                this.neighboringFaces[i+32*32] = raw[(i<<5)];//pull the -x faces from the section
+            var sec = this.world.acquireIfExists(section.lvl, section.x + 1, section.y, section.z);
+            if (sec == null) {
+                this.clearNeighborFaceSlice(1);
+            } else {
+                //Note this is not thread safe! (but eh, fk it)
+                var raw = sec._unsafeGetRawDataArray();
+                for (int i = 0; i < 32*32; i++) {
+                    this.neighboringFaces[i+32*32] = raw[(i<<5)];//pull the -x faces from the section
+                }
+                sec.release(WorldSection.RELEASE_HINT_POSSIBLE_REUSE);
             }
-            sec.release(WorldSection.RELEASE_HINT_POSSIBLE_REUSE);
         }
 
         if ((msk&4)!=0) {//-y
-            var sec = this.world.acquire(section.lvl, section.x, section.y - 1, section.z);
-            //Note this is not thread safe! (but eh, fk it)
-            var raw = sec._unsafeGetRawDataArray();
-            for (int i = 0; i < 32*32; i++) {
-                this.neighboringFaces[i+32*32*2] = raw[i|(0x1F<<10)];//pull the +y faces from the section
+            var sec = this.world.acquireIfExists(section.lvl, section.x, section.y - 1, section.z);
+            if (sec == null) {
+                this.clearNeighborFaceSlice(2);
+            } else {
+                //Note this is not thread safe! (but eh, fk it)
+                var raw = sec._unsafeGetRawDataArray();
+                for (int i = 0; i < 32*32; i++) {
+                    this.neighboringFaces[i+32*32*2] = raw[i|(0x1F<<10)];//pull the +y faces from the section
+                }
+                sec.release(WorldSection.RELEASE_HINT_POSSIBLE_REUSE);
             }
-            sec.release(WorldSection.RELEASE_HINT_POSSIBLE_REUSE);
         }
         if ((msk&8)!=0) {//+y
             var sec = this.world.acquireIfExists(section.lvl, section.x, section.y + 1, section.z);
@@ -341,22 +359,30 @@ public class RenderDataFactory {
         }
 
         if ((msk&16)!=0) {//-z
-            var sec = this.world.acquire(section.lvl, section.x, section.y, section.z - 1);
-            //Note this is not thread safe! (but eh, fk it)
-            var raw = sec._unsafeGetRawDataArray();
-            for (int i = 0; i < 32*32; i++) {
-                this.neighboringFaces[i+32*32*4] = raw[Integer.expand(i,0b11111_00000_11111)|(0x1F<<5)];//pull the +z faces from the section
+            var sec = this.world.acquireIfExists(section.lvl, section.x, section.y, section.z - 1);
+            if (sec == null) {
+                this.clearNeighborFaceSlice(4);
+            } else {
+                //Note this is not thread safe! (but eh, fk it)
+                var raw = sec._unsafeGetRawDataArray();
+                for (int i = 0; i < 32*32; i++) {
+                    this.neighboringFaces[i+32*32*4] = raw[Integer.expand(i,0b11111_00000_11111)|(0x1F<<5)];//pull the +z faces from the section
+                }
+                sec.release(WorldSection.RELEASE_HINT_POSSIBLE_REUSE);
             }
-            sec.release(WorldSection.RELEASE_HINT_POSSIBLE_REUSE);
         }
         if ((msk&32)!=0) {//+z
-            var sec = this.world.acquire(section.lvl, section.x, section.y, section.z + 1);
-            //Note this is not thread safe! (but eh, fk it)
-            var raw = sec._unsafeGetRawDataArray();
-            for (int i = 0; i < 32*32; i++) {
-                this.neighboringFaces[i+32*32*5] = raw[Integer.expand(i,0b11111_00000_11111)];//pull the -z faces from the section
+            var sec = this.world.acquireIfExists(section.lvl, section.x, section.y, section.z + 1);
+            if (sec == null) {
+                this.clearNeighborFaceSlice(5);
+            } else {
+                //Note this is not thread safe! (but eh, fk it)
+                var raw = sec._unsafeGetRawDataArray();
+                for (int i = 0; i < 32*32; i++) {
+                    this.neighboringFaces[i+32*32*5] = raw[Integer.expand(i,0b11111_00000_11111)];//pull the -z faces from the section
+                }
+                sec.release(WorldSection.RELEASE_HINT_POSSIBLE_REUSE);
             }
-            sec.release(WorldSection.RELEASE_HINT_POSSIBLE_REUSE);
         }
     }
 
@@ -1632,6 +1658,7 @@ public class RenderDataFactory {
         for (var mesher : this.xAxisMeshers) {
             mesher.finish();
         }
+
         if (CHECK_NEIGHBOR_FACE_OCCLUSION) {
             this.generateXNonOpaqueInnerGeometry();
             this.generateXNonOpaqueOuterGeometry();
@@ -1646,10 +1673,8 @@ public class RenderDataFactory {
     }
 
     private void generateFluidFaces() {
-        // All translucent fluid faces share the same geometry bucket, so submission
-        // order becomes the effective in-section sort order. Emit the lateral walls
-        // first and the Y surfaces last so the top water faces do not hide the outer
-        // walls behind them.
+        // The translucent bucket is order-sensitive. Submit side walls first and
+        // horizontal surfaces last so water tops do not hide shoreline geometry.
         this.blockMesher.axis = 1;
         this.generateYZFluidInnerGeometry(1);
         this.generateYZFluidOuterGeometry(1);
