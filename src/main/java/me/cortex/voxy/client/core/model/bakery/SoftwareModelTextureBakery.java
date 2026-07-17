@@ -113,10 +113,17 @@ public class SoftwareModelTextureBakery {
         int diagonalFamilies = 0;
         int unculledQuads = 0;
 
+        //Copycat wrapper models gate per-layer queries on the MATERIAL model's declared render type
+        //set, which for the copycat base skeleton does not contain the layer the block maps to - the
+        //null-layer query skips that gate entirely (same shape as the contraption mesh path, which
+        //renders every copycat correctly)
+        RenderType quadQueryLayer = me.cortex.voxy.commonImpl.compat.CreateCopycatCompat.isCopycatState(state)
+                ? null : layer;
+
         for (Direction direction : new Direction[] { Direction.DOWN, Direction.UP, Direction.NORTH, Direction.SOUTH,
                 Direction.WEST, Direction.EAST, null }) {
             var random = new SingleThreadedRandomSource(42L);
-            var quads = model.getQuads(modelState, direction, random, modelData, layer);
+            var quads = model.getQuads(modelState, direction, random, modelData, quadQueryLayer);
 
             if (direction != null && !quads.isEmpty()) {
                 crossCandidate = false;

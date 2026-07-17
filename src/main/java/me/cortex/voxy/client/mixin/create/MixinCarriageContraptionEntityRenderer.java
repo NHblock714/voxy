@@ -40,8 +40,8 @@ public class MixinCarriageContraptionEntityRenderer {
             return;
         }
         Vec3 cam = mc.gameRenderer.getMainCamera().getPosition();
-        double reach = mc.options.getEffectiveRenderDistance() * 16.0;
-        if (entity.position().distanceToSqr(cam) > reach * reach) {
+        //Same handover boundary as the distant train mesh - see TrainHandover
+        if (me.cortex.voxy.client.compat.create.TrainHandover.beyondLive(entity.position(), cam)) {
             ci.cancel();
         }
     }

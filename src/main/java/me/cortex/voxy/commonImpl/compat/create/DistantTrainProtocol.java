@@ -12,6 +12,7 @@ import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.state.BlockState;
 
 import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
 
 //Wire format for distant train rendering. Shapes are sent once per assembled carriage and cached by
@@ -21,13 +22,20 @@ public final class DistantTrainProtocol {
     private DistantTrainProtocol() {}
 
     //A block within a carriage, in contraption-local coordinates. Positions are packed as three
-    //signed bytes (carriages are far smaller than +-127 on any axis).
-    public record ShapeBlock(byte x, byte y, byte z, BlockState state) {
+    //signed bytes (carriages are far smaller than +-127 on any axis). renderNbt is the slice of
+    //the block entity's data a block needs to look right (copycat materials); empty for the
+    //overwhelming majority of blocks it costs one boolean on the wire.
+    public record ShapeBlock(byte x, byte y, byte z, BlockState state, Optional<CompoundTag> renderNbt) {
+        public ShapeBlock(byte x, byte y, byte z, BlockState state) {
+            this(x, y, z, state, Optional.empty());
+        }
+
         public static final StreamCodec<ByteBuf, ShapeBlock> CODEC = StreamCodec.composite(
                 ByteBufCodecs.BYTE, ShapeBlock::x,
                 ByteBufCodecs.BYTE, ShapeBlock::y,
                 ByteBufCodecs.BYTE, ShapeBlock::z,
                 ByteBufCodecs.idMapper(Block.BLOCK_STATE_REGISTRY), ShapeBlock::state,
+                ByteBufCodecs.optional(ByteBufCodecs.TRUSTED_COMPOUND_TAG), ShapeBlock::renderNbt,
                 ShapeBlock::new);
     }
 

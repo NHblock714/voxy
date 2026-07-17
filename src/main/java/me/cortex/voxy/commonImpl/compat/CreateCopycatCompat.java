@@ -9,7 +9,6 @@ import net.minecraft.world.level.block.entity.BlockEntity;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.chunk.LevelChunk;
 import net.minecraft.world.level.chunk.LevelChunkSection;
-import net.neoforged.fml.ModList;
 import net.neoforged.neoforge.client.model.data.ModelData;
 import net.neoforged.neoforge.client.model.data.ModelProperty;
 
@@ -35,23 +34,15 @@ import java.util.function.Predicate;
 public final class CreateCopycatCompat {
     public static final String VARIANT_TYPE = "create_copycat";
 
-    private static final boolean LOADED = ModList.get().isLoaded("create");
-    private static final String CREATE_PREFIX = "com.simibubi.create.content.decoration.copycat";
-    private static final String ADDON_PREFIX = "com.copycatsplus.copycats";
+    private static final boolean LOADED = CopycatCommon.isLoaded();
+    private static final String CREATE_PREFIX = CopycatCommon.CREATE_PREFIX;
+    private static final String ADDON_PREFIX = CopycatCommon.ADDON_PREFIX;
 
     private static final ThreadLocal<SectionMappings> SECTION_MAPPINGS =
             ThreadLocal.withInitial(SectionMappings::new);
     private static final Map<Mapper, Map<Integer, BlockState>> MATERIALS = new ConcurrentHashMap<>();
 
     private static final Predicate<BlockState> COPYCAT_STATE_PREDICATE = CreateCopycatCompat::isCopycatState;
-
-    private static final ClassValue<Boolean> COPYCAT_CLASSES = new ClassValue<>() {
-        @Override
-        protected Boolean computeValue(Class<?> type) {
-            String name = type.getName();
-            return name.startsWith(CREATE_PREFIX) || name.startsWith(ADDON_PREFIX);
-        }
-    };
 
     private static final ClassValue<Optional<Method>> GET_MATERIAL_METHODS = new ClassValue<>() {
         @Override
@@ -81,10 +72,7 @@ public final class CreateCopycatCompat {
     }
 
     public static boolean isCopycatState(BlockState state) {
-        if (!LOADED || state == null) {
-            return false;
-        }
-        return COPYCAT_CLASSES.get(state.getBlock().getClass());
+        return CopycatCommon.isCopycatState(state);
     }
 
     public static void beginSection(Mapper mapper, LevelChunk chunk, LevelChunkSection section, int sectionY) {
@@ -100,7 +88,7 @@ public final class CreateCopycatCompat {
         int maxY = minY + 15;
 
         for (BlockEntity blockEntity : chunk.getBlockEntities().values()) {
-            if (blockEntity == null || !COPYCAT_CLASSES.get(blockEntity.getClass())) {
+            if (!CopycatCommon.isCopycatClass(blockEntity)) {
                 continue;
             }
             BlockPos pos = blockEntity.getBlockPos();

@@ -278,7 +278,11 @@ public final class CreateTrainSampler {
                 if (Math.abs(pos.getX()) > 127 || Math.abs(pos.getY()) > 127 || Math.abs(pos.getZ()) > 127) {
                     continue;
                 }
-                blocks.add(new ShapeBlock((byte) pos.getX(), (byte) pos.getY(), (byte) pos.getZ(), state));
+                //Copycat looks live in block entity data, not the state - carry the material slice
+                CompoundTag renderNbt = me.cortex.voxy.commonImpl.compat.CopycatCommon
+                        .renderNbt(state, entry.getValue().nbt());
+                blocks.add(new ShapeBlock((byte) pos.getX(), (byte) pos.getY(), (byte) pos.getZ(), state,
+                        java.util.Optional.ofNullable(renderNbt)));
             }
             if (blocks.isEmpty()) {
                 this.failedShapes.add(shapeId);

@@ -64,7 +64,22 @@ public final class DistantTrainManager {
             if (existing != null) {
                 existing.close();
             }
-            var baked = CarriageMeshBaker.bake(payload.blocks());
+            //Rebuild copycat ModelData from the material slices the server attached to the shape
+            java.util.Map<net.minecraft.core.BlockPos, net.neoforged.neoforge.client.model.data.ModelData> blockEntityData = null;
+            for (var block : payload.blocks()) {
+                if (block.renderNbt().isEmpty()) {
+                    continue;
+                }
+                var data = me.cortex.voxy.commonImpl.compat.CreateCopycatCompat
+                        .materialFromContraptionNbt(block.state(), block.renderNbt().get());
+                if (data != null) {
+                    if (blockEntityData == null) {
+                        blockEntityData = new java.util.HashMap<>();
+                    }
+                    blockEntityData.put(new net.minecraft.core.BlockPos(block.x(), block.y(), block.z()), data);
+                }
+            }
+            var baked = CarriageMeshBaker.bake(payload.blocks(), blockEntityData);
             if (baked != null) {
                 SHAPES.put(payload.shapeId(), new ShapeEntry(baked, payload.initialYaw(), payload.bogeys()));
             } else {

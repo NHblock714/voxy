@@ -46,6 +46,15 @@ public class MixinContraptionEntityRenderer {
             return;
         }
         Vec3 cam = mc.gameRenderer.getMainCamera().getPosition();
+        //Carriages hand over to the distant train mesh at the shared handover boundary; the ring
+        //between it and the render distance is where the pose lag between live actors and the
+        //streamed distant body showed consoles/burners floating off the train
+        if (entity instanceof com.simibubi.create.content.trains.entity.CarriageContraptionEntity) {
+            if (me.cortex.voxy.client.compat.create.TrainHandover.beyondLive(entity.position(), cam)) {
+                ci.cancel();
+            }
+            return;
+        }
         double reach = mc.options.getEffectiveRenderDistance() * 16.0;
         if (entity.position().distanceToSqr(cam) > reach * reach) {
             ci.cancel();

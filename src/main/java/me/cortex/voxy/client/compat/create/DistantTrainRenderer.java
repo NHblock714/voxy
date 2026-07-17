@@ -40,9 +40,7 @@ public final class DistantTrainRenderer implements LodPipelineHooks.Renderer {
     //Diagnostics for /voxy debug trains: how many carriages the last frame actually drew
     public static volatile int lastFrameCarriagesDrawn;
 
-    //Create's carriage entities stop being tracked past ~15 chunks regardless of how far chunks
-    //render; beyond this we always draw even if the section is compiled.
-    private static final double CREATE_TRACKING_CAP = 224;
+    //Handover boundary shared with the live-side culls - see TrainHandover.
 
     @Override
     public void render(me.cortex.voxy.client.core.AbstractRenderPipeline pipeline, Viewport<?> viewport, int depthFunc) {
@@ -75,8 +73,9 @@ public final class DistantTrainRenderer implements LodPipelineHooks.Renderer {
         double maxDistSq = maxDist * maxDist;
         //Create only renders carriages whose entities are still tracked, and vanilla clamps entity
         //broadcasting to roughly the effective view distance - a compiled section alone is not
-        //enough. Hand over only inside the smaller of the two, mirroring the server send window.
-        double handover = java.lang.Math.min(CREATE_TRACKING_CAP, (mc.options.getEffectiveRenderDistance() - 2) * 16);
+        //enough. Hand over inside the smaller of the two; the live culls use the same boundary so
+        //exactly one representation draws on either side of it.
+        double handover = TrainHandover.handoverDist();
         double handoverSq = handover * handover;
         long now = System.nanoTime();
         long nowMs = System.currentTimeMillis();
