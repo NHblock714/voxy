@@ -97,7 +97,14 @@ public class ChunkBoundRenderer {
         long ptr = UploadStream.INSTANCE.upload(this.uniformBuffer, 0, 128);
         long matPtr = ptr; ptr += 4*4*4;
 
-        final float renderDistance = Minecraft.getInstance().options.getEffectiveRenderDistance()*16;//In blocks
+        //The mask tests each section's NEAREST corner against this radius while sodium picks what
+        //to render by roughly the section centre - at the render distance edge that half-chunk
+        //mismatch punches LOD out of sections vanilla never draws, leaving a ring of void. Pull the
+        //mask radius inward so the LOD tucks under the vanilla edge instead; much more than ~8
+        //blocks and the LOD pokes out visibly where vanilla also renders (worst seen through water).
+        final float renderDistance = Math.max(16.0f,
+                Minecraft.getInstance().options.getEffectiveRenderDistance()*16
+                        - me.cortex.voxy.client.config.VoxyConfig.CONFIG.lodEdgeOverlapBlocks);//In blocks
 
         {//This is recomputed to be in chunk section space not worldsection
 

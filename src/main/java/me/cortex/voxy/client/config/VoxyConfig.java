@@ -79,7 +79,9 @@ public class VoxyConfig {
     public int cloudDistance = 0;
     public boolean dontUseSodiumBuilderThreads = false;
     public int renderPressure = 2;
-    public int lodBoundaryBuffer = 1;
+    //Blocks the LOD hole-punch mask retreats from the render distance edge, hiding the void ring
+    //where the mask (nearest-corner test) and sodium's section choice (centre-ish) disagree
+    public int lodEdgeOverlapBlocks = 8;
     public int earthCurveRatio = 0;
     public String ssaoMode;
     public boolean useEnvironmentalFog = true;

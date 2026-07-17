@@ -57,12 +57,13 @@ public class VoxyNeoForgeConfig {
             .comment("Don't share threads with Sodium's chunk builder")
             .define("dontUseSodiumBuilderThreads", false);
 
-    private static final ModConfigSpec.IntValue LOD_BOUNDARY_BUFFER = BUILDER
-            .comment("LOD boundary overlap in blocks (like DH's overdraw prevention)",
-                     "Controls how much LODs overlap with vanilla chunk edges.",
-                     "Higher values = more overlap = smoother transitions but slight overdraw.",
-                     "0 = exact match (may have gaps), 1 = minimal overlap, 2-4 = smoother for fast flight")
-            .defineInRange("lodBoundaryBuffer", 1, 0, 4);
+    private static final ModConfigSpec.IntValue LOD_EDGE_OVERLAP_BLOCKS = BUILDER
+            .comment("How many blocks the LOD hole-punch mask retreats inward from the render distance,",
+                     "letting LOD terrain tuck under the vanilla edge instead of leaving a ring of void",
+                     "(the mask tests section corners, sodium renders by section centres - they disagree",
+                     "by about half a chunk). ~8 covers the mismatch; 16+ shows LOD poking through the",
+                     "vanilla edge (worst through water). 0 = off.")
+            .defineInRange("lodEdgeOverlapBlocks", 8, 0, 32);
 
     private static final ModConfigSpec.IntValue EARTH_CURVE_RATIO = BUILDER
             .comment("World curvature effect - simulates standing on a spherical planet",
@@ -150,7 +151,7 @@ public class VoxyNeoForgeConfig {
         VoxyConfig.CONFIG.subDivisionSize = SUB_DIVISION_SIZE.get().floatValue();
         VoxyConfig.CONFIG.useEnvironmentalFog = USE_ENVIRONMENTAL_FOG.get();
         VoxyConfig.CONFIG.dontUseSodiumBuilderThreads = DONT_USE_SODIUM_BUILDER_THREADS.get();
-        VoxyConfig.CONFIG.lodBoundaryBuffer = LOD_BOUNDARY_BUFFER.get();
+        VoxyConfig.CONFIG.lodEdgeOverlapBlocks = LOD_EDGE_OVERLAP_BLOCKS.get();
         VoxyConfig.CONFIG.earthCurveRatio = EARTH_CURVE_RATIO.get();
         // Create integration
         VoxyConfig.CONFIG.distantTrains = DISTANT_TRAINS.get();
@@ -183,7 +184,7 @@ public class VoxyNeoForgeConfig {
         SUB_DIVISION_SIZE.set((double) VoxyConfig.CONFIG.subDivisionSize);
         USE_ENVIRONMENTAL_FOG.set(VoxyConfig.CONFIG.useEnvironmentalFog);
         DONT_USE_SODIUM_BUILDER_THREADS.set(VoxyConfig.CONFIG.dontUseSodiumBuilderThreads);
-        LOD_BOUNDARY_BUFFER.set(VoxyConfig.CONFIG.lodBoundaryBuffer);
+        LOD_EDGE_OVERLAP_BLOCKS.set(VoxyConfig.CONFIG.lodEdgeOverlapBlocks);
         EARTH_CURVE_RATIO.set(VoxyConfig.CONFIG.earthCurveRatio);
         // Create integration
         DISTANT_TRAINS.set(VoxyConfig.CONFIG.distantTrains);
@@ -247,10 +248,6 @@ public class VoxyNeoForgeConfig {
 
     public static boolean dontUseSodiumBuilderThreads() {
         return DONT_USE_SODIUM_BUILDER_THREADS.get();
-    }
-
-    public static int getLodBoundaryBuffer() {
-        return LOD_BOUNDARY_BUFFER.get();
     }
 
     public static boolean isRenderStatisticsEnabled() {
