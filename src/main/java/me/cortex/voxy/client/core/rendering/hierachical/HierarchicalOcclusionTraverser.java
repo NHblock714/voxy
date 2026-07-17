@@ -233,14 +233,16 @@ public class HierarchicalOcclusionTraverser {
         float fullDetailDist = (net.minecraft.client.Minecraft.getInstance().options.renderDistance().get() + 2) * 16f;
         MemoryUtil.memPutFloat(ptr, fullDetailDist*fullDetailDist);ptr += 4;
 
-        //Isotropic angular subdivision floor. Perspective projects equal nodes LARGER at the screen
-        //edges than at the centre, so the area-only test starves the middle of the screen (centre
-        //mushy, edges sharp). size/distance is position-independent; the threshold is calibrated so
-        //that at the screen CENTRE it matches the subDivisionSize-pixel semantics of minSSS:
-        //  centre pixels = size/dist * P11 * height/2  >  subDivisionSize
-        float p11 = viewport.vanillaProjection.m11();
-        float angular = (2.0f * VoxyConfig.CONFIG.subDivisionSize) / (Math.max(0.0001f, p11) * viewport.height);
-        MemoryUtil.memPutFloat(ptr, angular * angular);ptr += 4;
+        //Perspective-stretch compensation for the subdivision metric. Equal nodes project to LARGER
+        //areas at the screen edges than at the centre (planar-projection stretch, ~(1+tan^2)^1.5),
+        //so the area test starves the middle of the screen (centre mushy, edges sharp - worse at
+        //high FOV). The shader boosts each node's area by maxStretch/stretch(nodePos), lifting the
+        //centre to parity with the screen's most favourable position; edges get boost~1. These are
+        //the tan-space scale factors of the projection (1/P00, 1/P11).
+        float p00 = Math.max(0.0001f, viewport.vanillaProjection.m00());
+        float p11 = Math.max(0.0001f, viewport.vanillaProjection.m11());
+        MemoryUtil.memPutFloat(ptr, 1.0f / p00);ptr += 4;
+        MemoryUtil.memPutFloat(ptr, 1.0f / p11);ptr += 4;
     }
 
     private void bindings(Viewport<?> viewport) {

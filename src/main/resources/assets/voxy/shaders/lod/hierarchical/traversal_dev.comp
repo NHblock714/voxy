@@ -19,7 +19,8 @@ layout(binding = SCENE_UNIFORM_BINDING, std140) uniform SceneUniform {
     uint requestQueueSize;
     float renderDistance;
     float fullDetailDistSq;
-    float angularSSS;
+    float invP00;
+    float invP11;
 };
 
 #import <voxy:lod/hierarchical/queue.glsl>

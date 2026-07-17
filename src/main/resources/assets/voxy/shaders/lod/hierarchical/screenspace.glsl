@@ -44,7 +44,6 @@ vec3 _maxBB = vec3(0.0f);
 bool _frustumCulled = false;
 
 float _screenSize = 0.0f;
-float _centerDistSq = 1.0e30f;
 
 #ifdef TAA
 vec2 getTAA();
@@ -66,10 +65,6 @@ void setupScreenspace(in UnpackedNode node) {
 
 
     vec3 basePos = vec3(((node.pos<<node.lodLevel)-camSecPos)<<5)-camSubSecPos;
-
-    //Camera-relative distance to the node centre, for the isotropic angular subdivision floor
-    vec3 centerRel = basePos + float(16<<node.lodLevel);
-    _centerDistSq = dot(centerRel, centerRel);
 
     _frustumCulled = outsideFrustum(frustum, basePos, float(32<<node.lodLevel));
 
@@ -201,12 +196,16 @@ bool shouldDecend() {
     if (_screenSize > minSSS) {
         return true;
     }
-    //Isotropic angular floor: perspective projects equal-size nodes LARGER at the screen edges than
-    //at the centre, so the area-only test starves the middle of the screen of subdivision (centre
-    //goes mushy while the edges stay sharp). size/distance is independent of screen position; the
-    //threshold is calibrated on the Java side so the floor matches minSSS's pixel semantics exactly
-    //at the screen centre - edges keep their area-driven extra detail, the centre stops losing it.
-    float worldSize = float(32 << node22.lodLevel);
-    return worldSize * worldSize > angularSSS * _centerDistSq;
+    //Perspective-stretch parity: planar projection stretches equal nodes to LARGER areas at the
+    //screen edges than at the centre (jacobian ~(1+tan^2(theta))^1.5), so the raw area test starves
+    //the middle of the screen of subdivision - centre mushy, edges sharp, worse at high FOV. Boost
+    //each node's area by maxStretch/stretch(nodePos): the centre is judged as if it sat at the
+    //screen's most favourable position, edges get boost~1 and keep their existing behaviour.
+    vec2 ndcCenter = (_minBB.xy + _maxBB.xy) - 1.0f;
+    vec2 tanPos = ndcCenter * vec2(invP00, invP11);
+    vec2 tanMax = vec2(invP00, invP11);
+    float stretchNode = pow(1.0f + dot(tanPos, tanPos), 1.5f);
+    float stretchMax = pow(1.0f + dot(tanMax, tanMax), 1.5f);
+    return _screenSize * (stretchMax / stretchNode) > minSSS;
 }
 
