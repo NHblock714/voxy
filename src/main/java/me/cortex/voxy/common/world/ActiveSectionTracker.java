@@ -222,17 +222,29 @@ public class ActiveSectionTracker {
 
     void tryUnload(WorldSection section, int hints) {
         if (this.engine != null) this.engine.lastActiveTime = System.currentTimeMillis();
+        //Upstream 0.2.18 save-race hardening: re-check shouldSave under the acquired ref (another
+        //thread can win the enqueue), release with unload=true so a lost race retries the whole
+        //pipeline instead of dropping state, and always return here - the save queue's release
+        //drives the unload from then on.
         if (section.shouldSave()&&this.engine!=null) {
             if (section.tryAcquire()) {
+                VarHandle.loadLoadFence();
                 if (section.shouldSave()) {//If we should try enqueue
-                    if (!this.engine.saveSection(section, true, true)) {
+                    if (!this.engine.saveSection(section, false, true)) {
                         //we didnt enqueue the section in the save queue so we must unload it manually
-                        section.release(false, hints);
+                        section.release(true, hints);
+                    } else {
+                        //section is queued, and we gave it the acquired ref
+                        return;
                     }
                 } else {
-                    section.release(false, hints);//Special release
+                    //Lost the race to the save queue - retry the unload pipeline
+                    section.release(true, hints);
                 }
+            } else if (section.shouldSave()) {
+                Logger.error("Failed to acquire a section that still needs saving - this is really bad");
             }
+            return;
         }
 
         if (section.getRefCount() != 0) {
@@ -245,17 +257,19 @@ public class ActiveSectionTracker {
         long stamp = lock.writeLock();
         boolean shouldRetryExit = false;
         try {
+            //Upstream 0.2.18: a ref acquired between the earlier check and taking the shard lock
+            //means someone is using the section - bail before touching the cache
+            if (section.getRefCount() != 0) {
+                return;
+            }
             VarHandle.loadLoadFence();
             if (this.engine != null && section.shouldSave()) {//Last call for saving
                 if (section.tryAcquire()) {
                     if (!this.engine.saveSection(section, true, true)) {//not allowed to block as we are in a lock
-                        //We didnt enqueue the save here, so we must unload
-                        // but unload in a recursive
-                        VarHandle.fullFence();
-                        shouldRetryExit |= section.getRefCount()!=1;//if we arnt the only ref
-                        VarHandle.fullFence();
-                        shouldRetryExit |= section.isDirty;//or if the section is now dirty, note this must go AFTER the ref check, since you can only mark live sections as dirty
-                        section.release(false, hints);//Special
+                        //Could not enqueue while holding the shard lock: always retry the unload
+                        //pipeline (an in-lock unload would deadlock; the retry runs it unlocked)
+                        shouldRetryExit = true;
+                        section.release(false, hints);//Special: no unload here, the retry handles it
                     }
 
 

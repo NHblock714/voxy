@@ -271,6 +271,12 @@ public class VoxyRenderSystem {
             this.savedBufferBindings[i] = glGetIntegeri(GL_SHADER_STORAGE_BUFFER_BINDING, i);
         }
 
+        //Upstream 0.2.18 edge-flicker fix: assert the depth state instead of trusting whatever the
+        //previous renderer left behind (a foreign depthFunc/mask made edge terrain flicker with and
+        //without shaders)
+        com.mojang.blaze3d.platform.GlStateManager._enableDepthTest();
+        com.mojang.blaze3d.platform.GlStateManager._depthFunc(this.properties.closerEqualDepthCompare());
+        com.mojang.blaze3d.platform.GlStateManager._depthMask(true);
 
         int oldFB = GL11.glGetInteger(GL_DRAW_FRAMEBUFFER_BINDING);
         int boundFB = oldFB;
