@@ -73,18 +73,6 @@ public class VoxyNeoForgeConfig {
                      "Inspired by Distant Horizons' earth curvature feature")
             .defineInRange("earthCurveRatio", 0, 0, 5000);
 
-    private static final ModConfigSpec.BooleanValue ENABLE_EXTENDED_REQUEST_DISTANCE = BUILDER
-            .comment("Enable FakeSight-style extended chunk requests",
-                     "When enabled, Voxy reports a larger render/request distance so the server sends more chunks for LOD ingestion.")
-            .define("enableExtendedRequestDistance", true);
-
-    private static final ModConfigSpec.IntValue REQUEST_DISTANCE = BUILDER
-            .comment("FakeSight request distance in chunks",
-                     "This is the chunk distance reported to the server/integrated server.",
-                     "Singleplayer expands gradually after movement stops.",
-                     "Large values increase server/client load. Maximum: 127.")
-            .defineInRange("requestDistance", 48, VoxyConfig.MIN_REQUEST_DISTANCE, VoxyConfig.MAX_REQUEST_DISTANCE);
-
     private static final ModConfigSpec.BooleanValue ENABLE_FAR_PLAYER_RENDERING = BUILDER
             .comment("Render far players with lightweight server snapshots.",
                      "Multiplayer requires Voxy on the server; standalone SeeU takes precedence when installed.")
@@ -172,8 +160,6 @@ public class VoxyNeoForgeConfig {
         VoxyConfig.CONFIG.distantContraptions = DISTANT_CONTRAPTIONS.get();
         VoxyConfig.CONFIG.distantContraptionMaxChunks = DISTANT_CONTRAPTION_MAX_CHUNKS.get();
         VoxyConfig.CONFIG.distantKinetics = DISTANT_KINETICS.get();
-        VoxyConfig.CONFIG.enableExtendedRequestDistance = ENABLE_EXTENDED_REQUEST_DISTANCE.get();
-        VoxyConfig.CONFIG.requestDistance = REQUEST_DISTANCE.get();
         VoxyConfig.CONFIG.enableFarPlayerRendering = ENABLE_FAR_PLAYER_RENDERING.get();
         VoxyConfig.CONFIG.renderFarPlayerNames = RENDER_FAR_PLAYER_NAMES.get();
         VoxyConfig.CONFIG.farPlayerAnimationDistance = FAR_PLAYER_ANIMATION_DISTANCE.get();
@@ -207,8 +193,6 @@ public class VoxyNeoForgeConfig {
         DISTANT_CONTRAPTIONS.set(VoxyConfig.CONFIG.distantContraptions);
         DISTANT_CONTRAPTION_MAX_CHUNKS.set(VoxyConfig.CONFIG.distantContraptionMaxChunks);
         DISTANT_KINETICS.set(VoxyConfig.CONFIG.distantKinetics);
-        ENABLE_EXTENDED_REQUEST_DISTANCE.set(VoxyConfig.CONFIG.enableExtendedRequestDistance);
-        REQUEST_DISTANCE.set(VoxyConfig.CONFIG.requestDistance);
         ENABLE_FAR_PLAYER_RENDERING.set(VoxyConfig.CONFIG.enableFarPlayerRendering);
         RENDER_FAR_PLAYER_NAMES.set(VoxyConfig.CONFIG.renderFarPlayerNames);
         FAR_PLAYER_ANIMATION_DISTANCE.set(VoxyConfig.CONFIG.farPlayerAnimationDistance);

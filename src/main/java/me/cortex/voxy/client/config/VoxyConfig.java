@@ -27,10 +27,6 @@ public class VoxyConfig {
         QUALITY
     }
 
-    public static final int MIN_REQUEST_DISTANCE = 8;
-    // ClientInformation carries view distance in one signed byte. Keeping the
-    // singleplayer extension at 127 avoids wraparound while removing the old 48 cap.
-    public static final int MAX_REQUEST_DISTANCE = 127;
     public static final int MAX_CLOUD_DISTANCE = 128;
     public static final float MIN_SUBDIVISION_SIZE = 28.0f;
     public static final float MAX_SUBDIVISION_SIZE = 256.0f;
@@ -85,8 +81,6 @@ public class VoxyConfig {
     public int renderPressure = 2;
     public int lodBoundaryBuffer = 1;
     public int earthCurveRatio = 0;
-    public boolean enableExtendedRequestDistance = true;
-    public int requestDistance = 48;
     public String ssaoMode;
     public boolean useEnvironmentalFog = true;
     public String leafLodMode = "balanced";
@@ -94,10 +88,6 @@ public class VoxyConfig {
     public boolean renderFarPlayerNames = true;
     public int farPlayerAnimationDistance = 1024;
     public boolean shareFarPlayerPosition = true;
-
-    public int getRequestDistance() {
-        return Math.clamp(this.requestDistance, MIN_REQUEST_DISTANCE, MAX_REQUEST_DISTANCE);
-    }
 
     public int getFarEntityRenderDistanceBlocks() {
         return Math.clamp(Math.round(this.sectionRenderDistance * 32.0f * 16.0f), 64, 32768);
@@ -185,7 +175,6 @@ public class VoxyConfig {
 
     public void sanitize() {
         this.subDivisionSize = Math.clamp(this.subDivisionSize, MIN_SUBDIVISION_SIZE, MAX_SUBDIVISION_SIZE);
-        this.requestDistance = Math.clamp(this.requestDistance, MIN_REQUEST_DISTANCE, MAX_REQUEST_DISTANCE);
         this.skyFogDistance = Math.clamp(this.skyFogDistance, 0, 1024);
         this.cloudDistance = Math.clamp(this.cloudDistance, 0, MAX_CLOUD_DISTANCE);
         this.fogIntensity = Math.clamp(this.fogIntensity, 0.0f, 1.0f);
