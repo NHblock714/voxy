@@ -290,7 +290,11 @@ public class VoxyRenderSystem {
         }
 
         if (VoxyConfig.CONFIG.getRenderPressureLevel() <= 1) {
-            this.autoBalanceSubDivSize();
+            //Disabled, as in the original base: this auto quality balancer shoves subDivisionSize up by
+        //INCREASE_PER_SECOND/fps EVERY FRAME whenever fps < 55 and then PERSISTS it to the config -
+        //one heavy session quietly turned a hand-tuned 28 into 126 and every distant LOD went mushy
+        //(head-on worst: the subdivision test's screen-space metric is smallest at screen centre).
+        //this.autoBalanceSubDivSize();
         }
 
         this.pipeline.preSetup(viewport);
