@@ -20,13 +20,18 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Predicate;
 
 //Create's copycat blocks (and the Copycats+ addon's) take their entire appearance from a material
-//BlockState stored on the block entity and fed to the wrapper model through ModelData - with EMPTY
-//model data the wrapper returns the bare base skeleton (nothing), so every copycat baked to a LOD
-//model came out invisible. Same disease, same cure as Domum Ornamentum: register (block state,
-//material) pairs as Mapper variants at ingest time, then rebuild the wrapper's ModelData when the
-//variant block id gets baked. Material extraction is reflective (getMaterial() exists on both
-//Create's CopycatBlockEntity and Copycats+' independent CCCopycatBlockEntity); the multi-material
-//blocks of Copycats+ have no single getMaterial() and quietly fall through (future work).
+//BlockState stored on the block entity and fed to the wrapper model through ModelData - the json
+//models behind their blockstates are literally minecraft:block/air, so with EMPTY model data the
+//wrapper emits nothing and every copycat baked to a LOD model came out invisible. Same disease,
+//same cure as Domum Ornamentum: register (block state, material) pairs as Mapper variants at
+//ingest time, then rebuild the wrapper's ModelData when the variant block id gets baked. Copycat
+//states with no registered material (unfilled ones, or stale LOD data from before re-ingest) fall
+//back to the copycat base material - the grid skeleton the block shows up close when unfilled,
+//since an unfilled block entity carries the base state as its material rather than null. Material
+//extraction is reflective (getMaterial() exists on both Create's CopycatBlockEntity and Copycats+'
+//independent CCCopycatBlockEntity); the multi-material blocks of Copycats+ have no single
+//getMaterial() and quietly fall through (future work). Contraption meshes read the material from
+//the captured block entity nbt instead (see materialFromContraptionNbt).
 public final class CreateCopycatCompat {
     public static final String VARIANT_TYPE = "create_copycat";
 
@@ -175,8 +180,11 @@ public final class CreateCopycatCompat {
 
     //Client only (called from the model bakery): the material's own chunk render type - the copycat
     //wrapper model only emits quads when queried with the MATERIAL's layer, not the copycat's
-    public static net.minecraft.client.renderer.RenderType renderLayerOverride(Mapper mapper, int blockId) {
+    public static net.minecraft.client.renderer.RenderType renderLayerOverride(Mapper mapper, int blockId, BlockState state) {
         BlockState material = materialFor(mapper, blockId);
+        if (material == null) {
+            material = baseMaterialFor(state);
+        }
         if (material == null) {
             return null;
         }
@@ -195,32 +203,87 @@ public final class CreateCopycatCompat {
 
     //Client only: bake plan carrying the wrapper ModelData (material under both mods' keys) and the
     //material state for biome tinting
-    public static DomumOrnamentumCompat.BakePlan getBakePlan(Mapper mapper, int blockId) {
+    public static DomumOrnamentumCompat.BakePlan getBakePlan(Mapper mapper, int blockId, BlockState state) {
         BlockState material = materialFor(mapper, blockId);
+        if (material == null) {
+            material = baseMaterialFor(state);
+        }
         if (material == null) {
             return DomumOrnamentumCompat.BakePlan.empty();
         }
         try {
-            resolveProperties();
-            ModelData.Builder builder = ModelData.builder();
-            if (createMaterialProperty != null) {
-                builder.with(createMaterialProperty, material);
-            }
-            if (addonMaterialProperty != null) {
-                builder.with(addonMaterialProperty, material);
-            }
-            if (addonMaterialsProperty != null) {
-                builder.with(addonMaterialsProperty, new java.util.HashMap<>(Map.of("material", material)));
-            }
-            return new DomumOrnamentumCompat.BakePlan(builder.build(), null, material, -1, false);
+            ModelData modelData = buildModelData(material);
+            return new DomumOrnamentumCompat.BakePlan(modelData, null, material, -1, false);
         } catch (Throwable ignored) {
             return DomumOrnamentumCompat.BakePlan.empty();
         }
     }
 
+    //Client only: the ModelData a copycat wrapper model expects, with the material stuffed under
+    //every key either mod reads
+    public static ModelData buildModelData(BlockState material) {
+        resolveProperties();
+        ModelData.Builder builder = ModelData.builder();
+        if (createMaterialProperty != null) {
+            builder.with(createMaterialProperty, material);
+        }
+        if (addonMaterialProperty != null) {
+            builder.with(addonMaterialProperty, material);
+        }
+        if (addonMaterialsProperty != null) {
+            builder.with(addonMaterialsProperty, new java.util.HashMap<>(Map.of("material", material)));
+        }
+        return builder.build();
+    }
+
     public static void closeMapper(Mapper mapper) {
         if (LOADED && mapper != null) {
             MATERIALS.remove(mapper);
+        }
+    }
+
+    //The unfilled look: block entities carry the copycat base state as their material until filled
+    private static volatile BlockState baseSkeleton;
+
+    private static BlockState baseMaterialFor(BlockState state) {
+        if (!isCopycatState(state)) {
+            return null;
+        }
+        BlockState base = baseSkeleton;
+        if (base == null) {
+            var block = BuiltInRegistries.BLOCK.get(
+                    net.minecraft.resources.ResourceLocation.fromNamespaceAndPath("create", "copycat_base"));
+            base = block.defaultBlockState();
+            baseSkeleton = base;
+        }
+        return base.isAir() ? null : base;
+    }
+
+    //Contraption/carriage mesh path: contraptions capture their block entities as nbt, so the
+    //material comes from the copycat block entity's serialized "Material" tag (both mods use the
+    //same key). Unfilled or unreadable falls back to the base skeleton. Null for non-copycats.
+    public static ModelData materialFromContraptionNbt(BlockState state, CompoundTag beNbt) {
+        if (!isCopycatState(state)) {
+            return null;
+        }
+        BlockState material = null;
+        try {
+            if (beNbt != null && beNbt.contains("Material")) {
+                material = NbtUtils.readBlockState(
+                        BuiltInRegistries.BLOCK.asLookup(), beNbt.getCompound("Material"));
+            }
+        } catch (Throwable ignored) {
+        }
+        if (material == null || material.isAir()) {
+            material = baseMaterialFor(state);
+        }
+        if (material == null) {
+            return null;
+        }
+        try {
+            return buildModelData(material);
+        } catch (Throwable ignored) {
+            return null;
         }
     }
 

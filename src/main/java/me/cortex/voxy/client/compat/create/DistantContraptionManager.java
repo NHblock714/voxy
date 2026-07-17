@@ -14,6 +14,7 @@ import net.minecraft.world.level.block.RenderShape;
 import org.joml.Matrix4f;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -243,6 +244,7 @@ public final class DistantContraptionManager {
 
     private static CarriageMeshBaker.BakedCarriage bakeContraption(Contraption contraption) {
         List<ShapeBlock> blocks = new ArrayList<>();
+        Map<BlockPos, net.neoforged.neoforge.client.model.data.ModelData> blockEntityData = null;
         for (var entry : contraption.getBlocks().entrySet()) {
             BlockPos pos = entry.getKey();
             var state = entry.getValue().state();
@@ -253,8 +255,17 @@ public final class DistantContraptionManager {
                 continue;
             }
             blocks.add(new ShapeBlock((byte) pos.getX(), (byte) pos.getY(), (byte) pos.getZ(), state));
+            //Copycat looks live in the captured block entity nbt, not the state
+            var copycatData = me.cortex.voxy.commonImpl.compat.CreateCopycatCompat
+                    .materialFromContraptionNbt(state, entry.getValue().nbt());
+            if (copycatData != null) {
+                if (blockEntityData == null) {
+                    blockEntityData = new HashMap<>();
+                }
+                blockEntityData.put(pos, copycatData);
+            }
         }
-        return CarriageMeshBaker.bake(blocks);
+        return CarriageMeshBaker.bake(blocks, blockEntityData);
     }
 
     public static Map<UUID, Snapshot> snapshots() {

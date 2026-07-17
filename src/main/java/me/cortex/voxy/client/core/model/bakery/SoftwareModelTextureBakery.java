@@ -96,7 +96,7 @@ public class SoftwareModelTextureBakery {
 
         var plan = DomumOrnamentumCompat.getBakePlan(this.mapper, blockId);
         if (plan.isEmpty()) {
-            plan = me.cortex.voxy.commonImpl.compat.CreateCopycatCompat.getBakePlan(this.mapper, blockId);
+            plan = me.cortex.voxy.commonImpl.compat.CreateCopycatCompat.getBakePlan(this.mapper, blockId, state);
         }
         BlockState modelState = plan.modelState() == null ? state : plan.modelState();
         ModelData modelData = plan.modelData();
@@ -322,7 +322,7 @@ public class SoftwareModelTextureBakery {
         if (isBlock) {
             //Copycat wrapper models only emit quads when queried with their MATERIAL's chunk render
             //type, not the copycat block's own layer
-            var copycatLayer = me.cortex.voxy.commonImpl.compat.CreateCopycatCompat.renderLayerOverride(this.mapper, blockId);
+            var copycatLayer = me.cortex.voxy.commonImpl.compat.CreateCopycatCompat.renderLayerOverride(this.mapper, blockId, state);
             if (copycatLayer != null) {
                 blockRenderLayer = copycatLayer;
             }

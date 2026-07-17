@@ -88,6 +88,14 @@ public final class CarriageMeshBaker {
 
     @Nullable
     public static BakedCarriage bake(List<ShapeBlock> blocks) {
+        return bake(blocks, null);
+    }
+
+    //blockEntityData: per-pos ModelData recovered from captured block entities (copycat materials);
+    //blocks whose look lives entirely in that data render nothing without it
+    @Nullable
+    public static BakedCarriage bake(List<ShapeBlock> blocks,
+                                     @Nullable Map<BlockPos, net.neoforged.neoforge.client.model.data.ModelData> blockEntityData) {
         if (blocks.isEmpty()) {
             return null;
         }
@@ -119,12 +127,20 @@ public final class CarriageMeshBaker {
                 //colour (grass on a snowy-plains train is pale, not default green); -1 = no resolver.
                 int tint = Minecraft.getInstance().getBlockColors().getColor(state, slice, pos, 0);
                 var model = dispatcher.getBlockModel(state);
-                //Connected-texture wrappers resolve their connections against the shape itself
+                //Connected-texture wrappers resolve their connections against the shape itself.
+                //Copycats read their material from block entity data the grid cannot supply - feed
+                //the recovered (or skeleton-fallback) data through as the block entity's share so
+                //the wrapper's own getModelData still gets to derive occlusion from the slice.
+                var beData = blockEntityData == null ? null : blockEntityData.get(pos);
+                if (beData == null && me.cortex.voxy.commonImpl.compat.CreateCopycatCompat.isCopycatState(state)) {
+                    beData = me.cortex.voxy.commonImpl.compat.CreateCopycatCompat.materialFromContraptionNbt(state, null);
+                }
                 net.neoforged.neoforge.client.model.data.ModelData modelData;
                 try {
-                    modelData = model.getModelData(slice, pos, state, net.neoforged.neoforge.client.model.data.ModelData.EMPTY);
+                    modelData = model.getModelData(slice, pos, state,
+                            beData != null ? beData : net.neoforged.neoforge.client.model.data.ModelData.EMPTY);
                 } catch (Throwable t) {
-                    modelData = net.neoforged.neoforge.client.model.data.ModelData.EMPTY;
+                    modelData = beData != null ? beData : net.neoforged.neoforge.client.model.data.ModelData.EMPTY;
                 }
                 //Carriages move through the sky; bake at full skylight and dim per-draw
                 builder.blockModel(state, model,
