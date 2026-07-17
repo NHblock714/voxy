@@ -87,6 +87,9 @@ public class ClientVoxyMixinPlugin implements IMixinConfigPlugin {
             mixins.add("create.MixinEntityRenderDispatcherShip");
             mixins.add("create.MixinBandedPrimeLimiter");
             mixins.add("create.AccessorControlledContraptionEntity");
+            //Disassembly is the one removal with an explicit signal: kill the frozen snapshot at once
+            //instead of letting the 2s presence grace show a ghost where the blocks just landed
+            mixins.add("create.MixinContraptionDisassembly");
         }
 
         // EclipticSeasons snow-LOD compat: client-gated even for the common-class targets, because the shared
