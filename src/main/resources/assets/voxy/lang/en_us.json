@@ -62,6 +62,8 @@
   "voxy.config.compat.distantContraptionDistance.tooltip": "Max render distance (chunks) for distant contraptions. Follow LOD = use voxy's LOD radius",
   "voxy.config.compat.distantKinetics": "Cull distant kinetics",
   "voxy.config.compat.distantKinetics.tooltip": "Cull placed kinetic machine moving parts (rotating shafts/gears) beyond the render distance so they stop floating over the LOD. Off = Create renders them natively (may float)",
+  "voxy.config.compat.kineticEnclosedCulling": "Cull enclosed kinetics",
+  "voxy.config.compat.kineticEnclosedCulling.tooltip": "Skip the rotating instances of kinetic parts that are sealed behind opaque blocks (encased shafts/cogs need only their two axis ends covered; anything else all six sides). Saves GPU work on machinery buried inside walls",
   "voxy.config.compat.distanceFollowLod": "Follow LOD",
   "voxy.config.compat.distanceChunks": "%s chunks",
   "voxy.config.compat.esSnowLod": "Seasonal snow LOD",

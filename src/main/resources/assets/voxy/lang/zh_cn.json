@@ -62,6 +62,8 @@
   "voxy.config.compat.distantContraptionDistance.tooltip": "远景结构的最大渲染距离（区块）。跟随LOD=使用 voxy 的 LOD 半径",
   "voxy.config.compat.distantKinetics": "远景机械件剔除",
   "voxy.config.compat.distantKinetics.tooltip": "把放置的机械方块（旋转轴/齿轮/机器动件）在超视距处剔除，避免它们浮在 LOD 地形上。关闭=交给 Create 原生渲染（可能浮空）",
+  "voxy.config.compat.kineticEnclosedCulling": "被包裹机械件剔除",
+  "voxy.config.compat.kineticEnclosedCulling.tooltip": "跳过被非透明方块完全封住的机械动件实例（套壳传动杆/齿轮只需轴向两端被堵，其余方块需六面全堵）。给埋在墙里的机械省 GPU",
   "voxy.config.compat.distanceFollowLod": "跟随LOD",
   "voxy.config.compat.distanceChunks": "%s 区块",
   "voxy.config.compat.esSnowLod": "节气积雪 LOD",

@@ -260,6 +260,11 @@ public class VoxyConfigMenu implements ConfigEntryPoint {
                                         "voxy:distant_kinetics",
                                         Component.translatable("voxy.config.compat.distantKinetics"),
                                         ()->CFG.distantKinetics, v->CFG.distantKinetics=v)
+                                        .setImpact(OptionImpact.LOW),
+                                new BoolOption(
+                                        "voxy:kinetic_enclosed_culling",
+                                        Component.translatable("voxy.config.compat.kineticEnclosedCulling"),
+                                        ()->CFG.kineticEnclosedCulling, v->CFG.kineticEnclosedCulling=v)
                                         .setImpact(OptionImpact.LOW)
                         ), new Group(
                                 new BoolOption(
