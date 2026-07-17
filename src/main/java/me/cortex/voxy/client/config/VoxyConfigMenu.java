@@ -149,14 +149,7 @@ public class VoxyConfigMenu implements ConfigEntryPoint {
                                         .setNameProvider(mode -> Component.translatable(
                                                 "voxy.config.general.leafLodMode." + mode.name().toLowerCase(java.util.Locale.ROOT)))
                                         .setPostChangeFlags(RENDER_RELOAD)
-                                        .setImpact(OptionImpact.MEDIUM),
-                                new IntOption(
-                                        "voxy:lod_edge_overlap",
-                                        Component.translatable("voxy.config.general.lodEdgeOverlap"),
-                                        ()->CFG.lodEdgeOverlapBlocks, v->CFG.lodEdgeOverlapBlocks=v,
-                                        new Range(0, 32, 1))
-                                        .setFormatter(v->Component.translatable("voxy.config.general.lodEdgeOverlap.blocks", v))
-                                        .setImpact(OptionImpact.LOW)
+                                        .setImpact(OptionImpact.MEDIUM)
                         ), new Group(
                                 new BoolOption(
                                     "voxy:environmental_fog",

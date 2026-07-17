@@ -23,6 +23,7 @@
     "sodium.MixinChunkJobQueue",
     "sodium.MixinCloudRenderer",
     "sodium.MixinRenderSectionManager",
+    "sodium.MixinSectionCollector",
     "sodium.MixinSodiumWorldRenderer",
     "sodium.MixinShaderLoader"
   ],

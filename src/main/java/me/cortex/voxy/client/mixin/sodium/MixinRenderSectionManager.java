@@ -5,7 +5,6 @@ import me.cortex.voxy.client.config.VoxyConfig;
 import me.cortex.voxy.client.core.IGetVoxyRenderSystem;
 import me.cortex.voxy.client.core.VoxyRenderSystem;
 import me.cortex.voxy.common.world.service.VoxelIngestService;
-import me.cortex.voxy.commonImpl.VoxyCommon;
 import net.caffeinemc.mods.sodium.client.gl.device.CommandList;
 import net.caffeinemc.mods.sodium.client.render.chunk.RenderSection;
 import net.caffeinemc.mods.sodium.client.render.chunk.RenderSectionManager;
@@ -13,7 +12,9 @@ import net.caffeinemc.mods.sodium.client.render.chunk.compile.executor.ChunkBuil
 import net.caffeinemc.mods.sodium.client.render.chunk.data.BuiltSectionInfo;
 import net.caffeinemc.mods.sodium.client.render.chunk.map.ChunkTrackerHolder;
 import net.caffeinemc.mods.sodium.client.render.chunk.translucent_sorting.SortBehavior;
+import net.caffeinemc.mods.sodium.client.render.viewport.Viewport;
 import net.neoforged.fml.ModList;
+import net.minecraft.client.Camera;
 import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.core.SectionPos;
 import net.minecraft.world.level.ChunkPos;
@@ -27,6 +28,7 @@ import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.Redirect;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
+import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 
 @Mixin(value = RenderSectionManager.class, remap = false)
 public class MixinRenderSectionManager {
@@ -140,20 +142,22 @@ public class MixinRenderSectionManager {
             }
         }
 
-        //Do some very cheeky stuff for MiB
-        if (VoxyCommon.IS_MINE_IN_ABYSS) {
-            int sector = (x+512)>>10;
-            x-=sector<<10;
-            y+=16+(256-32-sector*30);
-        }
-        long pos = SectionPos.asLong(x,y,z);
-        if (wasBuilt) {//Remove
-            //TODO: on chunk remove do ingest if is surrounded by built chunks (or when the tracker says is ok)
-
-            system.chunkBoundRenderer.removeSection(pos);
-        } else {//Add
-            system.chunkBoundRenderer.addSection(pos);
-        }
+        //The chunk bound mask is streamed from sodium's render-list traversal (MixinSectionCollector),
+        //not tracked from build events - nothing to update here
         return true;
+    }
+
+    //The bound mask mirrors sodium's render list: restart the stream whenever sodium rebuilds it.
+    //Shadow-pass traversals are skipped - the mask only describes the player-view list.
+    @Inject(method = "createTerrainRenderList", at = @At("HEAD"))
+    private void voxy$resetVisibleSectionStream(Camera camera, Viewport viewport, int frame, boolean spectator,
+                                               CallbackInfoReturnable<Boolean> cir) {
+        if (this.level.levelRenderer == null || me.cortex.voxy.client.core.util.IrisUtil.irisShadowActive()) {
+            return;
+        }
+        var system = ((IGetVoxyRenderSystem)(this.level.levelRenderer)).voxy$getRenderSystem();
+        if (system != null) {
+            system.chunkBoundRenderer.reset();
+        }
     }
 }

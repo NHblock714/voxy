@@ -57,14 +57,6 @@ public class VoxyNeoForgeConfig {
             .comment("Don't share threads with Sodium's chunk builder")
             .define("dontUseSodiumBuilderThreads", false);
 
-    private static final ModConfigSpec.IntValue LOD_EDGE_OVERLAP_BLOCKS = BUILDER
-            .comment("How many blocks the LOD hole-punch mask retreats inward from the render distance,",
-                     "letting LOD terrain tuck under the vanilla edge instead of leaving a ring of void",
-                     "(the mask tests section corners, sodium renders by section centres - they disagree",
-                     "by about half a chunk). ~8 covers the mismatch; 16+ shows LOD poking through the",
-                     "vanilla edge (worst through water). 0 = off.")
-            .defineInRange("lodEdgeOverlapBlocks", 8, 0, 32);
-
     private static final ModConfigSpec.IntValue EARTH_CURVE_RATIO = BUILDER
             .comment("World curvature effect - simulates standing on a spherical planet",
                      "0 = disabled (flat world)",
@@ -151,7 +143,6 @@ public class VoxyNeoForgeConfig {
         VoxyConfig.CONFIG.subDivisionSize = SUB_DIVISION_SIZE.get().floatValue();
         VoxyConfig.CONFIG.useEnvironmentalFog = USE_ENVIRONMENTAL_FOG.get();
         VoxyConfig.CONFIG.dontUseSodiumBuilderThreads = DONT_USE_SODIUM_BUILDER_THREADS.get();
-        VoxyConfig.CONFIG.lodEdgeOverlapBlocks = LOD_EDGE_OVERLAP_BLOCKS.get();
         VoxyConfig.CONFIG.earthCurveRatio = EARTH_CURVE_RATIO.get();
         // Create integration
         VoxyConfig.CONFIG.distantTrains = DISTANT_TRAINS.get();
@@ -184,7 +175,6 @@ public class VoxyNeoForgeConfig {
         SUB_DIVISION_SIZE.set((double) VoxyConfig.CONFIG.subDivisionSize);
         USE_ENVIRONMENTAL_FOG.set(VoxyConfig.CONFIG.useEnvironmentalFog);
         DONT_USE_SODIUM_BUILDER_THREADS.set(VoxyConfig.CONFIG.dontUseSodiumBuilderThreads);
-        LOD_EDGE_OVERLAP_BLOCKS.set(VoxyConfig.CONFIG.lodEdgeOverlapBlocks);
         EARTH_CURVE_RATIO.set(VoxyConfig.CONFIG.earthCurveRatio);
         // Create integration
         DISTANT_TRAINS.set(VoxyConfig.CONFIG.distantTrains);
