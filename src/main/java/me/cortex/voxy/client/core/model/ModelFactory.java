@@ -126,7 +126,13 @@ public class ModelFactory {
     private final Mapper mapper;
     private final ModelStore storage;
 
-    private final ConcurrentLinkedDeque<BlockBake> bakeQueue = new ConcurrentLinkedDeque<>();
+    //Renamed from `bakeQueue` on purpose: VSS 0.2.8's ModelFactoryFluidBakeOrderMixin reflects that
+    //name to re-order fluid bakes, a patch for older voxy without native fluid-dependency handling.
+    //This version has it (see addEntry's fluid LUT), and the patch's self-dependent-fluid fallback
+    //wrongly maps custom fluid blocks (Supplement's lumisene, a non-LiquidBlock fluid) to the
+    //transparent model. The rename trips VSS's own reflection guard, which logs once and falls back
+    //to stock voxy behaviour - exactly what we want, without touching its jar.
+    private final ConcurrentLinkedDeque<BlockBake> blockBakeQueue = new ConcurrentLinkedDeque<>();
 
     private final ConcurrentLinkedDeque<ResultUploader> uploadResults = new ConcurrentLinkedDeque<>();
 
@@ -214,7 +220,7 @@ public class ModelFactory {
             if (this.idMappings[blockId] != -1) {
                 return false;
             }
-            this.bakeQueue.add(new BlockBake(blockId, blockState));
+            this.blockBakeQueue.add(new BlockBake(blockId, blockState));
             return true;
 
         } finally {
@@ -223,7 +229,7 @@ public class ModelFactory {
     }
 
     private boolean processModelResult() {
-        var bake = this.bakeQueue.poll();
+        var bake = this.blockBakeQueue.poll();
         if (bake == null) return false;
         ColourDepthTextureData[] textureData = new ColourDepthTextureData[6];
 
@@ -270,7 +276,7 @@ public class ModelFactory {
         if (bakeResult!=null) {
             this.uploadResults.add(bakeResult);
         }
-        return !this.bakeQueue.isEmpty();
+        return !this.blockBakeQueue.isEmpty();
     }
 
     private final ConcurrentLinkedDeque<Mapper.BiomeEntry> biomeQueue = new ConcurrentLinkedDeque<>();
@@ -294,7 +300,7 @@ public class ModelFactory {
         }
 
         while (this.processModelResult());
-        return (this.blockStatesInFlight.size()!=0)||(!this.bakeQueue.isEmpty())||!this.biomeQueue.isEmpty();
+        return (this.blockStatesInFlight.size()!=0)||(!this.blockBakeQueue.isEmpty())||!this.biomeQueue.isEmpty();
     }
 
     public void processUploads(long totalBudgetNanos) {
@@ -1033,7 +1039,7 @@ public class ModelFactory {
         int size = this.blockStatesInFlight.size();
         size += this.uploadResults.size();
         size += this.biomeQueue.size();
-        size += this.bakeQueue.size();
+        size += this.blockBakeQueue.size();
         return size;
     }
 
