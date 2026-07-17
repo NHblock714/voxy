@@ -233,6 +233,14 @@ public class HierarchicalOcclusionTraverser {
         float fullDetailDist = (net.minecraft.client.Minecraft.getInstance().options.renderDistance().get() + 2) * 16f;
         MemoryUtil.memPutFloat(ptr, fullDetailDist*fullDetailDist);ptr += 4;
 
+        //Isotropic angular subdivision floor. Perspective projects equal nodes LARGER at the screen
+        //edges than at the centre, so the area-only test starves the middle of the screen (centre
+        //mushy, edges sharp). size/distance is position-independent; the threshold is calibrated so
+        //that at the screen CENTRE it matches the subDivisionSize-pixel semantics of minSSS:
+        //  centre pixels = size/dist * P11 * height/2  >  subDivisionSize
+        float p11 = viewport.vanillaProjection.m11();
+        float angular = (2.0f * VoxyConfig.CONFIG.subDivisionSize) / (Math.max(0.0001f, p11) * viewport.height);
+        MemoryUtil.memPutFloat(ptr, angular * angular);ptr += 4;
     }
 
     private void bindings(Viewport<?> viewport) {
