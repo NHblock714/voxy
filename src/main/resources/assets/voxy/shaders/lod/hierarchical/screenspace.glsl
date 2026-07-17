@@ -191,8 +191,20 @@ bool isCulledByHiz() {
 
 
 
+//Worst aspect ratio a projected node is charged as. A terrain node viewed edge-on (looking at the
+//horizon) projects to a strip with tiny AREA but a huge pixel span - area alone starves head-on
+//terrain of subdivision, so the screen centre goes mushy while oblique views stay sharp. 1/16
+//treats a strip as at least span*(span/16) big; lower = more aggressive horizon subdivision.
+#define ANISO_ASPECT_CLAMP (1.0f/16.0f)
+
 //Returns if we should decend into its children or not
 bool shouldDecend() {
-    return _screenSize > minSSS;
+    if (_screenSize > minSSS) {
+        return true;
+    }
+    //Grazing-angle guard: charge thin-but-wide projections by their largest visible screen extent
+    vec2 span = _maxBB.xy - _minBB.xy;
+    float maxSpan = max(span.x, span.y);
+    return maxSpan * maxSpan * ANISO_ASPECT_CLAMP > minSSS;
 }
 
