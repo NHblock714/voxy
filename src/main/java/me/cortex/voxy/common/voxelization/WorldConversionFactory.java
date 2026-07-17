@@ -180,7 +180,8 @@ public class WorldConversionFactory {
         // Domum Ornamentum model data is only needed for sections that actually
         // contain material-textured block entities. Avoid the extra palette and
         // ThreadLocal lookups for every voxel in normal sections.
-        final boolean hasDomumSectionMappings = DomumOrnamentumCompat.hasSectionMappings();
+        final boolean hasDomumSectionMappings = DomumOrnamentumCompat.hasSectionMappings()
+                || me.cortex.voxy.commonImpl.compat.CreateCopycatCompat.hasSectionMappings();
         var blockStorage = blockDataAccessor.voxy$getStorage();
         if (blockStorage instanceof SimpleBitStorage bStor) {
             var bDat = bStor.getRaw();
@@ -213,6 +214,7 @@ public class WorldConversionFactory {
                 }
                 if (hasDomumSectionMappings && voxelState != null) {
                     bId = DomumOrnamentumCompat.mapBlockId(stateMapper, voxelState, bId, i);
+                    bId = me.cortex.voxy.commonImpl.compat.CreateCopycatCompat.mapBlockId(stateMapper, voxelState, bId, i);
                 }
                 sample >>>= eBits;
 
@@ -237,7 +239,11 @@ public class WorldConversionFactory {
                 }
                 for (int i = 0; i <= 0xFFF; i++) {
                     byte light = lightSupplier.supply(i&0xF, (i>>8)&0xF, (i>>4)&0xF);
-                    int mappedBlockId = hasDomumSectionMappings && voxelState != null ? DomumOrnamentumCompat.mapBlockId(stateMapper, voxelState, bId, i) : bId;
+                    int mappedBlockId = bId;
+                    if (hasDomumSectionMappings && voxelState != null) {
+                        mappedBlockId = DomumOrnamentumCompat.mapBlockId(stateMapper, voxelState, mappedBlockId, i);
+                        mappedBlockId = me.cortex.voxy.commonImpl.compat.CreateCopycatCompat.mapBlockId(stateMapper, voxelState, mappedBlockId, i);
+                    }
                     data[i] = Mapper.composeMappingId(light, mappedBlockId, biomes[Integer.compress(i,0b1100_1100_1100)]);
                 }
             }

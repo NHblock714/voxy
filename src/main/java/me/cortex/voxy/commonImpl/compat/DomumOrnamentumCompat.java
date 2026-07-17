@@ -95,6 +95,14 @@ public final class DomumOrnamentumCompat {
     public record BakePlan(ModelData modelData, BlockState modelState, BlockState colourState,
                            int fallbackTintAbgr, boolean forceTint) {
         private static final BakePlan EMPTY = new BakePlan(ModelData.EMPTY, null, null, -1, false);
+
+        public static BakePlan empty() {
+            return EMPTY;
+        }
+
+        public boolean isEmpty() {
+            return this == EMPTY;
+        }
     }
 
     private record VariantDescriptor(String key, CompoundTag data, BlockState colourState, int tintAbgr) {

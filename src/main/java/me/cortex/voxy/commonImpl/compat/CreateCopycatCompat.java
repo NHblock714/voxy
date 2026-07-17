@@ -1,0 +1,280 @@
+package me.cortex.voxy.commonImpl.compat;
+
+import me.cortex.voxy.common.world.other.Mapper;
+import net.minecraft.core.BlockPos;
+import net.minecraft.core.registries.BuiltInRegistries;
+import net.minecraft.nbt.CompoundTag;
+import net.minecraft.nbt.NbtUtils;
+import net.minecraft.world.level.block.entity.BlockEntity;
+import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.level.chunk.LevelChunk;
+import net.minecraft.world.level.chunk.LevelChunkSection;
+import net.neoforged.fml.ModList;
+import net.neoforged.neoforge.client.model.data.ModelData;
+import net.neoforged.neoforge.client.model.data.ModelProperty;
+
+import java.lang.reflect.Method;
+import java.util.Map;
+import java.util.Optional;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.Predicate;
+
+//Create's copycat blocks (and the Copycats+ addon's) take their entire appearance from a material
+//BlockState stored on the block entity and fed to the wrapper model through ModelData - with EMPTY
+//model data the wrapper returns the bare base skeleton (nothing), so every copycat baked to a LOD
+//model came out invisible. Same disease, same cure as Domum Ornamentum: register (block state,
+//material) pairs as Mapper variants at ingest time, then rebuild the wrapper's ModelData when the
+//variant block id gets baked. Material extraction is reflective (getMaterial() exists on both
+//Create's CopycatBlockEntity and Copycats+' independent CCCopycatBlockEntity); the multi-material
+//blocks of Copycats+ have no single getMaterial() and quietly fall through (future work).
+public final class CreateCopycatCompat {
+    public static final String VARIANT_TYPE = "create_copycat";
+
+    private static final boolean LOADED = ModList.get().isLoaded("create");
+    private static final String CREATE_PREFIX = "com.simibubi.create.content.decoration.copycat";
+    private static final String ADDON_PREFIX = "com.copycatsplus.copycats";
+
+    private static final ThreadLocal<SectionMappings> SECTION_MAPPINGS =
+            ThreadLocal.withInitial(SectionMappings::new);
+    private static final Map<Mapper, Map<Integer, BlockState>> MATERIALS = new ConcurrentHashMap<>();
+
+    private static final Predicate<BlockState> COPYCAT_STATE_PREDICATE = CreateCopycatCompat::isCopycatState;
+
+    private static final ClassValue<Boolean> COPYCAT_CLASSES = new ClassValue<>() {
+        @Override
+        protected Boolean computeValue(Class<?> type) {
+            String name = type.getName();
+            return name.startsWith(CREATE_PREFIX) || name.startsWith(ADDON_PREFIX);
+        }
+    };
+
+    private static final ClassValue<Optional<Method>> GET_MATERIAL_METHODS = new ClassValue<>() {
+        @Override
+        protected Optional<Method> computeValue(Class<?> type) {
+            try {
+                return Optional.of(type.getMethod("getMaterial"));
+            } catch (ReflectiveOperationException ignored) {
+                return Optional.empty();
+            }
+        }
+    };
+
+    //The wrapper models' ModelData keys, fetched reflectively once. All are public static finals;
+    //stuffing the material under every key lets one ModelData serve either mod's wrapper model.
+    //Copycats+ getQuads reads the MATERIALS map keyed by model part ("material" for single-material
+    //blocks - the same upgrade its own gatherModelData applies), not the single-value property.
+    private static volatile ModelProperty<BlockState> createMaterialProperty;
+    private static volatile ModelProperty<BlockState> addonMaterialProperty;
+    private static volatile ModelProperty<Map<String, BlockState>> addonMaterialsProperty;
+    private static volatile boolean propertiesResolved;
+
+    private CreateCopycatCompat() {
+    }
+
+    public static boolean isLoaded() {
+        return LOADED;
+    }
+
+    public static boolean isCopycatState(BlockState state) {
+        if (!LOADED || state == null) {
+            return false;
+        }
+        return COPYCAT_CLASSES.get(state.getBlock().getClass());
+    }
+
+    public static void beginSection(Mapper mapper, LevelChunk chunk, LevelChunkSection section, int sectionY) {
+        if (!LOADED) {
+            return;
+        }
+        SectionMappings mappings = SECTION_MAPPINGS.get();
+        mappings.reset();
+        if (mapper == null || chunk == null || section == null || chunk.getBlockEntities().isEmpty()
+                || !section.maybeHas(COPYCAT_STATE_PREDICATE)) return;
+
+        int minY = sectionY << 4;
+        int maxY = minY + 15;
+
+        for (BlockEntity blockEntity : chunk.getBlockEntities().values()) {
+            if (blockEntity == null || !COPYCAT_CLASSES.get(blockEntity.getClass())) {
+                continue;
+            }
+            BlockPos pos = blockEntity.getBlockPos();
+            if (pos.getY() < minY || pos.getY() > maxY) {
+                continue;
+            }
+
+            try {
+                Method getMaterial = GET_MATERIAL_METHODS.get(blockEntity.getClass()).orElse(null);
+                if (getMaterial == null) {
+                    continue;//multi-material blocks etc: leave on the plain path
+                }
+                Object materialObj = getMaterial.invoke(blockEntity);
+                if (!(materialObj instanceof BlockState material) || material.isAir()) {
+                    continue;
+                }
+                //An unfilled copycat carries the copycat base "material" - nothing to dress it in
+                var materialId = BuiltInRegistries.BLOCK.getKey(material.getBlock());
+                if (materialId == null || materialId.getPath().equals("copycat_base")) {
+                    continue;
+                }
+
+                int lx = pos.getX() & 15;
+                int ly = pos.getY() & 15;
+                int lz = pos.getZ() & 15;
+                BlockState state = section.getBlockState(lx, ly, lz);
+                if (state == null || state.isAir()) {
+                    continue;
+                }
+
+                CompoundTag data = NbtUtils.writeBlockState(material);
+                String key = data.toString();
+
+                int mappedId = mapper.getIdForBlockStateVariant(state, VARIANT_TYPE, key, data);
+                materialsFor(mapper).putIfAbsent(mappedId, material);
+                mappings.put(lx | (lz << 4) | (ly << 8), mappedId);
+            } catch (Throwable ignored) {
+            }
+        }
+        mappings.active = mappings.touchedCount != 0;
+    }
+
+    public static void endSection() {
+        if (LOADED) SECTION_MAPPINGS.get().active = false;
+    }
+
+    public static boolean hasSectionMappings() {
+        return LOADED && SECTION_MAPPINGS.get().active;
+    }
+
+    public static int mapBlockId(Mapper mapper, BlockState state, int baseBlockId, int localIndex) {
+        if (!LOADED || localIndex < 0 || localIndex >= 4096) {
+            return baseBlockId;
+        }
+        SectionMappings mappings = SECTION_MAPPINGS.get();
+        if (!mappings.active) {
+            return baseBlockId;
+        }
+        int mappedId = mappings.ids[localIndex];
+        return mappedId == 0 ? baseBlockId : mappedId;
+    }
+
+    //Restore a stored variant on world load: the material NBT round-trips through the Mapper storage
+    public static void restoreVariant(Mapper mapper, int blockId, BlockState state, String variantType, CompoundTag data) {
+        if (!LOADED || mapper == null || !VARIANT_TYPE.equals(variantType) || data == null || data.isEmpty()) {
+            return;
+        }
+        try {
+            BlockState material = NbtUtils.readBlockState(
+                    BuiltInRegistries.BLOCK.asLookup(), data);
+            if (!material.isAir()) {
+                materialsFor(mapper).putIfAbsent(blockId, material);
+            }
+        } catch (Throwable ignored) {
+        }
+    }
+
+    //Client only (called from the model bakery): the material's own chunk render type - the copycat
+    //wrapper model only emits quads when queried with the MATERIAL's layer, not the copycat's
+    public static net.minecraft.client.renderer.RenderType renderLayerOverride(Mapper mapper, int blockId) {
+        BlockState material = materialFor(mapper, blockId);
+        if (material == null) {
+            return null;
+        }
+        try {
+            return net.minecraft.client.renderer.ItemBlockRenderTypes.getChunkRenderType(material);
+        } catch (Throwable ignored) {
+            return null;
+        }
+    }
+
+    //The material state drives block colour providers (grass/leaf copycats biome-tint like their material)
+    public static BlockState getColourState(Mapper mapper, int blockId, BlockState fallback) {
+        BlockState material = materialFor(mapper, blockId);
+        return material == null ? fallback : material;
+    }
+
+    //Client only: bake plan carrying the wrapper ModelData (material under both mods' keys) and the
+    //material state for biome tinting
+    public static DomumOrnamentumCompat.BakePlan getBakePlan(Mapper mapper, int blockId) {
+        BlockState material = materialFor(mapper, blockId);
+        if (material == null) {
+            return DomumOrnamentumCompat.BakePlan.empty();
+        }
+        try {
+            resolveProperties();
+            ModelData.Builder builder = ModelData.builder();
+            if (createMaterialProperty != null) {
+                builder.with(createMaterialProperty, material);
+            }
+            if (addonMaterialProperty != null) {
+                builder.with(addonMaterialProperty, material);
+            }
+            if (addonMaterialsProperty != null) {
+                builder.with(addonMaterialsProperty, new java.util.HashMap<>(Map.of("material", material)));
+            }
+            return new DomumOrnamentumCompat.BakePlan(builder.build(), null, material, -1, false);
+        } catch (Throwable ignored) {
+            return DomumOrnamentumCompat.BakePlan.empty();
+        }
+    }
+
+    public static void closeMapper(Mapper mapper) {
+        if (LOADED && mapper != null) {
+            MATERIALS.remove(mapper);
+        }
+    }
+
+    private static BlockState materialFor(Mapper mapper, int blockId) {
+        if (!LOADED || mapper == null) {
+            return null;
+        }
+        Map<Integer, BlockState> materials = MATERIALS.get(mapper);
+        return materials == null ? null : materials.get(blockId);
+    }
+
+    private static Map<Integer, BlockState> materialsFor(Mapper mapper) {
+        return MATERIALS.computeIfAbsent(mapper, m -> new ConcurrentHashMap<>());
+    }
+
+    @SuppressWarnings("unchecked")
+    private static void resolveProperties() {
+        if (propertiesResolved) {
+            return;
+        }
+        try {
+            createMaterialProperty = (ModelProperty<BlockState>) Class
+                    .forName(CREATE_PREFIX + ".CopycatModel")
+                    .getField("MATERIAL_PROPERTY").get(null);
+        } catch (Throwable ignored) {
+        }
+        try {
+            Class<?> addonModel = Class.forName(ADDON_PREFIX + ".foundation.copycat.model.neoforge.CopycatModelNeoForge");
+            addonMaterialProperty = (ModelProperty<BlockState>) addonModel.getField("MATERIAL_PROPERTY").get(null);
+            addonMaterialsProperty = (ModelProperty<Map<String, BlockState>>) addonModel.getField("MATERIALS_PROPERTY").get(null);
+        } catch (Throwable ignored) {
+        }
+        propertiesResolved = true;
+    }
+
+    private static final class SectionMappings {
+        private final int[] ids = new int[4096];
+        private final int[] touched = new int[4096];
+        private int touchedCount;
+        private boolean active;
+
+        void reset() {
+            for (int i = 0; i < this.touchedCount; i++) {
+                this.ids[this.touched[i]] = 0;
+            }
+            this.touchedCount = 0;
+            this.active = false;
+        }
+
+        void put(int index, int id) {
+            if (this.ids[index] == 0) {
+                this.touched[this.touchedCount++] = index;
+            }
+            this.ids[index] = id;
+        }
+    }
+}

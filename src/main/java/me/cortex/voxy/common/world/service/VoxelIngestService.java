@@ -37,6 +37,7 @@ public class VoxelIngestService {
 
         var section = task.section;
         DomumOrnamentumCompat.beginSection(task.world.getMapper(), task.chunk, task.section, task.cy);
+        me.cortex.voxy.commonImpl.compat.CreateCopycatCompat.beginSection(task.world.getMapper(), task.chunk, task.section, task.cy);
         try {
             var vs = SECTION_CACHE.get().setPosition(task.cx, task.cy, task.cz);
 
@@ -58,6 +59,7 @@ public class VoxelIngestService {
             }
         } finally {
             DomumOrnamentumCompat.endSection();
+            me.cortex.voxy.commonImpl.compat.CreateCopycatCompat.endSection();
             //Upstream 0.2.18 ingest-timeout fix: the queue holds a ref per task instead of a one-shot
             //markActive stamp, so a large backlog on a laggy system can no longer let the idle cleaner
             //close the world out from under its own pending ingests
