@@ -101,21 +101,27 @@ public class NormalRenderPipeline extends AbstractRenderPipeline {
     @Override
     protected void finish(Viewport<?> viewport, int sourceFrameBuffer, int srcWidth, int srcHeight) {
         this.finalBlit.bind();
-        var vrs = IGetVoxyRenderSystem.getNullable();
-        float fogStart = vrs != null ? vrs.getCapturedFogStart() : RenderSystem.getShaderFogStart();
-        float fogEnd = vrs != null ? vrs.getCapturedFogEnd()   : RenderSystem.getShaderFogEnd();
-        float[] fogColor = vrs != null ? vrs.getCapturedFogColor() : RenderSystem.getShaderFogColor();
-
-        boolean useFog = VoxyConfig.CONFIG.useEnvironmentalFog
-                && VoxyConfig.CONFIG.fogIntensity > 0.0f
-                && Math.abs(fogEnd - fogStart) > 1.0f;
-
-        if (useFog) {
-            glUniform2f(4, fogStart, fogEnd);
-            glUniform4f(5, fogColor[0], fogColor[1], fogColor[2], 1.0f);
-            glUniform1i(6, RenderSystem.getShaderFogShape().getIndex());
-            glUniform1f(7, Math.clamp(VoxyConfig.CONFIG.fogIntensity, 0.0f, 1.0f));
-            glUniform1f(8, Math.clamp(VoxyConfig.CONFIG.fogDensity, 0.0f, 1.0f));
+        //Fog band derived from voxy's own render distance, colour read live each frame. The captured
+        //vanilla fog is a snapshot: leaving water did not refresh it (sodium owns fog setup), so the
+        //stale underwater blue tinted every LOD in the world until the next capture.
+        if (VoxyConfig.CONFIG.useEnvironmentalFog && VoxyConfig.CONFIG.fogIntensity > 0.0f) {
+            float[] fogColor = RenderSystem.getShaderFogColor();
+            float voxyRenderBlocks = 32f * VoxyConfig.CONFIG.sectionRenderDistance;
+            float far = voxyRenderBlocks * (VoxyConfig.CONFIG.fogDistancePercent / 100.0f);
+            float near = far * 0.5f;
+            if (far - near > 1) {
+                glUniform2f(4, near, far);
+                glUniform4f(5, fogColor[0], fogColor[1], fogColor[2], 1.0f);
+                glUniform1i(6, RenderSystem.getShaderFogShape().getIndex());
+                glUniform1f(7, Math.clamp(VoxyConfig.CONFIG.fogIntensity, 0.0f, 1.0f));
+                glUniform1f(8, Math.clamp(VoxyConfig.CONFIG.fogDensity, 0.0f, 1.0f));
+            } else {
+                glUniform2f(4, 0, 0);
+                glUniform4f(5, 0, 0, 0, 0);
+                glUniform1i(6, 0);
+                glUniform1f(7, 0);
+                glUniform1f(8, 0);
+            }
         } else {
             glUniform2f(4, 0, 0);
             glUniform4f(5, 0, 0, 0, 0);
