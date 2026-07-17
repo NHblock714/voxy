@@ -71,10 +71,8 @@ public final class DistantTrainRenderer implements LodPipelineHooks.Renderer {
         var dimension = mc.level.dimension().location();
         double maxDist = cfg.createRenderDistance(cfg.distantTrainMaxChunks);
         double maxDistSq = maxDist * maxDist;
-        //Create only renders carriages whose entities are still tracked, and vanilla clamps entity
-        //broadcasting to roughly the effective view distance - a compiled section alone is not
-        //enough. Hand over inside the smaller of the two; the live culls use the same boundary so
-        //exactly one representation draws on either side of it.
+        //Hand over at min(carriage tracking cap, full view distance) - the vanilla->LOD transition.
+        //The live culls use the same boundary so exactly one representation draws on either side.
         double handover = TrainHandover.handoverDist();
         double handoverSq = handover * handover;
         long now = System.nanoTime();
