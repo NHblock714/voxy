@@ -76,6 +76,9 @@ public final class CreateTrainSampler {
     private final Map<Long, CarriageShapePayload> shapeCache = new ConcurrentHashMap<>();
     private final Set<Long> failedShapes = ConcurrentHashMap.newKeySet();
 
+    //Key for the per-round pose cache: a carriage pose is identical for every player in a dimension
+    private record PoseKey(long shapeId, ResourceKey<Level> dim) {}
+
     private static Field serialisedEntityField;
 
     private static final boolean CTT_LOADED = net.neoforged.fml.ModList.get().isLoaded("createthreadedtrains");
@@ -174,6 +177,12 @@ public final class CreateTrainSampler {
         //is the voxy-server.toml ceiling. Streaming a band the client never draws is pure waste.
         double streamMax = DistantTrainConfig.maxDistance();
         double streamMaxSq = streamMax * streamMax;
+        //A carriage's world pose (anchor + yaw/pitch + bogey poses) depends only on (train, carriage,
+        //dimension), not on the observing player - but the anchors and buildBogeyPoses were recomputed
+        //once per PLAYER. Memoize the CarriagePose per (shapeId, dimension) for this sample round so N
+        //players watching the same train share one computation. CarriagePose is an immutable record, so
+        //handing the same instance to every player's packet is safe. Cleared implicitly each round.
+        Map<PoseKey, CarriagePose> poseRoundCache = new java.util.HashMap<>();
         for (ServerPlayer player : players) {
             var playerDim = player.level().dimension();
             var playerPos = player.position();
@@ -206,22 +215,28 @@ public final class CreateTrainSampler {
                         }
                     }
 
-                    Vec3 leading = dce.rotationAnchors.getFirst();
-                    Vec3 trailing = dce.rotationAnchors.getSecond();
-                    float yaw = 0, pitch = 0;
-                    if (leading != null && trailing != null) {
-                        //Same convention as Carriage.DimensionalCarriageEntity.alignEntity
-                        Vec3 diff = leading.subtract(trailing);
-                        yaw = (float) (Math.atan2(diff.z, diff.x) * (180.0 / Math.PI)) + 180.0f;
-                        pitch = (float) (-Math.atan2(diff.y, Math.sqrt(diff.x * diff.x + diff.z * diff.z)) * (180.0 / Math.PI));
+                    //Pose is player-independent - compute once per (shapeId, dimension) per round
+                    CarriagePose pose = poseRoundCache.get(new PoseKey(shapeId, playerDim));
+                    if (pose == null) {
+                        Vec3 leading = dce.rotationAnchors.getFirst();
+                        Vec3 trailing = dce.rotationAnchors.getSecond();
+                        float yaw = 0, pitch = 0;
+                        if (leading != null && trailing != null) {
+                            //Same convention as Carriage.DimensionalCarriageEntity.alignEntity
+                            Vec3 diff = leading.subtract(trailing);
+                            yaw = (float) (Math.atan2(diff.z, diff.x) * (180.0 / Math.PI)) + 180.0f;
+                            pitch = (float) (-Math.atan2(diff.y, Math.sqrt(diff.x * diff.x + diff.z * diff.z)) * (180.0 / Math.PI));
+                        }
+                        pose = new CarriagePose(i, shapeId,
+                                dce.positionAnchor.x, dce.positionAnchor.y, dce.positionAnchor.z, yaw, pitch,
+                                buildBogeyPoses(train, carriage, playerDim));
+                        poseRoundCache.put(new PoseKey(shapeId, playerDim), pose);
                     }
 
                     if (poses == null) {
                         poses = new ArrayList<>(train.carriages.size());
                     }
-                    poses.add(new CarriagePose(i, shapeId,
-                            dce.positionAnchor.x, dce.positionAnchor.y, dce.positionAnchor.z, yaw, pitch,
-                            buildBogeyPoses(train, carriage, playerDim)));
+                    poses.add(pose);
                 }
 
                 if (poses != null) {

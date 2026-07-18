@@ -21,6 +21,7 @@ layout(binding = SCENE_UNIFORM_BINDING, std140) uniform SceneUniform {
     float fullDetailDistSq;
     float invP00;
     float invP11;
+    float stretchMax;//pow(1+invP00^2+invP11^2, 1.5) precomputed on the CPU (frame constant)
 };
 
 #import <voxy:lod/hierarchical/queue.glsl>

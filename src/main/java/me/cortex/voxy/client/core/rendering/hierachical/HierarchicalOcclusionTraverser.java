@@ -241,8 +241,14 @@ public class HierarchicalOcclusionTraverser {
         //the tan-space scale factors of the projection (1/P00, 1/P11).
         float p00 = Math.max(0.0001f, viewport.vanillaProjection.m00());
         float p11 = Math.max(0.0001f, viewport.vanillaProjection.m11());
-        MemoryUtil.memPutFloat(ptr, 1.0f / p00);ptr += 4;
-        MemoryUtil.memPutFloat(ptr, 1.0f / p11);ptr += 4;
+        float invP00 = 1.0f / p00;
+        float invP11 = 1.0f / p11;
+        MemoryUtil.memPutFloat(ptr, invP00);ptr += 4;
+        MemoryUtil.memPutFloat(ptr, invP11);ptr += 4;
+        //stretchMax = stretch() evaluated at the screen edge (tan = 1/P00,1/P11): a frame constant the
+        //shader divided into every node's stretch. Precompute it here so shouldDecend drops a per-node
+        //pow() and just reads this uniform.
+        MemoryUtil.memPutFloat(ptr, (float) Math.pow(1.0 + (double) invP00 * invP00 + (double) invP11 * invP11, 1.5));ptr += 4;
     }
 
     private void bindings(Viewport<?> viewport) {

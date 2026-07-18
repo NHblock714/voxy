@@ -256,11 +256,6 @@ public class VoxyRenderSystem {
             return;
         }
 
-        // Restore the depth state expected by the LOD pass.
-        GlStateManager._enableDepthTest();
-        GlStateManager._depthFunc(this.properties.closerEqualDepthCompare());
-        GlStateManager._depthMask(true);
-
         TimingStatistics.resetSamplers();
 
         TimingStatistics.all.start();

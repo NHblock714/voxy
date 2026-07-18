@@ -251,6 +251,30 @@ public final class KineticSnapshots {
             rebake(bucket);
             rebaked++;
         }
+        //Distance-bound the snapshot store. Leave-behinds in unloaded chunks are kept frozen on
+        //purpose, but the sweep only visits LOADED chunks, so without this a long session across a
+        //machine-heavy world accumulates a snapshot (VAO+VBO+heap verts) for every kinetic BE ever
+        //passed, and the per-frame draw loop iterates all of them. The renderer only draws snapshots
+        //within createRenderDistance(0); anything past it is pure waste. Evict buckets beyond that
+        //(plus 2 chunks of hysteresis) so the resident set is a spatial working set, not cumulative.
+        double maxDist = cfg.createRenderDistance(0) + 32.0;
+        double maxDistSq = maxDist * maxDist;
+        SECTIONS.entrySet().removeIf(entry -> {
+            long key = entry.getKey();
+            double scx = (BlockPos.getX(key) << 4) + 8;
+            double scy = (BlockPos.getY(key) << 4) + 8;
+            double scz = (BlockPos.getZ(key) << 4) + 8;
+            double dx = scx - cam.x, dy = scy - cam.y, dz = scz - cam.z;
+            if (dx * dx + dy * dy + dz * dz > maxDistSq) {
+                Bucket bucket = entry.getValue();
+                for (BlockPos snapPos : bucket.geoms.keySet()) {
+                    BEARING_POSITIONS.remove(snapPos);
+                }
+                bucket.close();
+                return true;
+            }
+            return false;
+        });
         //Prune sections emptied by removals
         SECTIONS.values().removeIf(bucket -> {
             if (bucket.geoms.isEmpty()) {

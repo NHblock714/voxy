@@ -1068,6 +1068,10 @@ public class NodeManager {
     }
 
     //==================================================================================================================
+    //Our GPU-side request retry makes the "already in flight" case burstable enough to flood the log;
+    //warn the first few, then stay quiet (de8e324 intent, without its stuck-at-zero counter bug).
+    private int alreadyInFlightWarnCount = 0;
+
     public void processRequest(long pos) {
         int nodeId = this.activeSectionMap.get(pos);
         if (nodeId == -1) {
@@ -1144,7 +1148,12 @@ public class NodeManager {
 
             //Check if the node is already in-flight, if it is, dont do any processing
             if (this.nodeData.isNodeRequestInFlight(nodeId)) {
-                Logger.warn("Tried processing a node that already has a request in flight: " + nodeId + " pos: " + WorldEngine.pprintPos(pos) + " ignoring");
+                if (this.alreadyInFlightWarnCount < 20) {
+                    Logger.warn("Tried processing a node that already has a request in flight: " + nodeId + " pos: " + WorldEngine.pprintPos(pos) + " ignoring");
+                    if (++this.alreadyInFlightWarnCount == 20) {
+                        Logger.warn("Suppressing further 'request already in flight' warnings");
+                    }
+                }
                 return;
             }
 

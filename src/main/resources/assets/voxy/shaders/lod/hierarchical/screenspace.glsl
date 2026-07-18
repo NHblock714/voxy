@@ -203,9 +203,8 @@ bool shouldDecend() {
     //screen's most favourable position, edges get boost~1 and keep their existing behaviour.
     vec2 ndcCenter = (_minBB.xy + _maxBB.xy) - 1.0f;
     vec2 tanPos = ndcCenter * vec2(invP00, invP11);
-    vec2 tanMax = vec2(invP00, invP11);
     float stretchNode = pow(1.0f + dot(tanPos, tanPos), 1.5f);
-    float stretchMax = pow(1.0f + dot(tanMax, tanMax), 1.5f);
+    //stretchMax (the screen-edge stretch) is a frame constant supplied as a uniform
     return _screenSize * (stretchMax / stretchNode) > minSSS;
 }
 

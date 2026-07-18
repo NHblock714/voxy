@@ -31,10 +31,18 @@ public class WorldConversionFactory {
     private static final class Cache {
         private final int[] biomeCache = new int[4*4*4];
         private final WeakHashMap<Mapper, Reference2IntOpenHashMap<BlockState>> localMapping = new WeakHashMap<>();
+        //Biome ids resolve through Mapper.getIdForBiome, which builds a ResourceLocation string per
+        //call. Registry biome holders are stable within a session, so an identity cache keyed on the
+        //holder saves 64 string allocations + hashes per section on the ingest hot path (mirrors the
+        //block-state localMapping above).
+        private final WeakHashMap<Mapper, Reference2IntOpenHashMap<Holder<Biome>>> localBiomeMapping = new WeakHashMap<>();
         private int[] paletteCache = new int[1024];
         private final long[] zoomCellCache = new long[5*5*5];
         private Reference2IntOpenHashMap<BlockState> getLocalMapping(Mapper mapper) {
             return this.localMapping.computeIfAbsent(mapper, (a_)->new Reference2IntOpenHashMap<>());
+        }
+        private Reference2IntOpenHashMap<Holder<Biome>> getLocalBiomeMapping(Mapper mapper) {
+            return this.localBiomeMapping.computeIfAbsent(mapper, (a_)->new Reference2IntOpenHashMap<>());
         }
         private int[] getPaletteCache(int size) {
             if (this.paletteCache.length < size) {
@@ -136,6 +144,7 @@ public class WorldConversionFactory {
         //Cheat by creating a local pallet then read the data directly
         var cache = THREAD_LOCAL.get();
         var blockCache = cache.getLocalMapping(stateMapper);
+        var biomeCacheMap = cache.getLocalBiomeMapping(stateMapper);
 
         var biomes = cache.biomeCache;
         var data = section.section;
@@ -162,7 +171,12 @@ public class WorldConversionFactory {
             for (int y = 0; y < 4; y++) {
                 for (int z = 0; z < 4; z++) {
                     for (int x = 0; x < 4; x++) {
-                        int bid = stateMapper.getIdForBiome(biomeContainer.get(x, y, z));
+                        var biomeHolder = biomeContainer.get(x, y, z);
+                        int bid = biomeCacheMap.getOrDefault(biomeHolder, -1);
+                        if (bid == -1) {
+                            bid = stateMapper.getIdForBiome(biomeHolder);
+                            biomeCacheMap.put(biomeHolder, bid);
+                        }
                         biomes[i++] = bid;
                         if (inital==-1) inital = bid;
                         shouldZoom &= inital == bid;//Evil hacky trick, we only need to zoom if on a biome boarder

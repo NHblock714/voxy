@@ -26,29 +26,28 @@ public final class DistantShaders {
     private static Shader patchedVertexLight;
     private static Shader patchedUniformLight;
     private static AbstractRenderPipeline patchedOwner;
+    private static boolean patchAvailable;
     private static boolean patchFailed;
 
     private DistantShaders() {}
 
     //uniformLightVariant: per-draw light uniform (moving carriages) vs per-vertex baked light (tracks)
     public static Shader forPipeline(AbstractRenderPipeline pipeline, boolean uniformLightVariant) {
-        String patch = null;
-        try {
-            patch = pipeline.patchOpaqueShader(null, "");
-        } catch (Throwable ignored) {
-        }
-        boolean patched = patch != null;
-        if (!patched) {
-            return uniformLightVariant ? uniformLight() : vertexLight();
-        }
-
-        //Patch content follows the pipeline instance (i.e. the loaded shader pack)
+        //Patch content follows the pipeline instance (i.e. the loaded shader pack). Probe the pack's
+        //voxy patch ONCE per pipeline instead of building + discarding the multi-KB patch string every
+        //frame - a pack reload swaps the pipeline instance, which re-triggers this block.
         if (patchedOwner != pipeline) {
             freePatched();
             patchedOwner = pipeline;
             patchFailed = false;
+            String probe = null;
+            try {
+                probe = pipeline.patchOpaqueShader(null, "");
+            } catch (Throwable ignored) {
+            }
+            patchAvailable = probe != null;
         }
-        if (patchFailed) {
+        if (!patchAvailable || patchFailed) {
             return uniformLightVariant ? uniformLight() : vertexLight();
         }
         try {

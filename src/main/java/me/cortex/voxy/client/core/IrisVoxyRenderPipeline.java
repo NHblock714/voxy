@@ -187,7 +187,7 @@ public class IrisVoxyRenderPipeline extends AbstractRenderPipeline {
     private void doBindings() {
         this.bindUniforms();
         if (this.data.getSsboSet() != null) {
-            this.data.getSsboSet().bindingFunction().accept(10);
+            this.data.getSsboSet().bindingFunction().accept(FORWARDED_SSBO_BINDING_BASE);
         }
         if (this.data.getImageSet() != null) {
             this.data.getImageSet().bindingFunction().accept(6);
@@ -223,6 +223,11 @@ public class IrisVoxyRenderPipeline extends AbstractRenderPipeline {
     }
 
     private static final int UNIFORM_BINDING_POINT = 7;//TODO make ths binding point... not randomly 5
+    //Forwarded shader-pack SSBOs bind here. Voxy itself uses SSBO 1/2/5, and VoxyRenderSystem saves &
+    //restores only binding points [0,10) each frame - base 6 keeps the forwarded set (6-9) inside that
+    //window so it gets restored, instead of the old base 10 which leaked into iris' post-voxy passes.
+    //Must stay in lockstep with the GLSL "#define BUFFER_BINDING_INDEX_BASE" below.
+    private static final int FORWARDED_SSBO_BINDING_BASE = 6;
 
     private StringBuilder buildGenericShaderHeader(AbstractSectionRenderer<?, ?> renderer, String input) {
         StringBuilder builder = new StringBuilder(input).append("\n\n\n");
@@ -234,7 +239,7 @@ public class IrisVoxyRenderPipeline extends AbstractRenderPipeline {
         }
 
         if (this.data.getSsboSet() != null) {
-            builder.append("#define BUFFER_BINDING_INDEX_BASE 10\n");//TODO: DONT RANDOMLY MAKE THIS 10
+            builder.append("#define BUFFER_BINDING_INDEX_BASE ").append(FORWARDED_SSBO_BINDING_BASE).append("\n");
             builder.append(this.data.getSsboSet().layout()).append("\n\n");
         }
 

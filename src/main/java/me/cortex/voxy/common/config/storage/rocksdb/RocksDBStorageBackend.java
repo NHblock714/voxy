@@ -100,6 +100,13 @@ public class RocksDBStorageBackend extends StorageBackend {
 
             this.sectionReadOps = new ReadOptions();
             this.sectionWriteOps = new WriteOptions();
+            //LOD sections are an explicitly regenerable cache (loadSection returns air / deletes corrupt
+            //entries, and re-ingesting chunks rebuilds everything), so the WAL - which roughly doubles
+            //bytes written per section save - buys durability we don't need. Skip it for section writes
+            //and instead flush the section memtable to SST on a clean shutdown (see flush()). An unclean
+            //crash loses only sections written since the last memtable flush, and those regenerate. The
+            //id-mapping CF still uses the default WAL-on write path (small, and load-bearing).
+            this.sectionWriteOps.setDisableWAL(true);
 
             this.closeList.add(options);
             this.closeList.add(cfOpts);
@@ -220,6 +227,12 @@ public class RocksDBStorageBackend extends StorageBackend {
     public void flush() {
         try {
             this.db.flushWal(true);
+            //Section writes skip the WAL (see ctor), so their data lives only in the memtable until a
+            //flush - persist it to SST here. flush() is only called on world close / force-resave, never
+            //per section, so the memtable flush cost is a shutdown-time one-off, not a hot-path stall.
+            try (var flushOpts = new FlushOptions().setWaitForFlush(true)) {
+                this.db.flush(flushOpts, this.worldSections);
+            }
         } catch (RocksDBException e) {
             throw new RuntimeException(e);
         }
