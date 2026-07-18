@@ -115,33 +115,37 @@ public final class WorldSection {
     }
 
     //Returns the backing array, allocating and filling it with uniformValue if still uniform.
+    //Fast path is a plain volatile read - the lock is only ever taken for the one-time uniform ->
+    //materialized transition. A CAS-and-discard version wasted a full 32768 long fill on every lost
+    //race, and with ten mesh workers all reaching for the same shared neighbour that was ~10% of all
+    //materialisations.
     public long[] materialize() {
         long[] d = this.data;
         if (d != null) {
             return d;
         }
-        long value = this.uniformValue;
-        long[] fresh = ARRAY_REUSE_CACHE.poll();
-        if (fresh == null) {
-            fresh = new long[SECTION_VOLUME];
-        } else {
-            ARRAY_REUSE_CACHE_COUNT.decrementAndGet();
-        }
-        //MUST fill before publishing: arrays out of the reuse pool are never cleared, so a reader that
-        //saw the array before the fill would render the previous section's voxels as ghost terrain.
-        Arrays.fill(fresh, value);
-        long[] witness = (long[]) DATA_HANDLE.compareAndExchange(this, (long[]) null, fresh);
-        if (witness != null) {
-            //Lost the race - hand our array back and use the winner's, never overwrite it
-            if (ARRAY_REUSE_CACHE_COUNT.get() < ARRAY_REUSE_CACHE_SIZE) {
-                ARRAY_REUSE_CACHE.add(fresh);
-                ARRAY_REUSE_CACHE_COUNT.incrementAndGet();
+        synchronized (this) {
+            d = this.data;
+            if (d != null) {
+                //Another thread materialised while we waited - no work wasted, just note the contention
+                me.cortex.voxy.commonImpl.PerfStats.sectionMaterializeContended.increment();
+                return d;
             }
-            me.cortex.voxy.commonImpl.PerfStats.sectionMaterializeRaceLost.increment();
-            return witness;
+            long value = this.uniformValue;
+            long[] fresh = ARRAY_REUSE_CACHE.poll();
+            if (fresh == null) {
+                fresh = new long[SECTION_VOLUME];
+            } else {
+                ARRAY_REUSE_CACHE_COUNT.decrementAndGet();
+            }
+            //MUST fill before publishing: arrays out of the reuse pool are never cleared, so a reader
+            //that saw the array before the fill would render the previous section's voxels as ghost
+            //terrain. The release store pairs with the volatile read above.
+            Arrays.fill(fresh, value);
+            DATA_HANDLE.setRelease(this, fresh);
+            me.cortex.voxy.commonImpl.PerfStats.sectionMaterialized.increment();
+            return fresh;
         }
-        me.cortex.voxy.commonImpl.PerfStats.sectionMaterialized.increment();
-        return fresh;
     }
 
     public long[] _unsafeGetRawDataArray() {

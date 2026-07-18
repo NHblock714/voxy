@@ -108,10 +108,43 @@ public class WorldUpdater {
 
         //TODO: remove the nonAirCountDelta stuff if level != 0
 
+        //A uniform section being written with values that all equal its uniform value changes nothing,
+        //so it can stay uniform and skip both the 256KiB materialise and the write loop. This is the
+        //common ingest case: whole sections of air above the terrain (the ingest service even has a
+        //uniformAir fast path feeding straight into here). Compare first, materialise only if needed.
+        {
+            long[] existing = worldSection._rawOrNull();
+            if (existing == null) {
+                long uniform = worldSection.getUniformValue();
+                boolean allSame = true;
+                if (lvl == 0) {
+                    for (int i = 0; i <= 0xFFF; i++) {
+                        if (vdat[i] != uniform) { allSame = false; break; }
+                    }
+                } else {
+                    int baseVIdx = VoxelizedSection.getBaseIndexForLevel(lvl);
+                    for (int i = baseVIdx; i <= (0xFFF >> (lvl * 3)) + baseVIdx; i++) {
+                        if (vdat[i] != uniform) { allSame = false; break; }
+                    }
+                }
+                if (allSame) {
+                    //Nothing changed. airCount keeps its meaning - the number of AIR voxels among the
+                    //OLD values of the target sub-region, which for lvl0 is exactly its 4096 voxels.
+                    long unchangedStatus = 0;//didStateChange = false
+                    if (lvl == 0 && Mapper.isAir(uniform)) {
+                        unchangedStatus |= Integer.toUnsignedLong(4096) << 1;
+                    }
+                    me.cortex.voxy.commonImpl.PerfStats.sectionUniformWriteSkipped.increment();
+                    return unchangedStatus;
+                }
+            }
+        }
+
         {//Do a bunch of funny math
-            //Ingest writes per-voxel, so the section has to have a real array. materialize() fills it
-            //with the uniform value first, so the pre-existing contents are preserved exactly - the
-            //airCount / nonEmptyBlockCount bookkeeping below is unchanged by uniform mode.
+            //Writing differing voxels, so a real array is needed. materialize() fills it with the
+            //uniform value first, so the pre-existing contents are preserved exactly and the airCount /
+            //nonEmptyBlockCount bookkeeping below is unchanged. Must re-read: never reuse a hoisted
+            //null, or every write would land in an orphan array and the whole ingest would vanish.
             var secD = worldSection.materialize();
             int baseSec = bx | (bz << 5) | (by << 10);
             if (lvl == 0) {

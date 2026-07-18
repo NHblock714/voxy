@@ -37,10 +37,12 @@ public final class PerfStats {
     public static final LongAdder sectionUniformKept = new LongAdder();
     //Sections that had to allocate a real array (the denominator for the uniform hit rate)
     public static final LongAdder sectionMaterialized = new LongAdder();
-    //Materialise races lost - should stay at or near zero
-    public static final LongAdder sectionMaterializeRaceLost = new LongAdder();
+    //Materialise calls that found another thread had already done it (contention, but no wasted work)
+    public static final LongAdder sectionMaterializeContended = new LongAdder();
     //Neighbour face slices filled from a uniform value instead of copied out of an array
     public static final LongAdder neighborFaceUniformFill = new LongAdder();
+    //Ingest writes whose values all matched the uniform value, so the section stayed uniform
+    public static final LongAdder sectionUniformWriteSkipped = new LongAdder();
 
     //--- section saving ---
     //Batched section writes: sections/commits is the headline (>1 means batching is working at all)
@@ -75,8 +77,9 @@ public final class PerfStats {
                 "section uniform mode", uniform, materialized,
                 totalSections == 0 ? 0.0 : (100.0 * uniform / totalSections),
                 (uniform * 256L) / 1024)).append('\n');
-        sb.append(String.format("  %-22s %,d (races lost %,d)",
-                "neighbour uniform fill", neighborFaceUniformFill.sum(), sectionMaterializeRaceLost.sum()));
+        sb.append(String.format("  %-22s %,d (contended %,d)",
+                "neighbour uniform fill", neighborFaceUniformFill.sum(), sectionMaterializeContended.sum())).append('\n');
+        sb.append(String.format("  %-22s %,d", "uniform writes skipped", sectionUniformWriteSkipped.sum()));
         return sb.toString();
     }
 
@@ -85,7 +88,7 @@ public final class PerfStats {
                 kineticSnapshotEvicted, contraptionRebakeSkipped, nodeWarnSuppressed,
                 trainPoseCacheHit, trainPoseCacheMiss, trainShapeBuildDeferred,
                 saveBatchCommits, saveBatchSections,
-                sectionUniformKept, sectionMaterialized, sectionMaterializeRaceLost, neighborFaceUniformFill}) {
+                sectionUniformKept, sectionMaterialized, sectionMaterializeContended, neighborFaceUniformFill, sectionUniformWriteSkipped}) {
             a.reset();
         }
     }
