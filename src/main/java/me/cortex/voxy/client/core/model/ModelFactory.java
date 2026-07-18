@@ -126,12 +126,11 @@ public class ModelFactory {
     private final Mapper mapper;
     private final ModelStore storage;
 
-    //Renamed from `bakeQueue` on purpose: VSS 0.2.8's ModelFactoryFluidBakeOrderMixin reflects that
-    //name to re-order fluid bakes, a patch for older voxy without native fluid-dependency handling.
-    //This version has it (see addEntry's fluid LUT), and the patch's self-dependent-fluid fallback
-    //wrongly maps custom fluid blocks (Supplement's lumisene, a non-LiquidBlock fluid) to the
-    //transparent model. The rename trips VSS's own reflection guard, which logs once and falls back
-    //to stock voxy behaviour - exactly what we want, without touching its jar.
+    //The field name is load-bearing: VSS 0.2.8's ModelFactoryFluidBakeOrderMixin reflects for
+    //`bakeQueue` to re-order fluid bakes. Fluid dependencies are handled natively here (see addEntry's
+    //fluid LUT), and VSS's self-dependent-fluid fallback wrongly maps custom fluid blocks (Supplement's
+    //lumisene, a non-LiquidBlock fluid) to the transparent model. Under any other name VSS's own
+    //reflection guard trips, logs once and leaves the stock path alone - do not rename this back.
     private final ConcurrentLinkedDeque<BlockBake> blockBakeQueue = new ConcurrentLinkedDeque<>();
 
     private final ConcurrentLinkedDeque<ResultUploader> uploadResults = new ConcurrentLinkedDeque<>();
@@ -262,12 +261,34 @@ public class ModelFactory {
 
         boolean hasDarkenedTextures = (flags&2)!=0;
         boolean isShaded = (flags&1)!=0;
-        RenderType layer;
+        //The declared render layer only says what the block is ALLOWED to do, not what it actually does:
+        //a model registered to translucent whose texels are all fully opaque still gets sorted, blended
+        //and excluded from occlusion for nothing. Classify from the pixels we just baked instead - any
+        //partially transparent texel makes it translucent, otherwise opaque-everywhere makes it solid and
+        //anything else is a cutout. Leaves are deliberately not special-cased here; that lives with the
+        //balancedLeaf handling further down.
+        RenderType layer = null;
         if ((flags & 4) != 0) {
-            layer = RenderType.translucent();
-        } else if ((flags & 8) != 0) {
+            boolean anyTranslucent = false;
+            for (var face : textureData) {
+                anyTranslucent |= TextureUtils.hasTranslucentPixel(face);
+                if (anyTranslucent) break;
+            }
+            if (anyTranslucent) {
+                layer = RenderType.translucent();
+            } else {
+                boolean solid = true;
+                for (var face : textureData) {
+                    solid &= TextureUtils.isSolidWhereDrawn(face);
+                    if (!solid) break;
+                }
+                layer = solid ? RenderType.solid() : RenderType.cutout();
+            }
+        }
+        if (layer == null && (flags & 8) != 0) {
             layer = RenderType.cutout();
-        } else {
+        }
+        if (layer == null) {
             layer = RenderType.solid();
         }
         boolean centeredGroundCross = (flags & SoftwareModelTextureBakery.FLAG_CENTERED_GROUND_CROSS) != 0;
@@ -830,11 +851,10 @@ public class ModelFactory {
             return (state, world, pos, tintIndex) -> blockColors.getColor(state, world, pos, tintIndex);
         }
         BlockColor provider = (state, world, pos, tintIndex) -> blockColors.getColor(state, world, pos, tintIndex);
-        //Probe through the SAME path the capture uses. The old probe passed a null level and only tint
-        //index 0, which rejected any modded block whose colour provider dereferences the level (it threw,
-        //and the catch read as "no tint") or that only answers on tint index 1 - captureColourConstant
-        //copes with both, so gating more strictly than it just meant those blocks baked untinted and
-        //rendered as their raw greyscale texture at LOD range (grey modded leaves).
+        //Probe through the same path the capture uses. Probing more strictly - a null level, tint index
+        //0 only - rejects modded providers that dereference the level (they throw, and the catch reads as
+        //"no tint") and those that only answer on tint index 1. captureColourConstant copes with both,
+        //and a rejected block bakes untinted: its raw greyscale texture at LOD range, i.e. grey leaves.
         int color;
         try {
             color = captureColourConstant(provider, defaultState, DEFAULT_BIOME);

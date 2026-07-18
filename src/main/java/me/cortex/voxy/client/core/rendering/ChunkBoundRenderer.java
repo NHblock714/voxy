@@ -126,10 +126,12 @@ public class ChunkBoundRenderer {
 
         {//This is recomputed to be in chunk section space not worldsection
 
-            //Camera block pos
-            int bx = (int)(viewport.cameraX);
-            int by = (int)(viewport.cameraY);
-            int bz = (int)(viewport.cameraZ);
+            //Camera block pos. floor, not a cast: a cast truncates toward zero, so at negative
+            //coordinates it lands one block the wrong way and the sub-block remainder below comes out
+            //negative, shifting the whole mask by a block on that side of the origin.
+            int bx = (int)Math.floor(viewport.cameraX);
+            int by = (int)Math.floor(viewport.cameraY);
+            int bz = (int)Math.floor(viewport.cameraZ);
             new Vector3i(bx, by, bz).getToAddress(ptr); ptr += 4*4;
 
             var negInnerBlock = new Vector3f(

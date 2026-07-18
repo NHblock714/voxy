@@ -137,7 +137,7 @@ public class MixinRenderSectionManager {
 
                     //Note: we dont do this check and just blindly ingest, it shouldbe ok :tm:
                     //if (blp != null || slp != null)
-                        VoxelIngestService.rawIngest(system.getEngine(), section, x, y, z, blp == null ? null : blp.copy(), slp == null ? null : slp.copy());
+                        VoxelIngestService.rawIngest(system.getEngine(), chunk, section, x, y, z, blp == null ? null : blp.copy(), slp == null ? null : slp.copy());
                 }
             }
         }
