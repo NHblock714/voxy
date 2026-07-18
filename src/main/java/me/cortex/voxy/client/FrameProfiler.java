@@ -24,6 +24,18 @@ public final class FrameProfiler {
     private FrameProfiler() {}
 
     private static final int SNAPSHOT_INTERVAL_MS = 500;
+    //A frame this long is a stall, not a slow frame - grab the render thread's stack while it is still
+    //in whatever was blocking. This is the one thing an external sampling profiler cannot give us,
+    //because it cannot know which of its samples landed inside a bad frame.
+    private static final long STALL_THRESHOLD_MICROS = 40_000;
+    private static final int MAX_STALL_CAPTURES = 40;
+
+    //Named so the report says what each stage is instead of a bare letter
+    private static final String[] STAGE_NAMES = {
+            "frame total", "voxy all", "voxy main", "voxy dynamic", "voxy postDyn",
+            "E maskRaster", "H modelBake", "F traversal", "G buildDrawCalls", "D downloadTick",
+            "A nodeUpload", "B scatterWrite", "C cleanerIds",
+    };
 
     private static volatile boolean active;
     private static long startedAtMs;
@@ -34,6 +46,7 @@ public final class FrameProfiler {
     //frame wall time in micros; the stage timers are millis*1000 to keep everything integral
     private static final List<long[]> frames = new ArrayList<>();
     private static final List<String> snapshots = new ArrayList<>();
+    private static final List<String> stalls = new ArrayList<>();
 
     public static boolean isActive() {
         return active;
@@ -45,6 +58,7 @@ public final class FrameProfiler {
         }
         frames.clear();
         snapshots.clear();
+        stalls.clear();
         startedAtMs = System.currentTimeMillis();
         endAtMs = startedAtMs + seconds * 1000L;
         lastSnapshotMs = 0;
@@ -74,7 +88,21 @@ public final class FrameProfiler {
                     micros(TimingStatistics.main),
                     micros(TimingStatistics.dynamic),
                     micros(TimingStatistics.postDynamic),
+                    micros(TimingStatistics.E),
+                    micros(TimingStatistics.H),
+                    micros(TimingStatistics.F),
+                    micros(TimingStatistics.G),
+                    micros(TimingStatistics.D),
+                    micros(TimingStatistics.A),
+                    micros(TimingStatistics.B),
+                    micros(TimingStatistics.C),
             });
+            //The frame that just ENDED was long: the render thread is here, so its own stack is no
+            //longer informative, but the worker threads still are - and if the stall repeats the
+            //aggregate over several captures points straight at it.
+            if (frameMicros >= STALL_THRESHOLD_MICROS && stalls.size() < MAX_STALL_CAPTURES) {
+                stalls.add(captureStacks(frameMicros));
+            }
         }
 
         long nowMs = System.currentTimeMillis();
@@ -94,6 +122,46 @@ public final class FrameProfiler {
 
     private static long micros(TimingStatistics.TimeSampler sampler) {
         return (long) (sampler.getRolling() * 1000.0);
+    }
+
+    //Voxy's own threads plus the render thread. Anything blocking the render thread on a GL fence
+    //usually has a partner thread doing the work, so both sides are needed to read a stall.
+    private static boolean isInterestingThread(Thread t) {
+        String name = t.getName();
+        return name.equals("Render thread")
+                || name.startsWith("Voxy")
+                || name.startsWith("Async Node Manager")
+                || name.contains("Ingest")
+                || name.contains("Section saving")
+                || name.contains("Model factory")
+                || name.contains("Render gen");
+    }
+
+    private static String captureStacks(long frameMicros) {
+        var sb = new StringBuilder();
+        sb.append("=== stall ").append(String.format("%.1fms", frameMicros / 1000.0))
+                .append(" at t+").append(System.currentTimeMillis() - startedAtMs).append("ms\n");
+        try {
+            for (var entry : Thread.getAllStackTraces().entrySet()) {
+                Thread thread = entry.getKey();
+                if (!isInterestingThread(thread)) {
+                    continue;
+                }
+                StackTraceElement[] trace = entry.getValue();
+                if (trace.length == 0) {
+                    continue;
+                }
+                sb.append("  [").append(thread.getName()).append(" ").append(thread.getState()).append("]\n");
+                //Deep enough to cross the mod boundary into whatever is actually blocking
+                int limit = Math.min(trace.length, 18);
+                for (int i = 0; i < limit; i++) {
+                    sb.append("      ").append(trace[i]).append('\n');
+                }
+            }
+        } catch (Throwable e) {
+            sb.append("  <stack capture failed: ").append(e).append(">\n");
+        }
+        return sb.toString();
     }
 
     private static String snapshot(long nowMs) {
@@ -126,8 +194,8 @@ public final class FrameProfiler {
         report.append("voxy frame capture - ").append(frames.size()).append(" frames\n");
         report.append(configLine()).append("\n\n");
 
-        String[] names = {"frame total", "voxy all", "voxy main", "voxy dynamic", "voxy postDynamic"};
-        report.append(String.format("%-16s %8s %8s %8s %8s %8s%n", "stage(ms)", "p50", "p90", "p99", "max", "mean"));
+        String[] names = STAGE_NAMES;
+        report.append(String.format("%-18s %8s %8s %8s %8s %8s%n", "stage(ms)", "p50", "p90", "p99", "max", "mean"));
         for (int col = 0; col < names.length; col++) {
             long[] values = new long[frames.size()];
             for (int i = 0; i < frames.size(); i++) {
@@ -137,7 +205,7 @@ public final class FrameProfiler {
             double mean = 0;
             for (long v : values) mean += v;
             mean /= values.length;
-            report.append(String.format("%-16s %8.2f %8.2f %8.2f %8.2f %8.2f%n", names[col],
+            report.append(String.format("%-18s %8.2f %8.2f %8.2f %8.2f %8.2f%n", names[col],
                     pct(values, 50) / 1000.0, pct(values, 90) / 1000.0, pct(values, 99) / 1000.0,
                     values[values.length - 1] / 1000.0, mean / 1000.0));
         }
@@ -149,8 +217,30 @@ public final class FrameProfiler {
         double medianMs = pct(totals, 50) / 1000.0;
         report.append("\nimplied fps: p50=").append(String.format("%.0f", 1000.0 / Math.max(0.001, medianMs)))
                 .append("  p99-frame=").append(String.format("%.1fms", pct(totals, 99) / 1000.0))
-                .append("  worst=").append(String.format("%.1fms", totals[totals.length - 1] / 1000.0))
-                .append("\n\nsubsystem snapshots (every ").append(SNAPSHOT_INTERVAL_MS).append("ms):\n");
+                .append("  worst=").append(String.format("%.1fms", totals[totals.length - 1] / 1000.0));
+
+        //How much of the frame budget is spent above the stall threshold at all
+        int stallFrames = 0;
+        long stallMicros = 0;
+        for (long t : totals) {
+            if (t >= STALL_THRESHOLD_MICROS) {
+                stallFrames++;
+                stallMicros += t;
+            }
+        }
+        report.append("\nstalls (>").append(STALL_THRESHOLD_MICROS / 1000).append("ms): ")
+                .append(stallFrames).append(" frames, ")
+                .append(String.format("%.2fs", stallMicros / 1_000_000.0)).append(" total\n");
+
+        if (!stalls.isEmpty()) {
+            report.append("\nstall stacks (").append(stalls.size()).append(" captured, cap ")
+                    .append(MAX_STALL_CAPTURES).append("):\n");
+            for (String s : stalls) {
+                report.append(s);
+            }
+        }
+
+        report.append("\nsubsystem snapshots (every ").append(SNAPSHOT_INTERVAL_MS).append("ms):\n");
         for (String s : snapshots) {
             report.append(s).append('\n');
         }
@@ -164,6 +254,7 @@ public final class FrameProfiler {
         }
         frames.clear();
         snapshots.clear();
+        stalls.clear();
         return "Frame capture written to " + out.toAbsolutePath() + " (median " + String.format("%.1f", medianMs) + "ms/frame)";
     }
 
