@@ -103,10 +103,16 @@ public final class KineticCull {
     //cubes can never show its rotating instance, yet it keeps submitting to the GPU forever - and the
     //raycast culler (nowheel/EntityCulling) structurally cannot catch this, because its ray target is
     //the 3x3x3 shell around the BE: the casing and the face-neighbours are part of the target, never
-    //occluders. Encased blocks (EncasedBlock: encased shafts/cogs/pipes) only expose their part along
-    //the rotation axis, so two opaque axis ends suffice; anything else needs all six. Not gated on the
-    //voxy render state - an invisible instance is pure waste with or without LOD - only on its own
-    //config switch. Ship-borne positions are left alone like the distance cull.
+    //occluders. Encased SHAFTS only expose their rod along the rotation axis, so two opaque axis ends
+    //suffice; anything else needs all six. Not gated on the voxy render state - an invisible instance
+    //is pure waste with or without LOD - only on its own config switch. Ship-borne positions are left
+    //alone like the distance cull.
+    //
+    //Cogwheels are DELIBERATELY excluded: their teeth stick out on the faces perpendicular to the axis
+    //(that is how they mesh), so the axis-end rule is wrong for them - an encased cog with both axis
+    //ends covered still shows its rim, and culling it made the teeth pop out of existence. The six-face
+    //rule would technically hold for a fully buried cog, but keep the exclusion whole per the design
+    //call: this cull is for shafts.
     public static boolean enclosed(BlockPos pos) {
         if (!VoxyConfig.CONFIG.kineticEnclosedCulling) {
             return false;
@@ -117,6 +123,9 @@ public final class KineticCull {
         }
         var state = level.getBlockState(pos);
         var block = state.getBlock();
+        if (block instanceof com.simibubi.create.content.kinetics.simpleRelays.ICogWheel) {
+            return false;
+        }
         if (block instanceof com.simibubi.create.content.decoration.encasing.EncasedBlock
                 && block instanceof com.simibubi.create.content.kinetics.base.IRotate rotate) {
             var axis = rotate.getRotationAxis(state);
