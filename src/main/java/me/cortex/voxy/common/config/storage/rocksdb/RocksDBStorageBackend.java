@@ -190,6 +190,60 @@ public class RocksDBStorageBackend extends StorageBackend {
         }
     }
 
+    //One db.write for a group of sections instead of one JNI put + write-group + memtable lock each.
+    //Most valuable on the shutdown flush and on imports, where sections arrive in the thousands.
+    private final class RocksSectionWriteBatch implements SectionWriteBatch {
+        private final WriteBatch batch = new WriteBatch();
+        private int count;
+        private long bytes;
+
+        @Override
+        public void put(long key, MemoryBuffer data) {
+            try (var stack = MemoryStack.stackPush()) {
+                var keyBuff = stack.calloc(8);
+                MemoryUtil.memPutLong(MemoryUtil.memAddress(keyBuff), Long.reverseBytes(swizzlePos(key)));
+                //WriteBatch copies the value here, so the caller's scratch buffer is free after this
+                this.batch.put(RocksDBStorageBackend.this.worldSections, keyBuff, data.asByteBuffer());
+            } catch (RocksDBException e) {
+                throw new RuntimeException(e);
+            }
+            this.count++;
+            this.bytes += data.size;
+        }
+
+        @Override public int size() { return this.count; }
+        @Override public long dataSize() { return this.bytes; }
+
+        @Override
+        public void commit() {
+            if (this.count == 0) {
+                return;
+            }
+            try {
+                //MUST be sectionWriteOps: it carries setDisableWAL(true). A fresh WriteOptions here
+                //would silently push every section write back through the WAL.
+                RocksDBStorageBackend.this.db.write(RocksDBStorageBackend.this.sectionWriteOps, this.batch);
+            } catch (RocksDBException e) {
+                throw new RuntimeException(e);
+            } finally {
+                //Drop the contents even on failure so a retry cannot double-write
+                this.batch.clear();
+                this.count = 0;
+                this.bytes = 0;
+            }
+        }
+
+        @Override
+        public void close() {
+            this.batch.close();
+        }
+    }
+
+    @Override
+    public SectionWriteBatch createSectionWriteBatch() {
+        return new RocksSectionWriteBatch();
+    }
+
     @Override
     public void deleteSectionData(long key) {
         try {

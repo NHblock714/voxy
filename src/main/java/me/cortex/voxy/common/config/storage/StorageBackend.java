@@ -14,6 +14,39 @@ public abstract class StorageBackend implements IMappingStorage, IStoredSectionP
 
     public abstract void setSectionData(long key, MemoryBuffer data);
 
+    //A group of section writes applied together. Thread-confined: created, filled and committed on one
+    //thread. put() MUST fully consume data before returning - callers hand in a thread-local scratch
+    //buffer that the next serialize overwrites, so a batch can defer the COMMIT but never the read.
+    public interface SectionWriteBatch extends AutoCloseable {
+        void put(long key, MemoryBuffer data);
+        int size();
+        long dataSize();
+        //Apply and empty the batch; the batch stays usable afterwards
+        void commit();
+        @Override void close();
+    }
+
+    //Default: replay entries one at a time, i.e. exactly today's behaviour. Backends that can do better
+    //(rocksdb) override; the rest need no changes.
+    public SectionWriteBatch createSectionWriteBatch() {
+        return new SectionWriteBatch() {
+            private int count;
+            private long bytes;
+
+            @Override
+            public void put(long key, MemoryBuffer data) {
+                StorageBackend.this.setSectionData(key, data);
+                this.count++;
+                this.bytes += data.size;
+            }
+
+            @Override public int size() { return this.count; }
+            @Override public long dataSize() { return this.bytes; }
+            @Override public void commit() { this.count = 0; this.bytes = 0; }
+            @Override public void close() {}
+        };
+    }
+
     public abstract void deleteSectionData(long key);
 
     public abstract void flush();

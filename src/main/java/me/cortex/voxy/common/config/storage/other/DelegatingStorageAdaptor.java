@@ -28,6 +28,11 @@ public class DelegatingStorageAdaptor extends StorageBackend {
     }
 
     @Override
+    public SectionWriteBatch createSectionWriteBatch() {
+        return this.delegate.createSectionWriteBatch();
+    }
+
+    @Override
     public void deleteSectionData(long key) {
         this.delegate.deleteSectionData(key);
     }

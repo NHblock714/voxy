@@ -53,6 +53,24 @@ public class SectionSerializationStorage extends SectionStorage {
     }
 
     @Override
+    public SectionSaveBatch createSaveBatch() {
+        var inner = this.backend.createSectionWriteBatch();
+        return new SectionSaveBatch() {
+            @Override
+            public void add(WorldSection section) {
+                //Serialise here, exactly where saveSection would have: the serializer returns a
+                //thread-local scratch buffer, so the batch must consume it before this returns
+                inner.put(section.key, SaveLoadSystem3.serialize(section));
+            }
+
+            @Override public int size() { return inner.size(); }
+            @Override public long dataSize() { return inner.dataSize(); }
+            @Override public void commit() { inner.commit(); }
+            @Override public void close() { inner.close(); }
+        };
+    }
+
+    @Override
     public void putIdMapping(int id, ByteBuffer data) {
         this.backend.putIdMapping(id, data);
     }

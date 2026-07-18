@@ -32,6 +32,11 @@ public final class PerfStats {
     //Heavy Contraption.fromNBT shape builds pushed to a later tick by the per-round budget
     public static final LongAdder trainShapeBuildDeferred = new LongAdder();
 
+    //--- section saving ---
+    //Batched section writes: sections/commits is the headline (>1 means batching is working at all)
+    public static final LongAdder saveBatchCommits = new LongAdder();
+    public static final LongAdder saveBatchSections = new LongAdder();
+
     private static String ratio(String name, LongAdder hit, LongAdder miss) {
         long h = hit.sum();
         long m = miss.sum();
@@ -48,14 +53,19 @@ public final class PerfStats {
         sb.append(String.format("  %-22s %,d", "kinetic snapshots evicted", kineticSnapshotEvicted.sum())).append('\n');
         sb.append(String.format("  %-22s %,d", "contraption rebakes skipped", contraptionRebakeSkipped.sum())).append('\n');
         sb.append(String.format("  %-22s %,d", "train shapes deferred", trainShapeBuildDeferred.sum())).append('\n');
-        sb.append(String.format("  %-22s %,d", "node warns suppressed", nodeWarnSuppressed.sum()));
+        sb.append(String.format("  %-22s %,d", "node warns suppressed", nodeWarnSuppressed.sum())).append('\n');
+        long commits = saveBatchCommits.sum();
+        long batched = saveBatchSections.sum();
+        sb.append(String.format("  %-22s %,d sections in %,d commits (avg %.1f/commit)",
+                "save batching", batched, commits, commits == 0 ? 0.0 : (double) batched / commits));
         return sb.toString();
     }
 
     public static void reset() {
         for (LongAdder a : new LongAdder[]{biomeCacheHit, biomeCacheMiss, copycatKeyHit, copycatKeyMiss,
                 kineticSnapshotEvicted, contraptionRebakeSkipped, nodeWarnSuppressed,
-                trainPoseCacheHit, trainPoseCacheMiss, trainShapeBuildDeferred}) {
+                trainPoseCacheHit, trainPoseCacheMiss, trainShapeBuildDeferred,
+                saveBatchCommits, saveBatchSections}) {
             a.reset();
         }
     }

@@ -53,6 +53,56 @@ public class FragmentedStorageBackendAdaptor extends StorageBackend {
         this.backends[this.getSegmentId(key)].setSectionData(key, data);
     }
 
+    //One sub-batch per backend, routed by the same segment id as setSectionData. Commit is not atomic
+    //across fragments, which is fine: sections are independent, regenerable keys.
+    @Override
+    public SectionWriteBatch createSectionWriteBatch() {
+        var subBatches = new SectionWriteBatch[this.backends.length];
+        return new SectionWriteBatch() {
+            @Override
+            public void put(long key, MemoryBuffer data) {
+                int segment = FragmentedStorageBackendAdaptor.this.getSegmentId(key);
+                var sub = subBatches[segment];
+                if (sub == null) {
+                    sub = subBatches[segment] = FragmentedStorageBackendAdaptor.this.backends[segment].createSectionWriteBatch();
+                }
+                sub.put(key, data);
+            }
+
+            @Override
+            public int size() {
+                int total = 0;
+                for (var sub : subBatches) {
+                    if (sub != null) total += sub.size();
+                }
+                return total;
+            }
+
+            @Override
+            public long dataSize() {
+                long total = 0;
+                for (var sub : subBatches) {
+                    if (sub != null) total += sub.dataSize();
+                }
+                return total;
+            }
+
+            @Override
+            public void commit() {
+                for (var sub : subBatches) {
+                    if (sub != null) sub.commit();
+                }
+            }
+
+            @Override
+            public void close() {
+                for (var sub : subBatches) {
+                    if (sub != null) sub.close();
+                }
+            }
+        };
+    }
+
     @Override
     public void deleteSectionData(long key) {
         this.backends[this.getSegmentId(key)].deleteSectionData(key);

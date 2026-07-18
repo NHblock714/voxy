@@ -43,6 +43,11 @@ public class ReadonlyCachingLayer extends StorageBackend {
     }
 
     @Override
+    public SectionWriteBatch createSectionWriteBatch() {
+        return this.cache.createSectionWriteBatch();
+    }
+
+    @Override
     public void deleteSectionData(long key) {
         this.cache.deleteSectionData(key);
     }

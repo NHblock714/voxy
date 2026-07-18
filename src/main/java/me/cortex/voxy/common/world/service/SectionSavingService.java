@@ -3,9 +3,12 @@ package me.cortex.voxy.common.world.service;
 import me.cortex.voxy.common.Logger;
 import me.cortex.voxy.common.thread.Service;
 import me.cortex.voxy.common.thread.ServiceManager;
+import me.cortex.voxy.common.config.section.SectionStorage;
 import me.cortex.voxy.common.world.WorldEngine;
 import me.cortex.voxy.common.world.WorldSection;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.concurrent.ConcurrentLinkedDeque;
 
 //TODO: add an option for having synced saving, that is when call enqueueSave, that will instead, instantly
@@ -22,23 +25,107 @@ public class SectionSavingService {
         this.service = sm.createServiceNoCleanup(() -> this::processJob, 100, "Section saving service");
     }
 
+    //Batch bounds: sections are uncompressed ~66KB each on the wire, so cap by count AND bytes or a
+    //world import piles hundreds of MB of native memory into one write.
+    private static final int MAX_BATCH_SECTIONS = 64;
+    private static final long MAX_BATCH_BYTES = 4L << 20;
+
     private void processJob() {
-        var task = this.saveQueue.pop();
-        var section = task.section;
+        this.processJob(true);
+    }
+
+    //consumePermits=false is only for the shutdown drain: Service.shutdown() has already zeroed the
+    //permits, so steal() would always fail and the big shutdown save would degrade to one at a time -
+    //exactly the case batching is worth the most.
+    private void processJob(boolean consumePermits) {
+        var task = this.saveQueue.poll();
+        if (task == null) {
+            return;
+        }
+        var staged = new ArrayList<WorldSection>(MAX_BATCH_SECTIONS);
+        WorldEngine batchEngine = null;
+        SectionStorage.SectionSaveBatch batch = null;
+        try {
+            while (true) {
+                //A batch may only ever hold ONE engine's sections: the queue is shared across worlds,
+                //and a mixed batch would write one dimension's sections into another's database.
+                if (batchEngine != task.engine()) {
+                    if (batch != null) {
+                        this.finishBatch(batch, staged);
+                        batch.close();
+                        batch = null;
+                    }
+                    batchEngine = task.engine();
+                    batch = batchEngine.storage.createSaveBatch();
+                }
+                this.stageSection(batch, staged, task.section());
+                if (staged.size() >= MAX_BATCH_SECTIONS || batch.dataSize() >= MAX_BATCH_BYTES) {
+                    this.finishBatch(batch, staged);
+                }
+                //Every extra entry consumed must take its permit with it, or the queue length and the
+                //service's job count drift apart (blockTillEmpty would then hang on shutdown)
+                if (!consumePermits || !this.service.steal()) {
+                    break;
+                }
+                task = this.saveQueue.poll();
+                if (task == null) {
+                    break;
+                }
+            }
+        } finally {
+            if (batch != null) {
+                this.finishBatch(batch, staged);
+                batch.close();
+            }
+        }
+    }
+
+    //Per-entry handling is byte-for-byte the old processJob, except saveSection becomes batch.add
+    private void stageSection(SectionStorage.SectionSaveBatch batch, List<WorldSection> staged, WorldSection section) {
         section.assertNotFree();
         try {
             //Upstream 0.2.18 save race: clear the dirty flag only AFTER winning the queue exchange -
             //clearing it first opened a window where a concurrent re-dirty was silently swallowed
             if (section.exchangeIsInSaveQueue(false)) {
                 section.setNotDirty();
-                task.engine.storage.saveSection(section);
+                batch.add(section);
+                staged.add(section);
+                return;
             } else {
                 section.setNotDirty();
             }
         } catch (Exception e) {
             Logger.error("Voxy saver had an exception while executing please check logs and report error", e);
+            section.markDirty();
         }
+        //Anything that did not make it into the batch is released now, as before
         section.release();
+    }
+
+    //release() only after the commit: while a section is held it stays in the tracker's loaded cache,
+    //so WorldEngine.isWorldUsed() is true and the idle cleaner cannot free the world (and close the
+    //storage) out from under a batch that still has staged writes.
+    private void finishBatch(SectionStorage.SectionSaveBatch batch, List<WorldSection> staged) {
+        if (staged.isEmpty()) {
+            return;
+        }
+        boolean committed = true;
+        try {
+            batch.commit();
+            me.cortex.voxy.commonImpl.PerfStats.saveBatchCommits.increment();
+            me.cortex.voxy.commonImpl.PerfStats.saveBatchSections.add(staged.size());
+        } catch (Exception e) {
+            committed = false;
+            Logger.error("Voxy saver failed to commit a batch of " + staged.size() + " sections", e);
+        }
+        for (var section : staged) {
+            if (!committed) {
+                //Dirty was already cleared, so re-mark it: tryUnload's save branch will requeue it
+                section.markDirty();
+            }
+            section.release();
+        }
+        staged.clear();
     }
 
     /*
@@ -89,9 +176,10 @@ public class SectionSavingService {
             this.service.blockTillEmpty();
         }
         this.service.shutdown();
-        //Manually save any remaining entries
+        //Manually save any remaining entries. Permits are already zeroed by shutdown(), so drain
+        //without stealing them - otherwise this degrades to one section per batch.
         while (!this.saveQueue.isEmpty()) {
-            this.processJob();
+            this.processJob(false);
         }
     }
 
