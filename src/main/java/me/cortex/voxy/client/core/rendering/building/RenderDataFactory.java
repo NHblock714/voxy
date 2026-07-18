@@ -1769,6 +1769,13 @@ public class RenderDataFactory {
 
     //section is already acquired and gets released by the parent
     public BuiltSection generateMesh(WorldSection section) {
+        //A uniform air section can only ever mesh to nothing: faces are emitted for its own solid
+        //voxels and it has none (neighbour data only culls faces, it never creates them). Answering
+        //that directly avoids materialising 256KiB and scanning all 32768 voxels to reach quadCount 0 -
+        //and keeps the section uniform, so the neighbours that read its faces take the uniform path too.
+        if (section.isUniform() && Mapper.isAir(section.getUniformValue())) {
+            return BuiltSection.emptyWithChildren(section.key, section.getNonEmptyChildren());
+        }
         //TODO: FIXME: because of the exceptions that are thrown when aquiring modelId
         // this can result in the state of all block meshes and well _everything_ from being incorrect
         //THE EXCEPTION THAT THIS THROWS CAUSES MAJOR ISSUES
