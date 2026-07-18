@@ -15,11 +15,26 @@ Three transforms on nested (jarjar) jars:
 
 Nested jarjar jars must stay STORED (uncompressed) so NeoForge can read them.
 """
-import zipfile, io, os
+import zipfile, io, os, glob, sys
 
 BASE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "build", "libs")
-SRC = os.path.join(BASE, "neo-voxy-0.2.16-beta.jar")
-DST = os.path.join(BASE, "neo-voxy-0.2.16-beta-slim.jar")
+
+
+def _find_src():
+    """The built jar, found by pattern rather than named literally - a hardcoded filename here goes
+    stale on every version bump and fails with nothing but a missing-file error."""
+    candidates = [p for p in glob.glob(os.path.join(BASE, "neo-voxy-*.jar"))
+                  if not p.endswith(("-slim.jar", "-sources.jar", "-javadoc.jar"))]
+    if not candidates:
+        sys.exit("no neo-voxy-*.jar in %s - run gradlew build first" % os.path.normpath(BASE))
+    if len(candidates) > 1:
+        sys.exit("several candidate jars in %s, clean the stale ones:\n  %s"
+                 % (os.path.normpath(BASE), "\n  ".join(sorted(os.path.basename(c) for c in candidates))))
+    return candidates[0]
+
+
+SRC = _find_src()
+DST = SRC[:-len(".jar")] + "-slim.jar"
 
 ROCKS = "META-INF/jarjar/rocksdbjni-10.2.1.jar"
 ROCKS_KEEP = {"librocksdbjni-win64.dll", "librocksdbjni-linux64.so"}
