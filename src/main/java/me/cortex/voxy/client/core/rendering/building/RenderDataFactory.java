@@ -321,7 +321,7 @@ public class RenderDataFactory {
             } else {
                 //Note this is not thread safe! (but eh, fk it)
                 if (!this.fillSliceIfUniform(sec, 0)) {
-                    var raw = sec._unsafeGetRawDataArray();
+                    var raw = sec.materialize();
                     for (int i = 0; i < 32*32; i++) {
                         this.neighboringFaces[i] = raw[(i<<5)+31];//pull the +x faces from the section
                     }
@@ -336,7 +336,7 @@ public class RenderDataFactory {
             } else {
                 //Note this is not thread safe! (but eh, fk it)
                 if (!this.fillSliceIfUniform(sec, 1)) {
-                    var raw = sec._unsafeGetRawDataArray();
+                    var raw = sec.materialize();
                     for (int i = 0; i < 32*32; i++) {
                         this.neighboringFaces[i+32*32] = raw[(i<<5)];//pull the -x faces from the section
                     }
@@ -352,7 +352,7 @@ public class RenderDataFactory {
             } else {
                 //Note this is not thread safe! (but eh, fk it)
                 if (!this.fillSliceIfUniform(sec, 2)) {
-                    var raw = sec._unsafeGetRawDataArray();
+                    var raw = sec.materialize();
                     for (int i = 0; i < 32*32; i++) {
                         this.neighboringFaces[i+32*32*2] = raw[i|(0x1F<<10)];//pull the +y faces from the section
                     }
@@ -373,7 +373,7 @@ public class RenderDataFactory {
             } else {
                 //Note this is not thread safe! (but eh, fk it)
                 if (!this.fillSliceIfUniform(sec, 3)) {
-                    var raw = sec._unsafeGetRawDataArray();
+                    var raw = sec.materialize();
                     for (int i = 0; i < 32*32; i++) {
                         this.neighboringFaces[i+32*32*3] = raw[i];//pull the -y faces from the section
                     }
@@ -389,7 +389,7 @@ public class RenderDataFactory {
             } else {
                 //Note this is not thread safe! (but eh, fk it)
                 if (!this.fillSliceIfUniform(sec, 4)) {
-                    var raw = sec._unsafeGetRawDataArray();
+                    var raw = sec.materialize();
                     for (int i = 0; i < 32*32; i++) {
                         this.neighboringFaces[i+32*32*4] = raw[Integer.expand(i,0b11111_00000_11111)|(0x1F<<5)];//pull the +z faces from the section
                     }
@@ -404,7 +404,7 @@ public class RenderDataFactory {
             } else {
                 //Note this is not thread safe! (but eh, fk it)
                 if (!this.fillSliceIfUniform(sec, 5)) {
-                    var raw = sec._unsafeGetRawDataArray();
+                    var raw = sec.materialize();
                     for (int i = 0; i < 32*32; i++) {
                         this.neighboringFaces[i+32*32*5] = raw[Integer.expand(i,0b11111_00000_11111)];//pull the -z faces from the section
                     }
@@ -1820,7 +1820,7 @@ public class RenderDataFactory {
         Arrays.fill(this.fluidMasks, 0);
 
         //Prepare everything
-        int neighborMskAndFlags = this.prepareSectionData(section._unsafeGetRawDataArray());
+        int neighborMskAndFlags = this.prepareSectionData(section.materialize());
         if ((neighborMskAndFlags&(1<<31))!=0) {//We failed to get everything so throw exception
             throw new IdNotYetComputedException(neighborMskAndFlags&((1<<20)-1), true);
         }

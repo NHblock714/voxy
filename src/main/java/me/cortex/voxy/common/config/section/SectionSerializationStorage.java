@@ -8,10 +8,8 @@ import me.cortex.voxy.common.config.storage.StorageConfig;
 import me.cortex.voxy.common.util.ThreadLocalMemoryBuffer;
 import me.cortex.voxy.common.world.SaveLoadSystem3;
 import me.cortex.voxy.common.world.WorldSection;
-import me.cortex.voxy.common.world.other.Mapper;
 
 import java.nio.ByteBuffer;
-import java.util.Arrays;
 import java.util.function.LongConsumer;
 
 public class SectionSerializationStorage extends SectionStorage {
@@ -65,7 +63,6 @@ public class SectionSerializationStorage extends SectionStorage {
                 inner.put(section.key, SaveLoadSystem3.serialize(section));
             }
 
-            @Override public int size() { return inner.size(); }
             @Override public long dataSize() { return inner.dataSize(); }
             @Override public void commit() { inner.commit(); }
             @Override public void close() { inner.close(); }

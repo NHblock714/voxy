@@ -197,8 +197,8 @@ public class WorldConversionFactory {
         // Domum Ornamentum model data is only needed for sections that actually
         // contain material-textured block entities. Avoid the extra palette and
         // ThreadLocal lookups for every voxel in normal sections.
-        //Fetch the per-voxel variant id maps ONCE per section (each does a ThreadLocal.get) instead of
-        //two ThreadLocal.get per voxel through mapBlockId. Null when this section has no such blocks.
+        //Fetched once per section - each is a ThreadLocal.get, and indexing the arrays directly in the
+        //voxel loop keeps that off the per-voxel path. Null when this section has no such blocks.
         final int[] domumIds = DomumOrnamentumCompat.activeSectionIds();
         final int[] copycatIds = me.cortex.voxy.commonImpl.compat.CreateCopycatCompat.activeSectionIds();
         final boolean hasDomumSectionMappings = domumIds != null || copycatIds != null;

@@ -70,15 +70,6 @@ public class FragmentedStorageBackendAdaptor extends StorageBackend {
             }
 
             @Override
-            public int size() {
-                int total = 0;
-                for (var sub : subBatches) {
-                    if (sub != null) total += sub.size();
-                }
-                return total;
-            }
-
-            @Override
             public long dataSize() {
                 long total = 0;
                 for (var sub : subBatches) {

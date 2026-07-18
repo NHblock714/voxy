@@ -43,7 +43,6 @@ public class CompressionStorageAdaptor extends DelegatingStorageAdaptor {
                 inner.put(key, CompressionStorageAdaptor.this.compressor.compress(data));
             }
 
-            @Override public int size() { return inner.size(); }
             @Override public long dataSize() { return inner.dataSize(); }
             @Override public void commit() { inner.commit(); }
             @Override public void close() { inner.close(); }

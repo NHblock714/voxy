@@ -211,7 +211,6 @@ public class RocksDBStorageBackend extends StorageBackend {
             this.bytes += data.size;
         }
 
-        @Override public int size() { return this.count; }
         @Override public long dataSize() { return this.bytes; }
 
         @Override

@@ -19,7 +19,6 @@ public abstract class StorageBackend implements IMappingStorage, IStoredSectionP
     //buffer that the next serialize overwrites, so a batch can defer the COMMIT but never the read.
     public interface SectionWriteBatch extends AutoCloseable {
         void put(long key, MemoryBuffer data);
-        int size();
         long dataSize();
         //Apply and empty the batch; the batch stays usable afterwards
         void commit();
@@ -30,19 +29,16 @@ public abstract class StorageBackend implements IMappingStorage, IStoredSectionP
     //(rocksdb) override; the rest need no changes.
     public SectionWriteBatch createSectionWriteBatch() {
         return new SectionWriteBatch() {
-            private int count;
             private long bytes;
 
             @Override
             public void put(long key, MemoryBuffer data) {
                 StorageBackend.this.setSectionData(key, data);
-                this.count++;
                 this.bytes += data.size;
             }
 
-            @Override public int size() { return this.count; }
             @Override public long dataSize() { return this.bytes; }
-            @Override public void commit() { this.count = 0; this.bytes = 0; }
+            @Override public void commit() { this.bytes = 0; }
             @Override public void close() {}
         };
     }

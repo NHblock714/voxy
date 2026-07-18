@@ -1,8 +1,6 @@
 package me.cortex.voxy.client.core.model.bakery;
 
 import com.mojang.blaze3d.systems.RenderSystem;
-// TODO: MC 1.21.1 - GpuTexture not accessible
-// import com.mojang.blaze3d.textures.GpuTexture;
 import com.mojang.blaze3d.vertex.MeshData;
 import com.mojang.blaze3d.vertex.VertexFormat;
 import me.cortex.voxy.client.core.gl.GlBuffer;
@@ -28,9 +26,8 @@ public class BudgetBufferRenderer {
 
     public static void init(){}
 
-    // MC 1.21.1: AutoStorageIndexBuffer.name field accessed via Access Transformer
-    // Upstream used: ((com.mojang.blaze3d.opengl.GlBuffer) i.getBuffer(...)).handle
-    // MC 1.21.1: GlBuffer class removed, use AutoStorageIndexBuffer.name instead
+    //The sequential index buffer's gl name is read off AutoStorageIndexBuffer directly, via access
+    //transformer - there is no GlBuffer wrapper to unwrap here.
     private static final GlBuffer indexBuffer;
     static {
         var i = RenderSystem.getSequentialBuffer(VertexFormat.Mode.QUADS);
@@ -55,27 +52,8 @@ public class BudgetBufferRenderer {
     private static GlBuffer immediateBuffer;
     private static int quadCount;
 
-    // TODO: MC 1.21.1 - GpuTexture type not accessible, Gl Texture.glId() not accessible
-    // Need mixin accessor or alternative API for texture ID
-    /*
-    public static void drawFast(MeshData buffer, GpuTexture tex, Matrix4f matrix) {
-        if (buffer.drawState().mode() != VertexFormat.Mode.QUADS) {
-            throw new IllegalStateException("Fast only supports quads");
-        }
-
-        var buff = buffer.vertexBuffer();
-        int size = buff.remaining();
-        if (size%STRIDE != 0) throw new IllegalStateException();
-        size /= STRIDE;
-        if (size%4 != 0) throw new IllegalStateException();
-        size /= 4;
-        setup(MemoryUtil.memAddress(buff), size, getTextureId(tex));
-        buffer.close();
-
-        render(matrix);
-    }
-    */
-
+    //Callers hand over the raw vertex address and a resolved texture name; there is no MeshData-taking
+    //shortcut, because the texture id is not reachable from the texture object here.
     public static void setup(long dataPtr, int quads, int texId) {
         if (quads == 0) {
             throw new IllegalStateException();

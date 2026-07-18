@@ -13,7 +13,6 @@ public abstract class SectionStorage implements IMappingStorage, IStoredSectionP
     //a thread-local scratch buffer), only the write is deferred to commit(). Thread-confined.
     public interface SectionSaveBatch extends AutoCloseable {
         void add(WorldSection section);
-        int size();
         long dataSize();
         void commit();
         @Override void close();
@@ -22,17 +21,13 @@ public abstract class SectionStorage implements IMappingStorage, IStoredSectionP
     //Default: save entries one at a time, i.e. exactly today's behaviour.
     public SectionSaveBatch createSaveBatch() {
         return new SectionSaveBatch() {
-            private int count;
-
             @Override
             public void add(WorldSection section) {
                 SectionStorage.this.saveSection(section);
-                this.count++;
             }
 
-            @Override public int size() { return this.count; }
             @Override public long dataSize() { return 0; }
-            @Override public void commit() { this.count = 0; }
+            @Override public void commit() {}
             @Override public void close() {}
         };
     }

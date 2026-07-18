@@ -1,20 +1,13 @@
 package me.cortex.voxy.client.core.rendering;
 
-// MC 1.21.1 NeoForge: Iris/Vivecraft integrations excluded - not available on NeoForge
-// import me.cortex.voxy.client.core.util.IrisUtil;
-// import net.fabricmc.loader.api.FabricLoader;
-// import org.vivecraft.api.client.VRRenderingAPI;
-// import static org.vivecraft.api.client.data.RenderPass.VANILLA;
-import net.neoforged.fml.ModList;
-
 import java.util.HashMap;
 import java.util.Map;
 import java.util.function.Supplier;
 
+//Holds one viewport per render pass that needs its own matrices. Only the default one is handed out:
+//the LOD terrain is drawn once per frame from the main camera, so getOrCreate exists for callers that
+//key a pass explicitly rather than for pass detection here.
 public class ViewportSelector <T extends Viewport<?>> {
-    // MC 1.21.1 NeoForge: Vivecraft not available - always false
-    public static final boolean VIVECRAFT_INSTALLED = ModList.get() != null && ModList.get().isLoaded("vivecraft");
-
     private final Supplier<T> creator;
     private final T defaultViewport;
     private final Map<Object, T> extraViewports = new HashMap<>();//TODO should maybe be a weak hashmap with value cleanup queue thing?
@@ -28,20 +21,7 @@ public class ViewportSelector <T extends Viewport<?>> {
         return this.extraViewports.computeIfAbsent(holder, a->this.creator.get());
     }
 
-    // MC 1.21.1 NeoForge: Vivecraft VR rendering not available
-    // private T getVivecraftViewport() {
-    //     var pass = VRRenderingAPI.instance().getCurrentRenderPass();
-    //     if (pass == null || pass == VANILLA) {
-    //         return null;
-    //     }
-    //     return this.getOrCreate(pass);
-    // }
-
-    private static final Object IRIS_SHADOW_OBJECT = new Object();
     public T getViewport() {
-        // MC 1.21.1 NeoForge: Simplified viewport selection
-        // Vivecraft and Iris integrations disabled - return default viewport
-        // TODO: Re-enable Iris shadow viewport when Oculus (NeoForge Iris port) support added
         return this.defaultViewport;
     }
 
