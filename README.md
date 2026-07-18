@@ -25,13 +25,41 @@ Storage / lifecycle
 - World engines close when leaving a world (worlds are deletable again)
 - Dynamically registered mixins are dist-gated (dedicated servers boot clean)
 
+Performance
+- Uniform (single-material) world sections carry one value instead of a 32768-long array
+- Section saves batch into one RocksDB write batch per engine rather than one write per section
+- Create's distant-terrain shaders link at init, not on the first frame that draws them
+- `/voxy debug capture` (frame timings, CPU stages, GPU markers, stall stacks) and `/voxy debug perf`
+
 Integrations
+- Create: distant tracks, trains, contraptions and copycat blocks in LOD, with matching culling of
+  the live render paths so nothing floats past the render distance — see `CREATE-COMPAT-NOTES.md`
 - sable: contraption LOD rendering out to a configurable percentage of voxy's render distance
 - EclipticSeasons: seasonal snow LOD (code adapted from the VoxyCompat addon by TeamTea, BSD-3-Clause)
 - VSS (voxy server side): terrain streaming compatibility; `/voxy debug probe` for storage inspection
 - In-game "Integrations" options page (Sodium 0.8 video settings)
 
 ## Building
+
+The integrations compile against mods that cannot be redistributed, so `libs/` is not part of this
+repository and there is no CI build. Populate `libs/aero-spike/` yourself before building:
+
+```
+create-1.21.1-6.0.10.jar
+Ponder-NeoForge-1.21.1-1.0.64.jar
+flywheel-neoforge-api-1.21.1-1.0.6.jar
+flywheel-neoforge-impl-1.21.1-1.0.6.jar     (jarjar'd inside Create)
+sable-2.0.3.jar
+sable-companion-common-1.21.1-1.6.0.jar     (jarjar'd inside sable)
+dev.ryanhcode.sable.sable-sable_rapier-1.21.1-2.0.3.jar   (jarjar'd inside sable)
+eclipticseasons-1.21.1-neoforge-0.13.8.4.1.jar
+bits_n_bobs-2.1.11-beta.jar
+azimuth-1.4.1.jar
+entityculling-neoforge-1.10.5.jar
+```
+
+Versions are pinned: several mixins bind symbol names in Create and Flywheel, so a different
+Create/Flywheel will fail mixin apply rather than degrade. Then:
 
 ```
 gradlew build
@@ -40,9 +68,6 @@ python tools/trim_jar.py
 
 `trim_jar.py` produces the `-slim` jar: it keeps only the win64/linux64 rocksdb natives and strips
 the lwjgl extension `module-info` so dedicated servers can boot (JPMS).
-
-Compile-only jars for sable / EclipticSeasons belong in `libs/aero-spike/` and are not part of
-this repository.
 
 ## License
 

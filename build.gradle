@@ -12,44 +12,24 @@ base {
     archivesName = project.archives_base_name
 }
 
-// Exclude optional integrations from compilation - not all available for NeoForge 1.21.1
-// These can be re-enabled once NeoForge versions become available
+//Sources targeting APIs this build does not have: Fabric-only mods, and vanilla/Sodium members that
+//do not exist here. The Sodium options page is instead driven through SodiumOptionsAPI.
 sourceSets {
     main {
         java {
-            // Sodium config API (changed in Sodium 0.6.x)
             exclude 'me/cortex/voxy/client/config/IConfigPageSetter.java'
-
-            // ModMenu integration (Fabric-only)
             exclude 'me/cortex/voxy/client/config/ModMenuIntegration.java'
-
-            // Vivecraft VR integration - ViewportSelector now NeoForge-compatible
-            // ViewportSelector no longer excluded
-
-            // Flashback integration mixins
-            exclude 'me/cortex/voxy/client/mixin/flashback/**'
-
-            // Nvidium integration mixins
-            exclude 'me/cortex/voxy/client/mixin/nvidium/**'
-
-            // Debug screen integration (API changed in MC 1.21.1)
-            exclude 'me/cortex/voxy/client/VoxyDebugScreenEntry.java'
-            exclude 'me/cortex/voxy/client/mixin/minecraft/MixinDebugScreenEntryList.java'
-
-            // Sodium config integration mixin
             exclude 'me/cortex/voxy/client/config/VoxySodiumOptions.java'
             exclude 'me/cortex/voxy/client/mixin/sodium/MixinVideoSettingsScreen.java'
-
-            // Blaze3D OpenGL debug mixin (GlDebug class not accessible in MC 1.21.1)
-            exclude 'me/cortex/voxy/client/mixin/minecraft/MixinGlDebug.java'
-
-            // MixinFogRenderer now compatible with MC 1.21.1 (rewritten to target net.minecraft.client.renderer.FogRenderer)
-
-            // BlockableEventLoop mixin (isNonRecoverable method removed in MC 1.21.1 - Issue #2)
-            exclude 'me/cortex/voxy/client/mixin/minecraft/MixinBlockableEventLoop.java'
-
-            // Chunky Fabric integration disabled on NeoForge initial port
+            exclude 'me/cortex/voxy/client/mixin/nvidium/**'
             exclude 'me/cortex/voxy/commonImpl/mixin/chunky/**'
+
+            //DebugScreenEntry and GlDebug are not public API here, and BlockableEventLoop lost
+            //isNonRecoverable, so its mixin has no target.
+            exclude 'me/cortex/voxy/client/VoxyDebugScreenEntry.java'
+            exclude 'me/cortex/voxy/client/mixin/minecraft/MixinDebugScreenEntryList.java'
+            exclude 'me/cortex/voxy/client/mixin/minecraft/MixinGlDebug.java'
+            exclude 'me/cortex/voxy/client/mixin/minecraft/MixinBlockableEventLoop.java'
         }
     }
 }
@@ -173,6 +153,20 @@ if (!isInGHA) {
     }
 }
 
+//The mods this fork compiles against are not redistributable, so libs/ is gitignored and a fresh clone
+//has to be populated by hand (see README). The compat sources are not separable from the rest - the
+//mixins, config and Voxy entrypoint all reference them - so a missing jar is a hard stop here rather
+//than several hundred "cannot find symbol" further down.
+def localJars(String... names) {
+    def dir = file("libs/aero-spike")
+    def missing = names.findAll { !new File(dir, it).exists() }
+    if (!missing.isEmpty()) {
+        throw new GradleException("Missing compile-time jars in ${dir}:\n  " + missing.join("\n  ")
+                + "\nSee README.md for where to obtain them.")
+    }
+    return files(names.collect { new File(dir, it) })
+}
+
 configurations {
     sodiumDistribution
 }
@@ -200,52 +194,40 @@ dependencies {
     implementation "net.neoforged:neoforge:${project.neoforge_version}"
 
 
-    // Sodium for NeoForge (matches the 0.8 alpha used by the target modpack)
     sodiumDistribution "maven.modrinth:sodium:${sodiumVersion}"
     implementation "maven.modrinth:sodium:${sodiumVersion}"
     compileOnly files(sodiumCompileJar).builtBy(tasks.named("extractSodiumCompileJar"))
 
-    // Lithium for NeoForge (0.15.1 - latest for MC 1.21.1)
     implementation("maven.modrinth:lithium:mc1.21.1-0.15.1-neoforge")
 
     // Create (distant train sampler on the server; client render path is Create-free)
-    compileOnly files("../_Migration-Toolkit-1.21/lib-1.21/create-1.21.1-6.0.10.jar")
-    compileOnly files("../_Migration-Toolkit-1.21/lib-1.21/Ponder-NeoForge-1.21.1-1.0.64.jar")
-    compileOnly files("../_Migration-Toolkit-1.21/lib-1.21/flywheel-neoforge-api-1.21.1-1.0.6.jar")
+    compileOnly localJars("create-1.21.1-6.0.10.jar", "Ponder-NeoForge-1.21.1-1.0.64.jar",
+            "flywheel-neoforge-api-1.21.1-1.0.6.jar")
 
-    // SodiumOptionsAPI for Video Settings integration
-    // Provides event API to add custom pages to Sodium's options GUI
+    //Sodium's options GUI is extended through this event API; reese's is its own hard dependency.
     compileOnly("maven.modrinth:sodium-options-api:neoforge-1.21.1-1.0.10")
 
-    // Reese's Sodium Options - required by SodiumOptionsAPI
     compileOnly("maven.modrinth:reeses-sodium-options:mc1.21.3-1.8.0+neoforge")
 
-    // Optional mod dependencies - commented out for initial port
-    // TODO: Add NeoForge versions when available
-    //compileOnly "drouarb:nvidium:0.4.1-beta4:1.21.6@jar"
-    //compileOnly("maven.modrinth:modmenu:17.0.0-alpha.1")
     compileOnly("curse.maven:irisshaders-455508:6661598")
 
     // sable 2.0.3 contraption-LOD compat (compileOnly): root API jar + jar-in-jar companion/rapier impl.
-    compileOnly files("libs/aero-spike/sable-2.0.3.jar")
-    compileOnly files("libs/aero-spike/sable-companion-common-1.21.1-1.6.0.jar")
-    compileOnly files("libs/aero-spike/dev.ryanhcode.sable.sable-sable_rapier-1.21.1-2.0.3.jar")
+    compileOnly localJars("sable-2.0.3.jar")
+    compileOnly localJars("sable-companion-common-1.21.1-1.6.0.jar")
+    compileOnly localJars("dev.ryanhcode.sable.sable-sable_rapier-1.21.1-2.0.3.jar")
 
     // EclipticSeasons (compileOnly): native snow-LOD compat, gated at runtime on "eclipticseasons".
-    compileOnly files("libs/aero-spike/eclipticseasons-1.21.1-neoforge-0.13.8.4.1.jar")
+    compileOnly localJars("eclipticseasons-1.21.1-neoforge-0.13.8.4.1.jar")
 
     // bits_n_bobs + its azimuth framework, for the cogwheel-chain LOD snapshot (optional at runtime)
-    compileOnly files("libs/aero-spike/bits_n_bobs-2.1.11-beta.jar")
-    compileOnly files("libs/aero-spike/azimuth-1.4.1.jar")
+    compileOnly localJars("bits_n_bobs-2.1.11-beta.jar")
+    compileOnly localJars("azimuth-1.4.1.jar")
 
     // flywheel impl (jarjar'd inside Create at runtime), for the capture gate bypass mixin target
-    compileOnly files("libs/aero-spike/flywheel-neoforge-impl-1.21.1-1.0.6.jar")
+    compileOnly localJars("flywheel-neoforge-impl-1.21.1-1.0.6.jar")
 
     // EntityCulling (nowheel's base), to read its culled flag for the contraption handover
-    compileOnly files("libs/aero-spike/entityculling-neoforge-1.10.5.jar")
-    //compileOnly("maven.modrinth:chunky:1.4.54-neoforge")
-    //compileOnly("maven.modrinth:vivecraft:1.21.9-1.3.2-neoforge")
-    //compileOnly("maven.modrinth:flashback:rNCr1Rbs")
+    compileOnly localJars("entityculling-neoforge-1.10.5.jar")
 }
 
 
