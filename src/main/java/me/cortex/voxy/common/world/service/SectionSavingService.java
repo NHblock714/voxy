@@ -30,6 +30,14 @@ public class SectionSavingService {
     private static final int MAX_BATCH_SECTIONS = 64;
     private static final long MAX_BATCH_BYTES = 4L << 20;
 
+    //Set while this thread is inside processJob. finishBatch releases the sections it just wrote, and a
+    //release can run the section straight back through tryUnload -> saveSection -> enqueueSave; without
+    //this flag that call takes the self-help drain below and re-enters processJob, nesting another native
+    //WriteBatch per level and releasing up to MAX_BATCH_SECTIONS more sections to recurse on. A sustained
+    //backlog (world import, first flight over new terrain) is exactly when the queue sits above the
+    //threshold, so this is reachable, not theoretical.
+    private static final ThreadLocal<Boolean> DRAINING = ThreadLocal.withInitial(() -> Boolean.FALSE);
+
     private void processJob() {
         this.processJob(true);
     }
@@ -42,12 +50,18 @@ public class SectionSavingService {
         if (task == null) {
             return;
         }
+        boolean outermost = !DRAINING.get();
         var staged = new ArrayList<WorldSection>(MAX_BATCH_SECTIONS);
         WorldEngine batchEngine = null;
         SectionStorage.SectionSaveBatch batch = null;
+        //Raised inside the try so nothing can throw between here and the finally that lowers it - a
+        //flag stuck true would silently drop this thread's queue backpressure for the rest of its life.
         try {
+            if (outermost) {
+                DRAINING.set(Boolean.TRUE);
+            }
             while (true) {
-                //A batch may only ever hold ONE engine's sections: the queue is shared across worlds,
+                //A batch may only ever hold one engine's sections: the queue is shared across worlds,
                 //and a mixed batch would write one dimension's sections into another's database.
                 if (batchEngine != task.engine()) {
                     if (batch != null) {
@@ -64,7 +78,7 @@ public class SectionSavingService {
                 }
                 //Every extra entry consumed must take its permit with it, or the queue length and the
                 //service's job count drift apart (blockTillEmpty would then hang on shutdown)
-                if (!consumePermits || !this.service.steal()) {
+                if (consumePermits && !this.service.steal()) {
                     break;
                 }
                 task = this.saveQueue.poll();
@@ -73,19 +87,24 @@ public class SectionSavingService {
                 }
             }
         } finally {
-            if (batch != null) {
-                this.finishBatch(batch, staged);
-                batch.close();
+            try {
+                if (batch != null) {
+                    this.finishBatch(batch, staged);
+                    batch.close();
+                }
+            } finally {
+                if (outermost) {
+                    DRAINING.set(Boolean.FALSE);
+                }
             }
         }
     }
 
-    //Per-entry handling is byte-for-byte the old processJob, except saveSection becomes batch.add
     private void stageSection(SectionStorage.SectionSaveBatch batch, List<WorldSection> staged, WorldSection section) {
         section.assertNotFree();
         try {
-            //Upstream 0.2.18 save race: clear the dirty flag only AFTER winning the queue exchange -
-            //clearing it first opened a window where a concurrent re-dirty was silently swallowed
+            //Clear the dirty flag only after winning the queue exchange - clearing it first leaves a
+            //window where a concurrent re-dirty is silently swallowed
             if (section.exchangeIsInSaveQueue(false)) {
                 section.setNotDirty();
                 batch.add(section);
@@ -144,8 +163,9 @@ public class SectionSavingService {
                 section.acquire(); //Acquire the section for use
             }
 
-            //Hard limit the save count to prevent OOM
-            if ((!nonBlocking) && this.getTaskCount() > SOFT_MAX_QUEUE_SIZE) {
+            //Hard limit the save count to prevent OOM. Skipped while this thread is already draining -
+            //see DRAINING.
+            if ((!nonBlocking) && !DRAINING.get() && this.getTaskCount() > SOFT_MAX_QUEUE_SIZE) {
                 //wait a bit
                 Thread.yield();
                 /*

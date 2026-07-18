@@ -8,7 +8,6 @@ import org.jetbrains.annotations.Nullable;
 
 import java.lang.invoke.MethodHandles;
 import java.lang.invoke.VarHandle;
-import java.util.Arrays;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.locks.StampedLock;
 
@@ -171,8 +170,8 @@ public class ActiveSectionTracker {
 
                 if (status == 1) {
                     //Undefined state -> all air. Setting it as a uniform value costs nothing: no array is
-                    //allocated and no 256KiB memset runs (that fill used to be ~10% of execution time
-                    //here). Must stay sky-15 air, NOT Mapper.AIR - zero skylight here is what produced
+                    //allocated and no 256KiB memset runs (a fill here measures ~10% of this function's
+                    //time). Must stay sky-15 air, not Mapper.AIR - zero skylight here is what produced
                     //the black terrain family of bugs.
                     int sky = 15;
                     int block = 0;
@@ -225,10 +224,9 @@ public class ActiveSectionTracker {
 
     void tryUnload(WorldSection section, int hints) {
         if (this.engine != null) this.engine.lastActiveTime = System.currentTimeMillis();
-        //Upstream 0.2.18 save-race hardening: re-check shouldSave under the acquired ref (another
-        //thread can win the enqueue), release with unload=true so a lost race retries the whole
-        //pipeline instead of dropping state, and always return here - the save queue's release
-        //drives the unload from then on.
+        //Re-check shouldSave under the acquired ref: another thread can win the enqueue. A lost race
+        //releases with unload=true so the whole pipeline retries instead of dropping state, and this
+        //always returns - from here the save queue's release drives the unload.
         if (section.shouldSave()&&this.engine!=null) {
             if (section.tryAcquire()) {
                 VarHandle.loadLoadFence();
@@ -260,8 +258,8 @@ public class ActiveSectionTracker {
         long stamp = lock.writeLock();
         boolean shouldRetryExit = false;
         try {
-            //Upstream 0.2.18: a ref acquired between the earlier check and taking the shard lock
-            //means someone is using the section - bail before touching the cache
+            //A ref acquired between the earlier check and taking the shard lock means someone is
+            //using the section - bail before touching the cache
             if (section.getRefCount() != 0) {
                 return;
             }

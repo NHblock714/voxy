@@ -59,6 +59,8 @@ public final class WorldSection {
     //happens on the first write that differs, so readers only ever need to snapshot this field once.
     volatile long[] data = null;
     volatile long uniformValue;
+    //data == null is a legal state now (uniform), so it can no longer double as the released marker
+    private boolean arrayReleased;
     volatile int nonEmptyBlockCount = 0;//Note: only needed for level 0 sections
     volatile byte nonEmptyChildren;
 
@@ -146,10 +148,6 @@ public final class WorldSection {
             me.cortex.voxy.commonImpl.PerfStats.sectionMaterialized.increment();
             return fresh;
         }
-    }
-
-    public long[] _unsafeGetRawDataArray() {
-        return this.materialize();
     }
 
     @Override
@@ -242,6 +240,10 @@ public final class WorldSection {
     }
 
     void _releaseArray() {
+        if (VERIFY_WORLD_SECTION_EXECUTION && this.arrayReleased) {
+            throw new IllegalStateException("Section array released twice");
+        }
+        this.arrayReleased = true;
         long[] d = this.data;
         if (d == null) {
             //Never materialised - nothing to return to the pool
@@ -252,6 +254,10 @@ public final class WorldSection {
             ARRAY_REUSE_CACHE_COUNT.incrementAndGet();
         }
         this.data = null;
+        //Without this the section still answers isUniform() with whatever value it held before it was
+        //materialised, so a late read gets a plausible wrong voxel instead of an obvious failure -
+        //and a neighbour face slice would be filled with it wholesale.
+        this.uniformValue = Mapper.AIR;
     }
 
 

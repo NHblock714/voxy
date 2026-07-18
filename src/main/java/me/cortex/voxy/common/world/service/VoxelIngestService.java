@@ -36,9 +36,11 @@ public class VoxelIngestService {
         var task = this.ingestQueue.pop();
 
         var section = task.section;
-        DomumOrnamentumCompat.beginSection(task.world.getMapper(), task.chunk, task.section, task.cy);
-        me.cortex.voxy.commonImpl.compat.CreateCopycatCompat.beginSection(task.world.getMapper(), task.chunk, task.section, task.cy);
         try {
+            //Inside the try: the queue holds a world ref per task and the finally below releases it, so
+            //anything that can throw has to be covered or the world can never be closed again
+            DomumOrnamentumCompat.beginSection(task.world.getMapper(), task.chunk, task.section, task.cy);
+            me.cortex.voxy.commonImpl.compat.CreateCopycatCompat.beginSection(task.world.getMapper(), task.chunk, task.section, task.cy);
             var vs = SECTION_CACHE.get().setPosition(task.cx, task.cy, task.cz);
 
             if (section.hasOnlyAir() && task.blockLight==null && task.skyLight==null) {//If the chunk section has lighting data, propagate it
@@ -60,9 +62,9 @@ public class VoxelIngestService {
         } finally {
             DomumOrnamentumCompat.endSection();
             me.cortex.voxy.commonImpl.compat.CreateCopycatCompat.endSection();
-            //Upstream 0.2.18 ingest-timeout fix: the queue holds a ref per task instead of a one-shot
-            //markActive stamp, so a large backlog on a laggy system can no longer let the idle cleaner
-            //close the world out from under its own pending ingests
+            //The queue holds a ref per task rather than a one-shot markActive stamp, so a large backlog
+            //on a laggy system cannot let the idle cleaner close the world out from under its own
+            //pending ingests
             task.world.releaseRef();
         }
     }
@@ -225,9 +227,9 @@ public class VoxelIngestService {
         return tryIngestChunk(WorldIdentifier.of(chunk.getLevel()), chunk);
     }
 
-    private boolean rawIngest0(WorldEngine engine, LevelChunkSection section, int x, int y, int z, DataLayer bl, DataLayer sl) {
+    private boolean rawIngest0(WorldEngine engine, LevelChunk chunk, LevelChunkSection section, int x, int y, int z, DataLayer bl, DataLayer sl) {
         engine.acquireRef();
-        this.ingestQueue.add(new IngestSection(x, y, z, engine, null, section, bl, sl));
+        this.ingestQueue.add(new IngestSection(x, y, z, engine, chunk, section, bl, sl));
         try {
             this.service.execute();
             return true;
@@ -238,17 +240,20 @@ public class VoxelIngestService {
         }
     }
 
-    public static boolean rawIngest(WorldIdentifier id, LevelChunkSection section, int x, int y, int z, DataLayer bl, DataLayer sl) {
+    //The owning chunk has to come along: the variant compats (Domum, Create copycats) read the section's
+    //block entities in beginSection to re-register their materials, and with a null chunk they bail, so a
+    //re-ingest through here would republish the section stripped of its dressing.
+    public static boolean rawIngest(WorldIdentifier id, LevelChunk chunk, LevelChunkSection section, int x, int y, int z, DataLayer bl, DataLayer sl) {
         if (id == null) return false;
         var engine = id.getOrCreateEngine();
         if (engine == null) return false;
-        return rawIngest(engine, section, x, y, z, bl, sl);
+        return rawIngest(engine, chunk, section, x, y, z, bl, sl);
     }
 
-    public static boolean rawIngest(WorldEngine engine, LevelChunkSection section, int x, int y, int z, DataLayer bl, DataLayer sl) {
+    public static boolean rawIngest(WorldEngine engine, LevelChunk chunk, LevelChunkSection section, int x, int y, int z, DataLayer bl, DataLayer sl) {
         if (!shouldIngestSection(section, x, y, z)) return false;
         if (engine.instanceIn == null) return false;
         if (!engine.instanceIn.isIngestEnabled(null)) return false;//TODO: dont pass in null
-        return engine.instanceIn.getIngestService().rawIngest0(engine, section, x, y, z, bl, sl);
+        return engine.instanceIn.getIngestService().rawIngest0(engine, chunk, section, x, y, z, bl, sl);
     }
 }
