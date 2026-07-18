@@ -44,7 +44,7 @@ public class IrisVoxyRenderPipeline extends AbstractRenderPipeline {
 
         //Bind the drawbuffers
         var oDT = this.data.opaqueDrawTargets;
-        //Every LOD terrain raster pass writes ALL of these per fragment. With a pack asking for 6-8
+        //Every LOD terrain raster pass writes all of these per fragment. With a pack asking for 6-8
         //targets the same geometry costs that many times the ROP bandwidth it does without shaders,
         //which is the main reason LOD gets dramatically more expensive when a pack is loaded. Logged
         //once so the number is in the log when diagnosing a shaders-only framerate drop.
@@ -232,7 +232,7 @@ public class IrisVoxyRenderPipeline extends AbstractRenderPipeline {
     private static final int UNIFORM_BINDING_POINT = 7;//TODO make ths binding point... not randomly 5
     //Forwarded shader-pack SSBOs bind here. Voxy itself uses SSBO 1/2/5, and VoxyRenderSystem saves &
     //restores only binding points [0,10) each frame - base 6 keeps the forwarded set (6-9) inside that
-    //window so it gets restored, instead of the old base 10 which leaked into iris' post-voxy passes.
+    //window so it gets restored. A base past that window leaks into iris' post-voxy passes.
     //Must stay in lockstep with the GLSL "#define BUFFER_BINDING_INDEX_BASE" below.
     private static final int FORWARDED_SSBO_BINDING_BASE = 6;
 

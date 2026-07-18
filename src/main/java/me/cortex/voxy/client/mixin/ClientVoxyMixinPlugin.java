@@ -73,8 +73,9 @@ public class ClientVoxyMixinPlugin implements IMixinConfigPlugin {
             mixins.add("create.MixinContraptionVisual");
             //Placed kinetic machine blocks: their Flywheel moving parts (rotating shafts/cogs/machine
             //animations) have no distance limit and float over LOD past the render distance. These cull
-            //them there - Mixin1 the shaft/cog/belt/fan family via a base beginFrame, MachineVisuals the
-            //ones that override beginFrame, the Renderer the backend-off BER; the accessor feeds `pos`.
+            //them there - KineticBlockEntityVisual takes the shaft/cog/belt/fan family via a base beginFrame,
+            //MachineVisuals the ones that override it, the Renderer the backend-off BER; the accessor
+            //feeds `pos`.
             mixins.add("create.AccessorAbstractBlockEntityVisual");
             mixins.add("create.MixinKineticBlockEntityVisual");
             mixins.add("create.MixinKineticMachineVisuals");

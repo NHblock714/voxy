@@ -12,9 +12,9 @@ import net.minecraft.world.phys.Vec3;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Shadow;
 
-//Create's track bezier is drawn by this Flywheel visual (GPU instances), NOT the vanilla BER - so
+//Create's track bezier is drawn by this Flywheel visual (GPU instances), not the vanilla BER - so
 //getViewDistance/renderSafe clamps never touch it, and under iris+colorwheel (Flywheel forced on)
-//it is the ONLY draw path. The visual has no distance culling of its own: once the BE's chunk is
+//it is the only draw path. The visual has no distance culling of its own: once the BE's chunk is
 //client-loaded it submits the whole span as instances, and EntityCulling (nowheel) only occlusion-
 //culls it - which fails over voxy LOD where there is no real block to occlude, leaving it floating.
 //

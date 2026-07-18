@@ -24,8 +24,8 @@ import static org.lwjgl.opengl.GL11C.glReadPixels;
 import static org.lwjgl.opengl.GL45C.glGetTextureSubImage;
 
 //Per-frame occlusion recorder for the distant track/train meshes. While armed it samples, inside
-//the render hook, the 3x3 centre depth/stencil BEFORE the meshes draw (what they depth-test
-//against), the same pixels AFTER, the vanilla source depth at the centre with its CPU-side
+//the render hook, the 3x3 centre depth/stencil before the meshes draw (what they depth-test
+//against), the same pixels after, the vanilla source depth at the centre with its CPU-side
 //reprojection, and every track unit's handover verdict. Aim the crosshair at a broken spot, walk
 //the transition band, and the dump tells which link broke: setup classified the pixel empty
 //(stencil 1 + depth 1.0 while vanilla depth says otherwise), LOD depth missing (stencil 1, pre

@@ -31,7 +31,7 @@ public class Voxy {
         modEventBus.addListener(Voxy::registerPayloads);
 
         //Far players / ridden vehicles: server samples player snapshots, client renders lightweight
-        //proxies past the entity view distance (upstream neo-voxy feature)
+        //proxies past the entity view distance
         modEventBus.addListener(this::registerFarEntityPayloads);
         NeoForge.EVENT_BUS.addListener(this.farEntityService::onServerTick);
         NeoForge.EVENT_BUS.addListener(this.farEntityService::onPlayerLoggedOut);

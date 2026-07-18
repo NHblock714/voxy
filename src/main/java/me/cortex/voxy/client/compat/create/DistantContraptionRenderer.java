@@ -31,7 +31,7 @@ import static org.lwjgl.opengl.GL30C.glBindVertexArray;
 public final class DistantContraptionRenderer implements LodPipelineHooks.Renderer {
     public static volatile int lastFrameDrawn;
 
-    //Snapshot refresh runs on the client tick, NOT in the render hook: baking uploads to GL, which
+    //Snapshot refresh runs on the client tick, not in the render hook: baking uploads to GL, which
     //mid-pipeline would clobber the LOD buffer setup (same reason DistantTrackRenderer bakes on tick).
     @net.neoforged.bus.api.SubscribeEvent
     public void onClientTick(net.neoforged.neoforge.client.event.ClientTickEvent.Post event) {
@@ -56,7 +56,7 @@ public final class DistantContraptionRenderer implements LodPipelineHooks.Render
     //No removal-event handling: on the client a real disassembly and the server's entity tracker
     //letting go both arrive as the same DISCARDED removal, and tracking ranges vary per server, so any
     //distance heuristic here guesses wrong somewhere. Presence-based cleanup in the manager's update
-    //covers disassembly instead: very near the player the entity MUST be tracked, so a snapshot with
+    //covers disassembly instead: very near the player the entity is always tracked, so a snapshot with
     //no live entity there is a structure that no longer exists.
 
     @Override
@@ -98,7 +98,7 @@ public final class DistantContraptionRenderer implements LodPipelineHooks.Render
                 }
                 double dx = snap.x() - camX, dy = snap.y() - camY, dz = snap.z() - camZ;
                 double distSq = dx * dx + dy * dy + dz * dz;
-                //Yield to the live entity only when it actually EXISTS client-side: entity tracking
+                //Yield to the live entity only when it actually exists client-side: entity tracking
                 //ends well inside the render distance, so yielding on distance alone left a ring
                 //(tracking range -> render distance) where neither side drew.
                 if ((distSq < reachSq && snap.live()) || distSq > maxDistSq) {

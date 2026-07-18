@@ -17,7 +17,7 @@ import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
-//Generalises the carriage body cull to EVERY contraption: bearings, gantries, elevators, mounted
+//Generalises the carriage body cull to every contraption: bearings, gantries, elevators, mounted
 ///oriented contraptions (airships, boats from addons) all render their body through this base
 //ContraptionVisual's VisualEmbedding, the same way a train does. Their vanilla actor/BE pass is
 //already covered by MixinContraptionEntityRenderer (base EntityRenderer); this covers the Flywheel

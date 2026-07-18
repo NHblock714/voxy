@@ -12,7 +12,7 @@ import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
-//Twin of MixinContraptionEntityRenderer for the ONE subclass that draws after super.render:
+//Twin of MixinContraptionEntityRenderer for the one subclass that draws after super.render:
 //CarriageContraptionEntityRenderer.render calls super.render (which MixinContraptionEntityRenderer
 //HEAD-cancels) and then, when Flywheel visualization is unsupported (backend OFF), draws the bogeys
 //itself. Cancelling the super method only returns to this subclass, whose post-super bogey draw then

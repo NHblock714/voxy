@@ -127,9 +127,8 @@ public final class Mipper {
         int blockLight = 0;
         int skyLight = 0;
 
-        // One classification pass. The old implementation repeatedly searched
-        // all eight children from inside another eight-child loop in this very
-        // hot LOD-generation function.
+        //One classification pass over the eight children - this is the hot path of LOD generation, so
+        //do not re-scan them from inside a nested loop.
         for (int index = 0; index < 8; index++) {
             long state = states[index];
             int light = Mapper.getLightId(state);

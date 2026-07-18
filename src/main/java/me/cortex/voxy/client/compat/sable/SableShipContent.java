@@ -42,7 +42,7 @@ public final class SableShipContent {
     public static volatile long ensureCalls;
     public static volatile long ensureRegistered;
 
-    //Sable registers its per-plot Flywheel render state ONLY when an entity joins the level while its
+    //Sable registers its per-plot Flywheel render state only when an entity joins the level while its
     //ship is already known (VisualizationEventHandlerMixin -> createRenderInfo). On world load the
     //chunk's entities join before sable's sub-level packets arrive, so the plot is never registered -
     //and sable's ContraptionVisualMixin then silently skips its coordinate transform every frame

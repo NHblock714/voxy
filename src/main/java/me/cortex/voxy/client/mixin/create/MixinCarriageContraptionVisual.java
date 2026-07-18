@@ -5,7 +5,6 @@ import com.simibubi.create.content.trains.entity.CarriageContraptionVisual;
 import dev.engine_room.flywheel.api.visual.DynamicVisual;
 import dev.engine_room.flywheel.api.visualization.VisualEmbedding;
 import me.cortex.voxy.client.config.VoxyConfig;
-import net.minecraft.client.Minecraft;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.phys.Vec3;
 import org.joml.Matrix3f;
@@ -30,15 +29,15 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 //embedding/entity live on superclasses, so they come through accessors, not inherited @Shadow.
 @Mixin(CarriageContraptionVisual.class)
 public abstract class MixinCarriageContraptionVisual {
-    //The carriage's own field: the bogey (车架) visuals. Created from the MAIN VisualizationContext
-    //(world-space instancers), NOT the embedding, so zeroing the embedding pose hides the carriage
+    //The carriage's own field: the bogey visuals. Created from the main VisualizationContext
+    //(world-space instancers), not the embedding, so zeroing the embedding pose hides the carriage
     //body but leaves the bogeys floating. BogeyVisual.hide() collapses their instances directly.
     @Shadow @org.spongepowered.asm.mixin.Final private BogeyVisual[] visuals;
 
     private static final Matrix4f VOXY$ZERO_POSE = new Matrix4f().scaling(0.0f);
     private static final Matrix3f VOXY$ZERO_NORMAL = new Matrix3f().scaling(0.0f);
 
-    //TAIL, NOT HEAD+cancel: the engine flushes every tracked embedding's pose to the GPU each frame
+    //TAIL, not HEAD+cancel: the engine flushes every tracked embedding's pose to the GPU each frame
     //(EnvironmentStorage.flush iterates all, removing only deleted ones), and beginFrame is where the
     //embedding gets its per-frame setup (matrix-index allocation, child/actor instance updates). A
     //HEAD cancel skipped that setup, so the embedding either fell out of the flush set or its GPU

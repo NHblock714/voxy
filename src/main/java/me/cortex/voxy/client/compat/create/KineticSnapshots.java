@@ -32,9 +32,9 @@ public final class KineticSnapshots {
     private static final int CAPTURES_PER_TICK = 64;
     private static final int REBAKES_PER_TICK = 4;
 
-    //One frozen machine part: what block, at what angle, in what light. Geometry is NOT stored -
+    //One frozen machine part: what block, at what angle, in what light. Geometry is not stored -
     //rebake pulls the baked models and transforms them, the same way the track renderer bakes bezier
-    //segments. (The json model IS the rotating model Create's backend-off BER spins; capturing the
+    //segments. (The json model is the rotating model Create's backend-off BER spins; capturing the
     //BER's vertex stream instead died on catnip's SuperByteBuffer being empty outside the render
     //pass.) bakeJson covers the chunk-hidden rotating json; bearingFacing != null additionally bakes
     //the bearing's partials (shaft half + top disc at its own frozen angle).
@@ -52,7 +52,7 @@ public final class KineticSnapshots {
     //The thread currently running a capture (null = none). The visualization gate answers false while
     //a capture runs so the kinetic BERs take their full backend-off pass into our consumer (see
     //MixinVisualizationManagerImpl). This must stay thread-scoped - Flywheel may query the gate from
-    //its worker threads, which must NOT see the render thread's capture - but a volatile-thread compare
+    //its worker threads, which must not see the render thread's capture - but a volatile-thread compare
     //is cheaper on that very hot query path than a ThreadLocalMap lookup.
     private static volatile Thread captureThread = null;
 
@@ -447,7 +447,7 @@ public final class KineticSnapshots {
                 }
             }
 
-            //Sample ABOVE the block, not inside it: the machine itself is a solid voxel and reads 0
+            //Sample above the block, not inside it: the machine itself is a solid voxel and reads 0
             //(pitch-black moving parts whenever the voxel store already has the chunk - the same trap
             //the track renderer hit). Fall back to the block's own cell if the space above reads dark.
             int light = DistantLightSampler.sample(level, pos.getX(), pos.getY() + 1, pos.getZ());
@@ -489,7 +489,7 @@ public final class KineticSnapshots {
                 bearingFacing = null;
             }
 
-            //Only jsons the CHUNK cannot see are rotating parts (Create hides them from the chunk
+            //Only jsons the chunk cannot see are rotating parts (Create hides them from the chunk
             //layers and spins them in the BER): those get baked into the snapshot. A json the chunk
             //renders (a bearing's static base) is already in the voxel LOD - baking it again would
             //double it, spun to a nonsense angle.

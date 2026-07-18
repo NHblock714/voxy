@@ -22,7 +22,7 @@ import java.util.concurrent.ConcurrentHashMap;
 
 //Client-side "leave-behind snapshot" store for distant Create contraptions (bearings/windmills,
 //pistons, gantries, mounted/minecart contraptions). Unlike trains - which the server streams because
-//they run in unloaded chunks - a contraption is an ENTITY the player necessarily walked past, so the
+//they run in unloaded chunks - a contraption is an entity the player necessarily walked past, so the
 //data is already client-side. While a contraption sits inside the render distance we keep its baked
 //block mesh and its live world transform up to date; once it crosses out (or its chunk unloads) the
 //snapshot freezes and DistantContraptionRenderer draws it statically, holding the pose/rotation it
@@ -70,7 +70,7 @@ public final class DistantContraptionManager {
     //Diagnostics for /voxy debug trains
     public static volatile int snapshotCount;
 
-    //Refresh the snapshot of EVERY loaded contraption within the LOD radius, whatever its distance.
+    //Refresh the snapshot of every loaded contraption within the LOD radius, whatever its distance.
     //Chunks load in a horizontal cylinder (full world height) while rendering culls to a sphere, so a
     //contraption straight down a deep mine is still LOADED and its motion is live even though it is
     //past the render distance - that one keeps animating in the LOD. A contraption whose chunk unloads
@@ -129,7 +129,7 @@ public final class DistantContraptionManager {
             snap.live = !NowheelCulled.isCulled(ce);
             if (snap.mesh == null && !snap.bakeGaveNothing) {
                 //A contraption first seen from afar often has no block data yet (the NBT arrives after
-                //the entity), so keep retrying WHILE it is empty. But once it has blocks and the bake
+                //the entity), so keep retrying while it is empty. But once it has blocks and the bake
                 //still produced no mesh (a structure of purely non-MODEL blocks), stop - re-baking a
                 //64KB native buffer every tick forever for a snapshot that can never draw was pure waste.
                 if (!contraption.getBlocks().isEmpty()) {
@@ -155,11 +155,11 @@ public final class DistantContraptionManager {
                 double camDx = ce.getX() - camX, camDy = ce.getY() - camY, camDz = ce.getZ() - camZ;
                 if (camDx * camDx + camDy * camDy + camDz * camDz > reach * reach) {
                     //One last full refresh ON the crossing tick, then freeze: without it the frozen
-                    //pose is the tick BEFORE the boundary while the bearing disc snapshot captures the
+                    //pose is the tick before the boundary while the bearing disc snapshot captures the
                     //tick after - at high rpm that couple of degrees reads as the halves misaligning.
                     if (!snap.frozenControlled) {
                         snap.frozenControlled = true;
-                        //Freeze tick: recapture the controller's kinetic snapshot NOW, so the bearing
+                        //Freeze tick: recapture the controller's kinetic snapshot now, so the bearing
                         //disc and the structure hold the same tick's angle - each side freezing on
                         //whichever tick it happened to cross the boundary was the residual mesh offset
                         var anchor = ((me.cortex.voxy.client.mixin.create.AccessorControlledContraptionEntity) ce).voxy$getControllerPos();
@@ -172,7 +172,7 @@ public final class DistantContraptionManager {
                         //on this same tick
                     } else {
                         //Settle-follow: a frozen structure that keeps spinning stays frozen, but when
-                        //it decelerates to a stop AFTER the freeze (power cut), the frozen pose is
+                        //it decelerates to a stop after the freeze (power cut), the frozen pose is
                         //stale mid-spin while the bearing disc recaptures the stopped angle. Track the
                         //live pose while the per-tick change is small (settling), hold while large.
                         SCRATCH_POSE.pushPose();
@@ -222,7 +222,7 @@ public final class DistantContraptionManager {
             }
         }
 
-        //Leave-behinds are PERMANENT while far away: the entity drops off the client at the server's
+        //Leave-behinds are permanent while far away: the entity drops off the client at the server's
         //entity tracking range (a few dozen blocks), far inside the LOD radius, so any time-based
         //expiry deletes the snapshot long before the player is far enough to look back at it. Cleanup
         //is presence-based instead: within a radius where the entity would certainly be tracked, a
@@ -281,7 +281,7 @@ public final class DistantContraptionManager {
         return SNAPSHOTS;
     }
 
-    //A contraption that DIED (disassembled back into blocks, broken, killed) no longer exists - its
+    //A contraption that died (disassembled back into blocks, broken, killed) no longer exists - its
     //snapshot must go immediately. Only unloading (the player walking away) freezes a leave-behind.
     public static void removeDead(UUID id) {
         Snapshot snap = SNAPSHOTS.remove(id);

@@ -160,7 +160,7 @@ public final class DistantTrainRenderer implements LodPipelineHooks.Renderer {
 
                     //Mirror of OrientedContraptionEntity.applyLocalTransforms: translate(-.5,0,-.5),
                     //center, rotY(viewYRot), rotZ(viewXRot), rotY(initialYaw), uncenter - the first
-                    //two translations fold into (0, 0.5, 0). getViewYRot returns the NEGATED yaw
+                    //two translations fold into (0, 0.5, 0). getViewYRot returns the negated yaw
                     //field, so the negation belongs here; pitch passes through unnegated.
                     transform.set(viewProjection)
                             .translate((float) dx, (float) dy + 0.5f, (float) dz)

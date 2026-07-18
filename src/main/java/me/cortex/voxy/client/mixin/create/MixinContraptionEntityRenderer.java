@@ -14,7 +14,7 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
 //Contraptions render through their vanilla EntityRenderer even under Flywheel/colorwheel: Create
 //registers the contraption entity visual with renderNormally=true, so Flywheel's entity-skip
-//(skipVanillaRender) is false and it does NOT cancel renderEntity. ContraptionEntityRenderer.render
+//(skipVanillaRender) is false and it does not cancel renderEntity. ContraptionEntityRenderer.render
 //therefore runs every frame and draws passes that bypass the Flywheel VisualEmbedding that
 //MixinCarriageContraptionVisual zeroes:
 //  - renderBlockEntities: contraption BEs with no Flywheel visualizer.

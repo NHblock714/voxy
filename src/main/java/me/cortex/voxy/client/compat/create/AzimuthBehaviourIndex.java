@@ -10,7 +10,7 @@ import java.util.function.Consumer;
 
 //azimuth (bits_n_bobs' framework) renders extra moving parts through per-behaviour visuals hanging off
 //a block entity's main visual - a cogwheel's chain strap is one ScrollTransformedInstance living there,
-//with NO per-frame callback of its own (the scroll is GPU-clock driven). Our cull runs on the parent
+//with no per-frame callback of its own (the scroll is GPU-clock driven). Our cull runs on the parent
 //visual, whose collectCrumblingInstances never enumerates the behaviour instances, so they kept drawing
 //past the render distance. Behaviour visuals register their instance walker here (keyed by the parent),
 //and the cull walks them alongside the parent's own instances.

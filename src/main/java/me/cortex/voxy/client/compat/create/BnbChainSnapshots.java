@@ -18,7 +18,7 @@ import org.joml.Vector3f;
 import java.util.ArrayList;
 
 //bits_n_bobs cogwheel chains for the kinetic snapshot: the chain path lives in an azimuth behaviour on
-//the CONTROLLING cogwheel (getControlledChain is null on every other wheel, so one capture covers the
+//the controlling cogwheel (getControlledChain is null on every other wheel, so one capture covers the
 //whole loop with no double-draw). Geometry reproduces the renderer's far-mip pass - straight straps
 //between segment endpoints, static texture window (atlas-safe, no V tiling), thin radius - laid out
 //with the same transform chain and quad order. All bnb/azimuth types are confined to this class; the

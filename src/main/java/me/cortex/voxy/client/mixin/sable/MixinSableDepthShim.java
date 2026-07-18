@@ -32,12 +32,10 @@ public abstract class MixinSableDepthShim {
             float partialTicks,
             CallbackInfo ci
     ) {
-        //Same guard the Flywheel sibling has carried all along (MixinVisualizationManagerImpl): with no
-        //sub-level in this pass there is nothing whose depth could need merging, and the shim's four
-        //fullscreen gl_FragDepth passes are not free - they also defeat early-Z for the whole pass.
-        //This fires ~5 times a frame (one per chunk layer), so an unguarded shim was ~20 fullscreen
-        //depth passes per frame in every world, and only ever with a shaderpack loaded, since that is
-        //the sole condition under which its depth texture is non-zero.
+        //This fires once per chunk layer, ~5 times a frame, and the shim costs four fullscreen
+        //gl_FragDepth passes each time - which also defeat early-Z for the pass. With no sub-level
+        //present there is nothing whose depth could need merging, so skip it. Only ever reachable with
+        //a shaderpack loaded: that is the sole condition under which the depth texture is non-zero.
         this.voxy$shimActive = subLevels != null && subLevels.iterator().hasNext() && ShipBorne.anyShipPresent();
         if (!this.voxy$shimActive) {
             return;

@@ -5,9 +5,8 @@ import net.minecraft.world.entity.Entity;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.gen.Accessor;
 
-//Exposes AbstractEntityVisual's own `entity` field (erased to Entity) for the distance check in the
-//CarriageContraptionVisual mixin. An inherited @Shadow does not resolve there; an accessor on the
-//declaring class does.
+//The visual's entity (erased to Entity), read by the carriage cull for its distance check. Declared
+//here rather than on the subclass that reads it.
 @Mixin(AbstractEntityVisual.class)
 public interface AccessorAbstractEntityVisual {
     @Accessor("entity")

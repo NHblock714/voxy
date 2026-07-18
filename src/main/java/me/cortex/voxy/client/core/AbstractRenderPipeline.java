@@ -128,7 +128,7 @@ public abstract class AbstractRenderPipeline extends TrackedObject {
 
         rs.postOpaquePreperation(viewport);
 
-        //Opaque extras (distant trains/tracks) draw into the opaque target here, on BOTH pipelines:
+        //Opaque extras (distant trains/tracks) draw into the opaque target here, on both pipelines:
         //the depth attachment holds full LOD depth in voxy's far-projection space so occlusion is
         //per-pixel, and on the iris pipeline the renderers use the shader pack's patched fragment
         //shader to fill the whole g-buffer. Running before postOpaquePreTranslucent means the depth

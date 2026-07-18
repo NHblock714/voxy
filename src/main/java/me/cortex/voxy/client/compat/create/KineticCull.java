@@ -108,11 +108,10 @@ public final class KineticCull {
     //is pure waste with or without LOD - only on its own config switch. Ship-borne positions are left
     //alone like the distance cull.
     //
-    //Cogwheels are DELIBERATELY excluded: their teeth stick out on the faces perpendicular to the axis
-    //(that is how they mesh), so the axis-end rule is wrong for them - an encased cog with both axis
-    //ends covered still shows its rim, and culling it made the teeth pop out of existence. The six-face
-    //rule would technically hold for a fully buried cog, but keep the exclusion whole per the design
-    //call: this cull is for shafts.
+    //Cogwheels are excluded: their teeth stick out on the faces perpendicular to the axis (that is how
+    //they mesh), so the axis-end rule is wrong for them - an encased cog with both axis ends covered
+    //still shows its rim. The six-face rule would hold for a fully buried cog, but this cull is for
+    //shafts.
     public static boolean enclosed(BlockPos pos) {
         if (!VoxyConfig.CONFIG.kineticEnclosedCulling) {
             return false;
