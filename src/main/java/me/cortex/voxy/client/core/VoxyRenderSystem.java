@@ -259,6 +259,8 @@ public class VoxyRenderSystem {
         TimingStatistics.resetSamplers();
 
         TimingStatistics.all.start();
+        //Marks the frame as in-flight so the capture watchdog can sample this thread mid-stall
+        me.cortex.voxy.client.FrameProfiler.onFrameStart();
         GPUTiming.INSTANCE.marker();//Start marker
         TimingStatistics.main.start();
 

@@ -38,6 +38,14 @@ public final class FrameProfiler {
     };
 
     private static volatile boolean active;
+    //Set when voxy's render begins and cleared when it ends, so the watchdog can tell an in-flight
+    //frame from an idle one. Sampling the render thread from the render thread itself only ever
+    //catches the profiler, which is what the first version of this did.
+    private static volatile long frameStartNanos;
+    private static volatile Thread renderThread;
+    private static volatile boolean stallCapturedThisFrame;
+    private static Thread watchdog;
+
     private static long startedAtMs;
     private static long endAtMs;
     private static long lastSnapshotMs;
@@ -68,8 +76,63 @@ public final class FrameProfiler {
         //queries every frame, so stop() turns it back off.
         GPUTiming.INSTANCE.setEnabled(true);
         active = true;
+        frameStartNanos = 0;
+        watchdog = new Thread(FrameProfiler::runWatchdog, "Voxy frame capture watchdog");
+        watchdog.setDaemon(true);
+        watchdog.start();
         return "Frame capture armed for " + seconds + "s - move around the way that drops frames. "
                 + "It stops on its own, or run the command again to stop early.";
+    }
+
+    //Called as voxy's render begins.
+    public static void onFrameStart() {
+        if (!active) {
+            return;
+        }
+        renderThread = Thread.currentThread();
+        stallCapturedThisFrame = false;
+        frameStartNanos = System.nanoTime();
+    }
+
+    //Samples the render thread WHILE a frame is overrunning. getStackTrace on another thread is a
+    //safepoint operation, so this is deliberately once per frame and only past the threshold.
+    private static void runWatchdog() {
+        while (active) {
+            try {
+                Thread.sleep(4);
+            } catch (InterruptedException e) {
+                return;
+            }
+            long start = frameStartNanos;
+            Thread thread = renderThread;
+            if (start == 0 || thread == null || stallCapturedThisFrame) {
+                continue;
+            }
+            long elapsedMicros = (System.nanoTime() - start) / 1000;
+            if (elapsedMicros < STALL_THRESHOLD_MICROS) {
+                continue;
+            }
+            stallCapturedThisFrame = true;
+            StackTraceElement[] trace;
+            try {
+                trace = thread.getStackTrace();
+            } catch (Throwable e) {
+                continue;
+            }
+            var sb = new StringBuilder();
+            sb.append("=== IN-FLIGHT stall, render thread blocked ")
+                    .append(elapsedMicros / 1000).append("ms so far, at t+")
+                    .append(System.currentTimeMillis() - startedAtMs).append("ms\n");
+            int limit = Math.min(trace.length, 22);
+            for (int i = 0; i < limit; i++) {
+                sb.append("      ").append(trace[i]).append('\n');
+            }
+            synchronized (FrameProfiler.class) {
+                if (active && stalls.size() < MAX_STALL_CAPTURES) {
+                    stalls.add(sb.toString());
+                }
+            }
+        }
     }
 
     //Called at the end of each voxy render. Must stay cheap: it runs inside the frames being measured.
@@ -97,13 +160,20 @@ public final class FrameProfiler {
                     micros(TimingStatistics.B),
                     micros(TimingStatistics.C),
             });
-            //The frame that just ENDED was long: the render thread is here, so its own stack is no
-            //longer informative, but the worker threads still are - and if the stall repeats the
-            //aggregate over several captures points straight at it.
-            if (frameMicros >= STALL_THRESHOLD_MICROS && stalls.size() < MAX_STALL_CAPTURES) {
-                stalls.add(captureStacks(frameMicros));
+            //The render thread's own stack is worthless here - the stall is already over and it would
+            //only show this method. The watchdog samples it mid-stall instead. What IS worth recording
+            //at this point is what voxy's workers were doing, since an idle worker set during a stall
+            //rules them out as the cause.
+            if (frameMicros >= STALL_THRESHOLD_MICROS) {
+                synchronized (FrameProfiler.class) {
+                    if (stalls.size() < MAX_STALL_CAPTURES) {
+                        stalls.add(captureWorkerStacks(frameMicros));
+                    }
+                }
             }
         }
+
+        frameStartNanos = 0;
 
         long nowMs = System.currentTimeMillis();
         if (nowMs - lastSnapshotMs >= SNAPSHOT_INTERVAL_MS) {
@@ -128,8 +198,7 @@ public final class FrameProfiler {
     //usually has a partner thread doing the work, so both sides are needed to read a stall.
     private static boolean isInterestingThread(Thread t) {
         String name = t.getName();
-        return name.equals("Render thread")
-                || name.startsWith("Voxy")
+        return name.startsWith("Voxy")
                 || name.startsWith("Async Node Manager")
                 || name.contains("Ingest")
                 || name.contains("Section saving")
@@ -137,7 +206,7 @@ public final class FrameProfiler {
                 || name.contains("Render gen");
     }
 
-    private static String captureStacks(long frameMicros) {
+    private static String captureWorkerStacks(long frameMicros) {
         var sb = new StringBuilder();
         sb.append("=== stall ").append(String.format("%.1fms", frameMicros / 1000.0))
                 .append(" at t+").append(System.currentTimeMillis() - startedAtMs).append("ms\n");
@@ -185,6 +254,11 @@ public final class FrameProfiler {
             return "No frame capture running";
         }
         active = false;
+        frameStartNanos = 0;
+        if (watchdog != null) {
+            watchdog.interrupt();
+            watchdog = null;
+        }
         GPUTiming.INSTANCE.setEnabled(false);
         if (frames.isEmpty()) {
             return "Frame capture produced no frames";
