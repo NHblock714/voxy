@@ -1,8 +1,13 @@
 """Post-build surgery on the voxy jarjar libs. Run after `gradlew build`, before deploy.
 
-Two transforms on nested (jarjar) jars:
+Three transforms on nested (jarjar) jars:
   1. rocksdbjni: keep only win64.dll + linux64.so natives (drops ~60MB of unused platforms).
-  2. lwjgl-zstd / lwjgl-lmdb: strip their module-info so they become AUTOMATIC modules.
+  2. sqlite-jdbc: same idea. It is not a storage backend - nothing in the tree implements one - it
+     exists purely so DHImporter can read a DistantHorizons.sqlite, and that call site already
+     degrades gracefully when the driver is missing. Almost all of its ~13MB is natives for
+     platforms we never run: Android, FreeBSD, Linux-Musl, Mac, and a pile of non-x86_64 arches.
+     Keep Windows/x86_64 + Linux/x86_64 so the importer still works where it is actually used.
+  3. lwjgl-zstd / lwjgl-lmdb: strip their module-info so they become AUTOMATIC modules.
      They declare `requires org.lwjgl`; a dedicated server has no org.lwjgl module, so the JPMS
      module graph fails at startup (`FindException: Module org.lwjgl not found, required by
      org.lwjgl.zstd`). As automatic modules they have no `requires`, so the server resolves; the
@@ -18,6 +23,10 @@ DST = os.path.join(BASE, "neo-voxy-0.2.16-beta-slim.jar")
 
 ROCKS = "META-INF/jarjar/rocksdbjni-10.2.1.jar"
 ROCKS_KEEP = {"librocksdbjni-win64.dll", "librocksdbjni-linux64.so"}
+
+SQLITE = "META-INF/jarjar/sqlite-jdbc-3.49.1.0.jar"
+SQLITE_NATIVE_PREFIX = "org/sqlite/native/"
+SQLITE_KEEP_DIRS = ("org/sqlite/native/Windows/x86_64/", "org/sqlite/native/Linux/x86_64/")
 DEMODULARIZE = [
     "META-INF/jarjar/lwjgl-zstd-3.3.3.jar",
     "META-INF/jarjar/lwjgl-lmdb-3.3.3.jar",
@@ -45,6 +54,20 @@ def filter_rocks(nested):
     return buf.getvalue()
 
 
+def filter_sqlite(nested):
+    buf = io.BytesIO()
+    dropped, kept = 0, []
+    with zipfile.ZipFile(io.BytesIO(nested)) as nz, zipfile.ZipFile(buf, "w") as out:
+        for e in nz.infolist():
+            if e.filename.startswith(SQLITE_NATIVE_PREFIX) and not e.filename.endswith("/"):
+                if not e.filename.startswith(SQLITE_KEEP_DIRS):
+                    dropped += 1; continue
+                kept.append(e.filename[len(SQLITE_NATIVE_PREFIX):])
+            out.writestr(e, nz.read(e.filename))
+    print("  sqlite: kept %s, dropped %d natives" % (sorted(kept), dropped))
+    return buf.getvalue()
+
+
 def demodularize(nested, label):
     buf = io.BytesIO()
     removed = 0
@@ -58,7 +81,8 @@ def demodularize(nested, label):
 
 
 with zipfile.ZipFile(SRC) as zin:
-    transforms = {ROCKS: filter_rocks(zin.read(ROCKS))}
+    transforms = {ROCKS: filter_rocks(zin.read(ROCKS)),
+                  SQLITE: filter_sqlite(zin.read(SQLITE))}
     for nj in DEMODULARIZE:
         transforms[nj] = demodularize(zin.read(nj), nj.rsplit("/", 1)[-1])
 
