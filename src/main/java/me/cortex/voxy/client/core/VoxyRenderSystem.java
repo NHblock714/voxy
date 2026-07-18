@@ -365,6 +365,8 @@ public class VoxyRenderSystem {
 
         TimingStatistics.all.stop();
 
+        //No-op unless a capture is armed (/voxy debug capture)
+        me.cortex.voxy.client.FrameProfiler.onFrameEnd();
     }
 
 

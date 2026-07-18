@@ -86,7 +86,11 @@ public class VoxyCommands {
                 .then(Commands.literal("perf")
                         .executes(VoxyCommands::dumpPerf)
                         .then(Commands.literal("reset")
-                                .executes(VoxyCommands::resetPerf)));
+                                .executes(VoxyCommands::resetPerf)))
+                .then(Commands.literal("capture")
+                        .executes(ctx -> frameCapture(ctx, 20))
+                        .then(Commands.argument("seconds", IntegerArgumentType.integer(3, 300))
+                                .executes(ctx -> frameCapture(ctx, IntegerArgumentType.getInteger(ctx, "seconds")))));
 
         return Commands.literal("voxy")//.requires((ctx)-> VoxyCommon.getInstance() != null)
                 .then(Commands.literal("reload")
@@ -100,6 +104,16 @@ public class VoxyCommands {
     //(e.g. reset, fly across a fresh chunk area, then check the biome/copycat cache hit rate).
     private static int dumpPerf(CommandContext<CommandSourceStack> ctx) {
         ctx.getSource().sendSuccess(() -> Component.literal(me.cortex.voxy.commonImpl.PerfStats.report()), false);
+        return 1;
+    }
+
+    //Samples per-frame cost while the player moves, then writes voxy-frame-capture.txt in the game dir.
+    //Running it again while a capture is armed stops it early.
+    private static int frameCapture(CommandContext<CommandSourceStack> ctx, int seconds) {
+        String msg = FrameProfiler.isActive()
+                ? FrameProfiler.stopAndDump()
+                : FrameProfiler.start(seconds);
+        ctx.getSource().sendSuccess(() -> Component.literal(msg), false);
         return 1;
     }
 
