@@ -152,7 +152,15 @@ public final class CreateTrainSampler {
         this.failedShapes.clear();
     }
 
+    //Contraption.fromNBT deserialization per carriage is heavy; a long train entering the window
+    //would build every carriage's shape in one server tick. Cap builds per round and let the rest
+    //arrive over the next few ticks - the client streams poses regardless and renders each carriage
+    //the moment its shape lands, so a shape lagging a tick or two is invisible in practice.
+    private static final int SHAPE_BUILDS_PER_ROUND = 8;
+    private int shapeBuildsThisRound;
+
     private void sample(MinecraftServer server) {
+        this.shapeBuildsThisRound = 0;
         var players = server.getPlayerList().getPlayers();
         //DistantTrainConfig combines the client's preference (integrated server) with the dedicated
         //server's uniform ceiling (voxy-server.toml); either side disabling it stops streaming.
@@ -277,12 +285,19 @@ public final class CreateTrainSampler {
         if (this.failedShapes.contains(shapeId)) {
             return null;
         }
+        //Budget the heavy deserialize+build; over budget this round, retry next tick (not a failure)
+        if (this.shapeBuildsThisRound >= SHAPE_BUILDS_PER_ROUND) {
+            return null;
+        }
         try {
             Contraption contraption = resolveContraption(level, carriage);
             if (contraption == null) {
                 //Not failed - the carriage may simply not have serialized yet; retry next round
+                //(no build happened, so don't spend a budget slot on it)
                 return null;
             }
+            //A real shape build is proceeding (block iteration, and possibly an fromNBT above) - count it
+            this.shapeBuildsThisRound++;
             List<ShapeBlock> blocks = new ArrayList<>();
             for (var entry : contraption.getBlocks().entrySet()) {
                 var pos = entry.getKey();
