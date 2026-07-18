@@ -155,6 +155,10 @@ public class VoxyRenderSystem {
             //Late stage traversal compile for shaders with taa
             this.traversal.lateStageCompile(this.pipeline);
 
+            //Compile the Create distant renderers' shaders here rather than on first draw - linking
+            //them blocks the render thread long enough to be a visible hitch mid-gameplay
+            me.cortex.voxy.client.compat.create.DistantShaders.warmup(this.pipeline);
+
 
             var sectionRenderer = backendFactory.create(this.pipeline, this.modelService.getStore(), this.geometryData);
             this.pipeline.setSectionRenderer(sectionRenderer);

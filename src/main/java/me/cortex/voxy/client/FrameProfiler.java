@@ -91,8 +91,15 @@ public final class FrameProfiler {
         }
         renderThread = Thread.currentThread();
         stallCapturedThisFrame = false;
+        insideVoxyRender = true;
         frameStartNanos = System.nanoTime();
     }
+
+    //The watchdog can only see a stall while frameStartNanos is set, i.e. inside voxy's own render
+    //window. A frame can also overrun outside it (vanilla, the shader pack, buffer swap), so keep the
+    //window open from the end of one voxy render to the start of the next and label which side a
+    //capture came from. Without this the report silently under-reports whole classes of stall.
+    private static volatile boolean insideVoxyRender;
 
     //Samples the render thread WHILE a frame is overrunning. getStackTrace on another thread is a
     //safepoint operation, so this is deliberately once per frame and only past the threshold.
@@ -120,7 +127,7 @@ public final class FrameProfiler {
                 continue;
             }
             var sb = new StringBuilder();
-            sb.append("=== IN-FLIGHT stall, render thread blocked ")
+            sb.append("=== IN-FLIGHT stall (").append(insideVoxyRender ? "inside voxy render" : "outside voxy render").append("), blocked ")
                     .append(elapsedMicros / 1000).append("ms so far, at t+")
                     .append(System.currentTimeMillis() - startedAtMs).append("ms\n");
             int limit = Math.min(trace.length, 22);
@@ -173,7 +180,10 @@ public final class FrameProfiler {
             }
         }
 
-        frameStartNanos = 0;
+        //Keep watching: the rest of the frame (vanilla, shader pack, swap) can stall too
+        insideVoxyRender = false;
+        stallCapturedThisFrame = false;
+        frameStartNanos = System.nanoTime();
 
         long nowMs = System.currentTimeMillis();
         if (nowMs - lastSnapshotMs >= SNAPSHOT_INTERVAL_MS) {

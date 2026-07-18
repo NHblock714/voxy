@@ -31,6 +31,23 @@ public final class DistantShaders {
 
     private DistantShaders() {}
 
+    //Compile both patched variants up front. glLinkProgram blocks the render thread for hundreds of
+    //milliseconds on some drivers, and compiling lazily meant that landed mid-gameplay, the first time
+    //a distant train/track/contraption came into view - a frame capture caught the render thread inside
+    //glLinkProgram here on a 523ms frame. Called during renderer init, where a stall is behind the
+    //loading screen. Failure is not fatal: forPipeline still falls back to the unpatched shaders.
+    public static void warmup(AbstractRenderPipeline pipeline) {
+        if (!net.neoforged.fml.ModList.get().isLoaded("create")) {
+            return;
+        }
+        try {
+            forPipeline(pipeline, false);
+            forPipeline(pipeline, true);
+        } catch (Throwable e) {
+            Logger.error("Distant shader warmup failed; they will compile on first use instead", e);
+        }
+    }
+
     //uniformLightVariant: per-draw light uniform (moving carriages) vs per-vertex baked light (tracks)
     public static Shader forPipeline(AbstractRenderPipeline pipeline, boolean uniformLightVariant) {
         //Patch content follows the pipeline instance (i.e. the loaded shader pack). Probe the pack's
