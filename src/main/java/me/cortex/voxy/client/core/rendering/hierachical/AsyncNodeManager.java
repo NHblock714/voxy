@@ -8,7 +8,6 @@ import me.cortex.voxy.client.TimingStatistics;
 import me.cortex.voxy.client.core.gl.GlBuffer;
 import me.cortex.voxy.client.core.gl.shader.Shader;
 import me.cortex.voxy.client.core.gl.shader.ShaderType;
-import me.cortex.voxy.client.core.rendering.GeometryCache;
 import me.cortex.voxy.client.core.rendering.SectionUpdateRouter;
 import me.cortex.voxy.client.core.rendering.building.BuiltSection;
 import me.cortex.voxy.client.core.rendering.building.RenderGenerationService;
@@ -71,8 +70,6 @@ public class AsyncNodeManager {
     private final IGeometryData geometryData;
     private final SectionUpdateRouter router;
 
-    private final GeometryCache geometryCache = new GeometryCache(1L<<32);
-
     private final AtomicInteger workCounter = new AtomicInteger();
 
     @SuppressWarnings("FieldMayBeFinal")
@@ -118,14 +115,7 @@ public class AsyncNodeManager {
         this.geometryManager = new BasicAsyncGeometryManager(((BasicSectionGeometryData)geometryData).getMaxSectionCount(), this.geometryCapacity);
 
         this.router = new SectionUpdateRouter();
-        this.router.setCallbacks(pos->{//On initial render gen, try get from geometry cache
-            var cachedGeometry = this.geometryCache.remove(pos);
-            if (cachedGeometry != null) {//Use the cached geometry
-                this.submitGeometryResult(cachedGeometry);
-            } else {//Else we need to request it
-                renderService.enqueueTask(pos);
-            }
-        }, renderService::enqueueTask, this::submitChildChange);
+        this.router.setCallbacks(renderService::enqueueTask, renderService::enqueueTask, this::submitChildChange);
         renderService.setResultConsumer(this::submitGeometryResult);
 
         this.manager = new NodeManager(maxNodeCount, this.geometryManager, this.router);
@@ -782,7 +772,6 @@ public class AsyncNodeManager {
 
         this.scatterWrite.free();
         this.multiMemcpy.free();
-        this.geometryCache.free();
     }
 
     public void addDebug(List<String> debug) {
@@ -795,9 +784,6 @@ public class AsyncNodeManager {
     }
 
     public void worldEvent(WorldSection section, int flags, int neighborMask) {
-        //If there is any change, we need to clear the geometry cache before emitting update
-        this.geometryCache.clear(section.key);
-
         this.router.forwardEvent(section, flags);
 
         if (neighborMask != 0) {//trigger rebuilds for neighbors
