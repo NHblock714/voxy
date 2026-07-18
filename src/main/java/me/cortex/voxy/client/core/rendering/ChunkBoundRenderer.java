@@ -87,11 +87,20 @@ public class ChunkBoundRenderer {
         this.changed = true;
     }
 
+    //How many sodium-visible sections the last mask pass rasterised. This is what the mask's fill cost
+    //scales with, so it is the number to read when chunk-mesh count is suspected of driving frame time.
+    private int lastRenderedSectionCount;
+
+    public int getLastRenderedSectionCount() {
+        return this.lastRenderedSectionCount;
+    }
+
     //Bind and render, changing as little gl state as possible so that the caller may configure how it wants to render
     public void render(Viewport<?> viewport) {
         viewport.depthBoundingBuffer.clear(this.properties.inverseClearDepth());
 
         int sectionCount = this.count >> 1;
+        this.lastRenderedSectionCount = sectionCount;
         if (sectionCount == 0) {
             return;
         }

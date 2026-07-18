@@ -1,5 +1,6 @@
 package me.cortex.voxy.client.core;
 
+import me.cortex.voxy.common.Logger;
 import me.cortex.voxy.client.core.gl.GlBuffer;
 import me.cortex.voxy.client.core.model.ModelBakerySubsystem;
 import me.cortex.voxy.client.core.rendering.Viewport;
@@ -43,6 +44,12 @@ public class IrisVoxyRenderPipeline extends AbstractRenderPipeline {
 
         //Bind the drawbuffers
         var oDT = this.data.opaqueDrawTargets;
+        //Every LOD terrain raster pass writes ALL of these per fragment. With a pack asking for 6-8
+        //targets the same geometry costs that many times the ROP bandwidth it does without shaders,
+        //which is the main reason LOD gets dramatically more expensive when a pack is loaded. Logged
+        //once so the number is in the log when diagnosing a shaders-only framerate drop.
+        Logger.info("Iris LOD framebuffer: " + oDT.length + " opaque draw targets, "
+                + this.data.translucentDrawTargets.length + " translucent");
         int[] binding = new int[oDT.length];
         for (int i = 0; i < oDT.length; i++) {
             binding[i] = GL30.GL_COLOR_ATTACHMENT0+i;

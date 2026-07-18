@@ -295,6 +295,11 @@ public class VoxyRenderSystem {
         this.pipeline.preSetup(viewport);
 
         TimingStatistics.E.start();
+        //"CB": the hole-punch mask rasterises one AABB per sodium-visible section at full viewport
+        //resolution, so its cost tracks how many chunk meshes are loaded rather than anything voxy
+        //controls. TimingStatistics.E only measures the submission, which reads ~0 no matter how
+        //expensive the fill is - this GPU marker is the only way to see the real number.
+        GPUTiming.INSTANCE.marker("CB");
         if (!VoxyClient.disableSodiumChunkRender() && !IrisUtil.irisShadowActive()) {
             this.chunkBoundRenderer.render(viewport);
         } else {
@@ -476,6 +481,8 @@ public class VoxyRenderSystem {
 
     public void addDebugInfo(List<String> debug) {
         debug.add("Buf/Tex [#/Mb]: [" + GlBuffer.getCount() + "/" + (GlBuffer.getTotalSize()/1_000_000) + "],[" + GlTexture.getCount() + "/" + (GlTexture.getEstimatedTotalSize()/1_000_000)+"]");
+        //Sodium-visible sections drive the hole-punch mask's fill cost (see the "CB" GPU marker)
+        debug.add("Mask sections (sodium visible): " + this.chunkBoundRenderer.getLastRenderedSectionCount());
         {
             this.modelService.addDebugData(debug);
             this.renderGen.addDebugData(debug);
