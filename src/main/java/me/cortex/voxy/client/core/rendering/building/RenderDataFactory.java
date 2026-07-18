@@ -291,7 +291,23 @@ public class RenderDataFactory {
     }
 
     private void clearNeighborFaceSlice(int slice) {
-        Arrays.fill(this.neighboringFaces, slice * 32 * 32, (slice + 1) * 32 * 32, 0L);
+        this.fillNeighborFaceSlice(slice, 0L);
+    }
+
+    private void fillNeighborFaceSlice(int slice, long value) {
+        Arrays.fill(this.neighboringFaces, slice * 32 * 32, (slice + 1) * 32 * 32, value);
+    }
+
+    //A uniform neighbour has the same value on every face voxel, so fill the slice instead of touching
+    //the section's array - without this every mesh build would materialise 256KiB for each of its six
+    //neighbours, which would make the uniform-section optimisation a net loss.
+    private boolean fillSliceIfUniform(WorldSection sec, int slice) {
+        if (!sec.isUniform()) {
+            return false;
+        }
+        this.fillNeighborFaceSlice(slice, sec.getUniformValue());
+        me.cortex.voxy.commonImpl.PerfStats.neighborFaceUniformFill.increment();
+        return true;
     }
 
     private void acquireNeighborData(WorldSection section, int msk) {
@@ -304,9 +320,11 @@ public class RenderDataFactory {
                 this.clearNeighborFaceSlice(0);
             } else {
                 //Note this is not thread safe! (but eh, fk it)
-                var raw = sec._unsafeGetRawDataArray();
-                for (int i = 0; i < 32*32; i++) {
-                    this.neighboringFaces[i] = raw[(i<<5)+31];//pull the +x faces from the section
+                if (!this.fillSliceIfUniform(sec, 0)) {
+                    var raw = sec._unsafeGetRawDataArray();
+                    for (int i = 0; i < 32*32; i++) {
+                        this.neighboringFaces[i] = raw[(i<<5)+31];//pull the +x faces from the section
+                    }
                 }
                 sec.release(WorldSection.RELEASE_HINT_POSSIBLE_REUSE);
             }
@@ -317,9 +335,11 @@ public class RenderDataFactory {
                 this.clearNeighborFaceSlice(1);
             } else {
                 //Note this is not thread safe! (but eh, fk it)
-                var raw = sec._unsafeGetRawDataArray();
-                for (int i = 0; i < 32*32; i++) {
-                    this.neighboringFaces[i+32*32] = raw[(i<<5)];//pull the -x faces from the section
+                if (!this.fillSliceIfUniform(sec, 1)) {
+                    var raw = sec._unsafeGetRawDataArray();
+                    for (int i = 0; i < 32*32; i++) {
+                        this.neighboringFaces[i+32*32] = raw[(i<<5)];//pull the -x faces from the section
+                    }
                 }
                 sec.release(WorldSection.RELEASE_HINT_POSSIBLE_REUSE);
             }
@@ -331,9 +351,11 @@ public class RenderDataFactory {
                 this.clearNeighborFaceSlice(2);
             } else {
                 //Note this is not thread safe! (but eh, fk it)
-                var raw = sec._unsafeGetRawDataArray();
-                for (int i = 0; i < 32*32; i++) {
-                    this.neighboringFaces[i+32*32*2] = raw[i|(0x1F<<10)];//pull the +y faces from the section
+                if (!this.fillSliceIfUniform(sec, 2)) {
+                    var raw = sec._unsafeGetRawDataArray();
+                    for (int i = 0; i < 32*32; i++) {
+                        this.neighboringFaces[i+32*32*2] = raw[i|(0x1F<<10)];//pull the +y faces from the section
+                    }
                 }
                 sec.release(WorldSection.RELEASE_HINT_POSSIBLE_REUSE);
             }
@@ -350,9 +372,11 @@ public class RenderDataFactory {
                 }
             } else {
                 //Note this is not thread safe! (but eh, fk it)
-                var raw = sec._unsafeGetRawDataArray();
-                for (int i = 0; i < 32*32; i++) {
-                    this.neighboringFaces[i+32*32*3] = raw[i];//pull the -y faces from the section
+                if (!this.fillSliceIfUniform(sec, 3)) {
+                    var raw = sec._unsafeGetRawDataArray();
+                    for (int i = 0; i < 32*32; i++) {
+                        this.neighboringFaces[i+32*32*3] = raw[i];//pull the -y faces from the section
+                    }
                 }
                 sec.release(WorldSection.RELEASE_HINT_POSSIBLE_REUSE);
             }
@@ -364,9 +388,11 @@ public class RenderDataFactory {
                 this.clearNeighborFaceSlice(4);
             } else {
                 //Note this is not thread safe! (but eh, fk it)
-                var raw = sec._unsafeGetRawDataArray();
-                for (int i = 0; i < 32*32; i++) {
-                    this.neighboringFaces[i+32*32*4] = raw[Integer.expand(i,0b11111_00000_11111)|(0x1F<<5)];//pull the +z faces from the section
+                if (!this.fillSliceIfUniform(sec, 4)) {
+                    var raw = sec._unsafeGetRawDataArray();
+                    for (int i = 0; i < 32*32; i++) {
+                        this.neighboringFaces[i+32*32*4] = raw[Integer.expand(i,0b11111_00000_11111)|(0x1F<<5)];//pull the +z faces from the section
+                    }
                 }
                 sec.release(WorldSection.RELEASE_HINT_POSSIBLE_REUSE);
             }
@@ -377,9 +403,11 @@ public class RenderDataFactory {
                 this.clearNeighborFaceSlice(5);
             } else {
                 //Note this is not thread safe! (but eh, fk it)
-                var raw = sec._unsafeGetRawDataArray();
-                for (int i = 0; i < 32*32; i++) {
-                    this.neighboringFaces[i+32*32*5] = raw[Integer.expand(i,0b11111_00000_11111)];//pull the -z faces from the section
+                if (!this.fillSliceIfUniform(sec, 5)) {
+                    var raw = sec._unsafeGetRawDataArray();
+                    for (int i = 0; i < 32*32; i++) {
+                        this.neighboringFaces[i+32*32*5] = raw[Integer.expand(i,0b11111_00000_11111)];//pull the -z faces from the section
+                    }
                 }
                 sec.release(WorldSection.RELEASE_HINT_POSSIBLE_REUSE);
             }

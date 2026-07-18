@@ -30,7 +30,9 @@ public class SectionSerializationStorage extends SectionStorage {
             if (!SaveLoadSystem3.deserialize(into, data)) {
                 this.backend.deleteSectionData(into.key);
                 //TODO: regenerate the section from children
-                Arrays.fill(into._unsafeGetRawDataArray(), Mapper.AIR);
+                //No fill here: returning -1 makes the tracker force status 1 and set the section to
+                //uniform air itself, so filling an array we are about to discard was dead work (and it
+                //would now needlessly materialise one).
                 Logger.error("Section " + into.lvl + ", " + into.x + ", " + into.y + ", " + into.z + " was unable to load, removing");
                 return -1;
             } else {

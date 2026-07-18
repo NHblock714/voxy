@@ -266,11 +266,11 @@ public class VoxyCommands {
                 sb.append("\nlvl").append(lvl).append(": <section not in storage>");
                 continue;
             }
-            long[] raw = sec._unsafeGetRawDataArray();
             int lx = (x >> lvl) & 31, ly = (y >> lvl) & 31, lz = (z >> lvl) & 31;
-            long self = raw[lx | (lz << 5) | (ly << 10)];
-            String above = ly < 31 ? formatVoxel(raw[lx | (lz << 5) | ((ly + 1) << 10)], engine) : "<in +y section>";
-            sb.append("\nlvl").append(lvl).append(": self=").append(formatVoxel(self, engine)).append(" above=").append(above);
+            long self = sec.get(lx | (lz << 5) | (ly << 10));
+            String above = ly < 31 ? formatVoxel(sec.get(lx | (lz << 5) | ((ly + 1) << 10)), engine) : "<in +y section>";
+            sb.append("\nlvl").append(lvl).append(": self=").append(formatVoxel(self, engine))
+                    .append(sec.isUniform() ? " [uniform]" : "").append(" above=").append(above);
             sec.release();
         }
         String out = sb.toString();

@@ -169,12 +169,15 @@ public class ActiveSectionTracker {
                     status = 1;
                 }
 
-                //TODO: REWRITE THE section tracker _again_ to not be so shit and jank, and so that Arrays.fill is not 10% of the execution time
                 if (status == 1) {
-                    //We need to set the data to air as it is undefined state
+                    //Undefined state -> all air. Setting it as a uniform value costs nothing: no array is
+                    //allocated and no 256KiB memset runs (that fill used to be ~10% of execution time
+                    //here). Must stay sky-15 air, NOT Mapper.AIR - zero skylight here is what produced
+                    //the black terrain family of bugs.
                     int sky = 15;
                     int block = 0;
-                    Arrays.fill(section.data, Mapper.composeMappingId((byte) (sky|(block<<4)),0,0));
+                    section.setUniform(Mapper.composeMappingId((byte) (sky|(block<<4)),0,0));
+                    me.cortex.voxy.commonImpl.PerfStats.sectionUniformKept.increment();
                 }
                 section.acquire(1);
             }

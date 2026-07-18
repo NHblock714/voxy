@@ -144,7 +144,8 @@ public class MixinClientSubLevelFinalizeLighting {
 
         try {
             int index = WorldSection.getIndex(pos.getX() & 31, pos.getY() & 31, pos.getZ() & 31);
-            return Mapper.getLightId(section._unsafeGetRawDataArray()[index]) & 15;
+            //Per-block query - must never materialise a 256KiB array for one voxel
+            return Mapper.getLightId(section.get(index)) & 15;
         } finally {
             section.release();
         }

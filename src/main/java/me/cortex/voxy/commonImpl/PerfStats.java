@@ -32,6 +32,16 @@ public final class PerfStats {
     //Heavy Contraption.fromNBT shape builds pushed to a later tick by the per-round budget
     public static final LongAdder trainShapeBuildDeferred = new LongAdder();
 
+    //--- world section uniform mode ---
+    //Sections that stayed uniform for their whole life (each saved a 256KiB alloc + memset)
+    public static final LongAdder sectionUniformKept = new LongAdder();
+    //Sections that had to allocate a real array (the denominator for the uniform hit rate)
+    public static final LongAdder sectionMaterialized = new LongAdder();
+    //Materialise races lost - should stay at or near zero
+    public static final LongAdder sectionMaterializeRaceLost = new LongAdder();
+    //Neighbour face slices filled from a uniform value instead of copied out of an array
+    public static final LongAdder neighborFaceUniformFill = new LongAdder();
+
     //--- section saving ---
     //Batched section writes: sections/commits is the headline (>1 means batching is working at all)
     public static final LongAdder saveBatchCommits = new LongAdder();
@@ -57,7 +67,16 @@ public final class PerfStats {
         long commits = saveBatchCommits.sum();
         long batched = saveBatchSections.sum();
         sb.append(String.format("  %-22s %,d sections in %,d commits (avg %.1f/commit)",
-                "save batching", batched, commits, commits == 0 ? 0.0 : (double) batched / commits));
+                "save batching", batched, commits, commits == 0 ? 0.0 : (double) batched / commits)).append('\n');
+        long uniform = sectionUniformKept.sum();
+        long materialized = sectionMaterialized.sum();
+        long totalSections = uniform + materialized;
+        sb.append(String.format("  %-22s uniform=%,d materialized=%,d (%.1f%% uniform, %,d MiB saved)",
+                "section uniform mode", uniform, materialized,
+                totalSections == 0 ? 0.0 : (100.0 * uniform / totalSections),
+                (uniform * 256L) / 1024)).append('\n');
+        sb.append(String.format("  %-22s %,d (races lost %,d)",
+                "neighbour uniform fill", neighborFaceUniformFill.sum(), sectionMaterializeRaceLost.sum()));
         return sb.toString();
     }
 
@@ -65,7 +84,8 @@ public final class PerfStats {
         for (LongAdder a : new LongAdder[]{biomeCacheHit, biomeCacheMiss, copycatKeyHit, copycatKeyMiss,
                 kineticSnapshotEvicted, contraptionRebakeSkipped, nodeWarnSuppressed,
                 trainPoseCacheHit, trainPoseCacheMiss, trainShapeBuildDeferred,
-                saveBatchCommits, saveBatchSections}) {
+                saveBatchCommits, saveBatchSections,
+                sectionUniformKept, sectionMaterialized, sectionMaterializeRaceLost, neighborFaceUniformFill}) {
             a.reset();
         }
     }

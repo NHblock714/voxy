@@ -26,9 +26,10 @@ public final class DistantLightSampler {
                     continue;
                 }
                 try {
-                    long[] raw = section._unsafeGetRawDataArray();
                     int lx = (x >> lvl) & 31, ly = (ay >> lvl) & 31, lz = (z >> lvl) & 31;
-                    long voxel = raw[lx | (lz << 5) | (ly << 10)];
+                    //get() never materialises. Note the uniform value may legitimately be 0, which the
+                    //check below treats as "no data, try a coarser level" - so it must be returned as-is.
+                    long voxel = section.get(lx | (lz << 5) | (ly << 10));
                     if (voxel == 0) {
                         continue; //void, try a coarser level
                     }

@@ -37,7 +37,7 @@ public class SaveLoadSystem3 {
     //TODO: Cache like long2short and the short and other data to stop allocs
     public static MemoryBuffer serialize(WorldSection section) {
         var cache = CACHE.get();
-        var data = section.data;
+        var data = section._rawOrNull();
 
         Long2ShortOpenHashMap LUT = cache.lutMapCache; LUT.clear();
 
@@ -46,6 +46,21 @@ public class SaveLoadSystem3 {
 
         MemoryUtil.memPutLong(ptr, section.key); ptr += 8;
         long metadataPtr = ptr; ptr += 8;
+
+        if (data == null) {
+            //Uniform: a single LUT entry and an all-zero index region. Byte-for-byte the same output the
+            //dense path would produce, so this is not a format change - it just skips materialising.
+            long value = section.getUniformValue();
+            long blockIdxPtr = ptr; ptr += WorldSection.SECTION_VOLUME*2;
+            MemoryUtil.memSet(blockIdxPtr, 0, WorldSection.SECTION_VOLUME*2);
+            MemoryUtil.memPutLong(ptr, value); ptr += 8;
+
+            long uniformMetadata = 0;
+            uniformMetadata |= 1L;//LUT size
+            uniformMetadata |= Byte.toUnsignedLong(section.getNonEmptyChildren())<<16;
+            MemoryUtil.memPutLong(metadataPtr, uniformMetadata);
+            return buffer.subSize(ptr-buffer.address);
+        }
 
         long blockPtr = ptr; ptr += WorldSection.SECTION_VOLUME*2;
         long prev = data[0]; MemoryUtil.memPutLong(ptr, prev); ptr+=8; LUT.put(prev, (short) 0);
@@ -91,7 +106,23 @@ public class SaveLoadSystem3 {
         section.nonEmptyChildren = (byte) ((metadata>>>16)&0xFF);
         final long lutBasePtr = ptr + WorldSection.SECTION_VOLUME * 2;
 
-        final var blockData = section.data;
+        //A one-entry LUT proves every voxel is the same value: serialize only grows the LUT when it
+        //meets a value it has not seen. Load those straight into uniform mode - no array, no 32768
+        //entry expansion, no rescan. Existing saves benefit immediately; the on-disk format is
+        //untouched. nonEmptyChildren still comes from metadata above (it cannot be derived from the
+        //value - uniform stone and uniform air both need to express their own child mask).
+        final int lutSize = (int) (metadata & 0xFFFF);
+        if (lutSize == 1) {
+            long value = MemoryUtil.memGetLong(lutBasePtr);
+            section.setUniform(value);
+            if (section.lvl == 0) {
+                section.nonEmptyBlockCount = Mapper.isAir(value) ? 0 : WorldSection.SECTION_VOLUME;
+            }
+            me.cortex.voxy.commonImpl.PerfStats.sectionUniformKept.increment();
+            return true;
+        }
+
+        final var blockData = section.materialize();
         for (int i = 0; i < WorldSection.SECTION_VOLUME; i++) {
             blockData[i] = MemoryUtil.memGetLong(lutBasePtr + Short.toUnsignedLong(MemoryUtil.memGetShort(ptr)) * 8L);ptr += 2;
         }

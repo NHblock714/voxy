@@ -109,7 +109,10 @@ public class WorldUpdater {
         //TODO: remove the nonAirCountDelta stuff if level != 0
 
         {//Do a bunch of funny math
-            var secD = worldSection.data;
+            //Ingest writes per-voxel, so the section has to have a real array. materialize() fills it
+            //with the uniform value first, so the pre-existing contents are preserved exactly - the
+            //airCount / nonEmptyBlockCount bookkeeping below is unchanged by uniform mode.
+            var secD = worldSection.materialize();
             int baseSec = bx | (bz << 5) | (by << 10);
             if (lvl == 0) {
                 final int secMsk = 0b1100|(0xf << 5) | (0xf << 10);
