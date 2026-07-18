@@ -21,6 +21,22 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 
 @Mixin(value={ModelFactory.class})
 public abstract class MixinModelFactory {
+    //Resolve the bake-result's blockId() accessor once per class instead of scanning the method table
+    //(getDeclaredMethod + setAccessible) on every polled bake result.
+    @org.spongepowered.asm.mixin.Unique
+    private static final ClassValue<Method> eclipticseasons$blockIdMethod = new ClassValue<>() {
+        @Override
+        protected Method computeValue(Class<?> type) {
+            try {
+                Method m = type.getDeclaredMethod("blockId");
+                m.setAccessible(true);
+                return m;
+            } catch (ReflectiveOperationException e) {
+                return null;
+            }
+        }
+    };
+
     @Shadow(remap=false)
     @Final
     public SoftwareModelTextureBakery bakery2;
@@ -50,16 +66,17 @@ public abstract class MixinModelFactory {
     private <E> E eclipticseasons$processModelResult_setBS(E original, @Share(value="isSnowyBlock") LocalBooleanRef ref) {
         if (original != null) {
             try {
-                Method m = original.getClass().getDeclaredMethod("blockId", new Class[0]);
-                m.setAccessible(true);
-                int blockId = (Integer)m.invoke(original, new Object[0]);
-                VoxyTool.fixId(this.mapper, blockId, i -> {
-                    SoftwareModelTextureBakery patt0$temp = this.bakery2;
-                    if (patt0$temp instanceof IVoxyModelController) {
-                        IVoxyModelController modelController = (IVoxyModelController)patt0$temp;
-                        modelController.setSnowyBlock(true);
-                    }
-                });
+                Method m = eclipticseasons$blockIdMethod.get(original.getClass());
+                if (m != null) {
+                    int blockId = (Integer)m.invoke(original, new Object[0]);
+                    VoxyTool.fixId(this.mapper, blockId, i -> {
+                        SoftwareModelTextureBakery patt0$temp = this.bakery2;
+                        if (patt0$temp instanceof IVoxyModelController) {
+                            IVoxyModelController modelController = (IVoxyModelController)patt0$temp;
+                            modelController.setSnowyBlock(true);
+                        }
+                    });
+                }
             }
             catch (Exception e) {
                 e.printStackTrace();

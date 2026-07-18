@@ -41,6 +41,9 @@ public final class CreateCopycatCompat {
     private static final ThreadLocal<SectionMappings> SECTION_MAPPINGS =
             ThreadLocal.withInitial(SectionMappings::new);
     private static final Map<Mapper, Map<Integer, BlockState>> MATERIALS = new ConcurrentHashMap<>();
+    //material -> (serialized nbt, variant key) - stable per material, shared read-only downstream
+    private record MaterialKey(CompoundTag data, String key) {}
+    private static final Map<BlockState, MaterialKey> MATERIAL_KEYS = new ConcurrentHashMap<>();
 
     private static final Predicate<BlockState> COPYCAT_STATE_PREDICATE = CreateCopycatCompat::isCopycatState;
 
@@ -119,10 +122,16 @@ public final class CreateCopycatCompat {
                     continue;
                 }
 
-                CompoundTag data = NbtUtils.writeBlockState(material);
-                String key = data.toString();
+                //writeBlockState + toString are pure per-BE waste for a base built from one material
+                //(e.g. hundreds of andesite copycats re-serialize andesite every ingest). The material
+                //-> (nbt,key) mapping is stable and the downstream mapper only reads the tag, so cache
+                //it. BlockStates are interned registry singletons, safe as identity keys.
+                MaterialKey mk = MATERIAL_KEYS.computeIfAbsent(material, m -> {
+                    CompoundTag tag = NbtUtils.writeBlockState(m);
+                    return new MaterialKey(tag, tag.toString());
+                });
 
-                int mappedId = mapper.getIdForBlockStateVariant(state, VARIANT_TYPE, key, data);
+                int mappedId = mapper.getIdForBlockStateVariant(state, VARIANT_TYPE, mk.key, mk.data);
                 materialsFor(mapper).putIfAbsent(mappedId, material);
                 mappings.put(lx | (lz << 4) | (ly << 8), mappedId);
             } catch (Throwable ignored) {

@@ -49,9 +49,16 @@ public final class KineticSnapshots {
 
     private static final boolean BNB_LOADED = net.neoforged.fml.ModList.get().isLoaded("bits_n_bobs");
 
-    //True while a capture runs on this thread: the visualization gate answers false so the kinetic
-    //BERs run their full backend-off pass into our consumer (see MixinVisualizationManagerImpl).
-    public static final ThreadLocal<Boolean> CAPTURE_BYPASS = ThreadLocal.withInitial(() -> false);
+    //The thread currently running a capture (null = none). The visualization gate answers false while
+    //a capture runs so the kinetic BERs take their full backend-off pass into our consumer (see
+    //MixinVisualizationManagerImpl). This must stay thread-scoped - Flywheel may query the gate from
+    //its worker threads, which must NOT see the render thread's capture - but a volatile-thread compare
+    //is cheaper on that very hot query path than a ThreadLocalMap lookup.
+    private static volatile Thread captureThread = null;
+
+    public static boolean isCapturingOnThisThread() {
+        return captureThread == Thread.currentThread();
+    }
 
     static final class Bucket {
         final Map<BlockPos, Snap> geoms = new HashMap<>();
@@ -459,7 +466,7 @@ public final class KineticSnapshots {
             if (renderer instanceof KineticBlockEntityRenderer<?>) {
                 int sx = pos.getX() & ~15, sy = pos.getY() & ~15, sz = pos.getZ() & ~15;
                 var consumer = new Capture(pos.getX() - sx, pos.getY() - sy, pos.getZ() - sz, skyLight, blockLight);
-                CAPTURE_BYPASS.set(true);
+                captureThread = Thread.currentThread();
                 try {
                     @SuppressWarnings("unchecked")
                     var raw = (net.minecraft.client.renderer.blockentity.BlockEntityRenderer<KineticBlockEntity>) renderer;
@@ -473,7 +480,7 @@ public final class KineticSnapshots {
                 } catch (Throwable e) {
                     generic = null;
                 } finally {
-                    CAPTURE_BYPASS.set(false);
+                    captureThread = null;
                 }
             }
             if (generic != null) {

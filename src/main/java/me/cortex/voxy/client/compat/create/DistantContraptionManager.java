@@ -43,6 +43,9 @@ public final class DistantContraptionManager {
         int lightPacked = -1;
         long lastSeenMs;
         boolean baked;
+        //Set once a bake ran on a non-empty contraption but produced no drawable mesh (all non-MODEL
+        //blocks); stops the per-tick 64KB re-bake retry for structures that can never draw.
+        boolean bakeGaveNothing;
         //Bearing/piston-driven: pose froze at the reach boundary (one refresh on the crossing tick)
         boolean frozenControlled;
         //The entity appeared in entitiesForRendering this tick. The renderer only yields to the live
@@ -124,12 +127,16 @@ public final class DistantContraptionManager {
             //Live = present AND actually drawing: an entity EntityCulling has occlusion-culled renders
             //nothing, and yielding to it blinks the structure out whenever the ray test flips
             snap.live = !NowheelCulled.isCulled(ce);
-            if (snap.mesh == null) {
-                //Keep retrying: a contraption first seen from afar often has no block data yet (the
-                //NBT arrives after the entity), and a one-shot bake locked in an empty mesh forever -
-                //the snapshot then never drew anywhere.
-                snap.mesh = bakeContraption(contraption);
-                snap.baked = snap.mesh != null;
+            if (snap.mesh == null && !snap.bakeGaveNothing) {
+                //A contraption first seen from afar often has no block data yet (the NBT arrives after
+                //the entity), so keep retrying WHILE it is empty. But once it has blocks and the bake
+                //still produced no mesh (a structure of purely non-MODEL blocks), stop - re-baking a
+                //64KB native buffer every tick forever for a snapshot that can never draw was pure waste.
+                if (!contraption.getBlocks().isEmpty()) {
+                    snap.mesh = bakeContraption(contraption);
+                    snap.baked = snap.mesh != null;
+                    snap.bakeGaveNothing = snap.mesh == null;
+                }
             }
             if (snap.mesh == null) {
                 continue;

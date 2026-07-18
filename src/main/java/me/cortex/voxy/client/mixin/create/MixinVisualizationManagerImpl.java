@@ -23,7 +23,7 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 public class MixinVisualizationManagerImpl {
     @Inject(method = "supportsVisualization", at = @At("HEAD"), cancellable = true)
     private static void voxy$bypassDuringCapture(LevelAccessor level, CallbackInfoReturnable<Boolean> cir) {
-        if (me.cortex.voxy.client.compat.create.KineticSnapshots.CAPTURE_BYPASS.get()) {
+        if (me.cortex.voxy.client.compat.create.KineticSnapshots.isCapturingOnThisThread()) {
             cir.setReturnValue(false);
         }
     }

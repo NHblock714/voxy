@@ -23,7 +23,7 @@ public class MixinSafeBlockEntityRenderer {
     private void voxy$cullBeyondRenderDistance(BlockEntity be, float partialTicks, PoseStack ms,
                                                MultiBufferSource buffer, int light, int overlay, CallbackInfo ci) {
         //The snapshot capture drives this very entry point - never cancel its own pass
-        if (me.cortex.voxy.client.compat.create.KineticSnapshots.CAPTURE_BYPASS.get()) {
+        if (me.cortex.voxy.client.compat.create.KineticSnapshots.isCapturingOnThisThread()) {
             return;
         }
         //Only cull world-placed block entities: a contraption's virtual BEs carry contraption-LOCAL
