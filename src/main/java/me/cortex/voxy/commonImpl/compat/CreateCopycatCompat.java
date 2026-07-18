@@ -90,70 +90,73 @@ public final class CreateCopycatCompat {
         int minY = sectionY << 4;
         int maxY = minY + 15;
 
-        for (BlockEntity blockEntity : chunk.getBlockEntities().values()) {
-            if (!CopycatCommon.isCopycatClass(blockEntity)) {
-                continue;
-            }
-            BlockPos pos = blockEntity.getBlockPos();
-            if (pos.getY() < minY || pos.getY() > maxY) {
-                continue;
-            }
-
-            try {
-                Method getMaterial = GET_MATERIAL_METHODS.get(blockEntity.getClass()).orElse(null);
-                if (getMaterial == null) {
-                    continue;//multi-material blocks etc: leave on the plain path
-                }
-                Object materialObj = getMaterial.invoke(blockEntity);
-                if (!(materialObj instanceof BlockState material) || material.isAir()) {
+        //The iteration itself is inside the guard, not just the body: this runs on an ingest worker over
+        //a map the main thread mutates, so hasNext()/next() can throw ConcurrentModification. Whatever
+        //was collected before the throw still publishes below - a partial dressing beats none, and the
+        //next ingest of this section redoes it.
+        try {
+            for (BlockEntity blockEntity : chunk.getBlockEntities().values()) {
+                if (!CopycatCommon.isCopycatClass(blockEntity)) {
                     continue;
                 }
-                //An unfilled copycat carries the copycat base "material" - nothing to dress it in
-                var materialId = BuiltInRegistries.BLOCK.getKey(material.getBlock());
-                if (materialId == null || materialId.getPath().equals("copycat_base")) {
+                BlockPos pos = blockEntity.getBlockPos();
+                if (pos.getY() < minY || pos.getY() > maxY) {
                     continue;
                 }
 
-                int lx = pos.getX() & 15;
-                int ly = pos.getY() & 15;
-                int lz = pos.getZ() & 15;
-                BlockState state = section.getBlockState(lx, ly, lz);
-                if (state == null || state.isAir()) {
-                    continue;
-                }
-
-                //writeBlockState + toString are pure per-BE waste for a base built from one material
-                //(e.g. hundreds of andesite copycats re-serialize andesite every ingest). The material
-                //-> (nbt,key) mapping is stable and the downstream mapper only reads the tag, so cache
-                //it. BlockStates are interned registry singletons, safe as identity keys.
-                MaterialKey mk = MATERIAL_KEYS.get(material);
-                if (mk == null) {
-                    me.cortex.voxy.commonImpl.PerfStats.copycatKeyMiss.increment();
-                    CompoundTag tag = NbtUtils.writeBlockState(material);
-                    mk = new MaterialKey(tag, tag.toString());
-                    MaterialKey prior = MATERIAL_KEYS.putIfAbsent(material, mk);
-                    if (prior != null) {
-                        mk = prior;
+                try {
+                    Method getMaterial = GET_MATERIAL_METHODS.get(blockEntity.getClass()).orElse(null);
+                    if (getMaterial == null) {
+                        continue;//multi-material blocks etc: leave on the plain path
                     }
-                } else {
-                    me.cortex.voxy.commonImpl.PerfStats.copycatKeyHit.increment();
-                }
+                    Object materialObj = getMaterial.invoke(blockEntity);
+                    if (!(materialObj instanceof BlockState material) || material.isAir()) {
+                        continue;
+                    }
+                    //An unfilled copycat carries the copycat base "material" - nothing to dress it in
+                    var materialId = BuiltInRegistries.BLOCK.getKey(material.getBlock());
+                    if (materialId == null || materialId.getPath().equals("copycat_base")) {
+                        continue;
+                    }
 
-                int mappedId = mapper.getIdForBlockStateVariant(state, VARIANT_TYPE, mk.key, mk.data);
-                materialsFor(mapper).putIfAbsent(mappedId, material);
-                mappings.put(lx | (lz << 4) | (ly << 8), mappedId);
-            } catch (Throwable ignored) {
+                    int lx = pos.getX() & 15;
+                    int ly = pos.getY() & 15;
+                    int lz = pos.getZ() & 15;
+                    BlockState state = section.getBlockState(lx, ly, lz);
+                    if (state == null || state.isAir()) {
+                        continue;
+                    }
+
+                    //writeBlockState + toString are pure per-BE waste for a base built from one material
+                    //(e.g. hundreds of andesite copycats re-serialize andesite every ingest). The material
+                    //-> (nbt,key) mapping is stable and the downstream mapper only reads the tag, so cache
+                    //it. BlockStates are interned registry singletons, safe as identity keys.
+                    MaterialKey mk = MATERIAL_KEYS.get(material);
+                    if (mk == null) {
+                        me.cortex.voxy.commonImpl.PerfStats.copycatKeyMiss.increment();
+                        CompoundTag tag = NbtUtils.writeBlockState(material);
+                        mk = new MaterialKey(tag, tag.toString());
+                        MaterialKey prior = MATERIAL_KEYS.putIfAbsent(material, mk);
+                        if (prior != null) {
+                            mk = prior;
+                        }
+                    } else {
+                        me.cortex.voxy.commonImpl.PerfStats.copycatKeyHit.increment();
+                    }
+
+                    int mappedId = mapper.getIdForBlockStateVariant(state, VARIANT_TYPE, mk.key, mk.data);
+                    materialsFor(mapper).putIfAbsent(mappedId, material);
+                    mappings.put(lx | (lz << 4) | (ly << 8), mappedId);
+                } catch (Throwable ignored) {
+                }
             }
+        } catch (Throwable ignored) {
         }
         mappings.active = mappings.touchedCount != 0;
     }
 
     public static void endSection() {
         if (LOADED) SECTION_MAPPINGS.get().active = false;
-    }
-
-    public static boolean hasSectionMappings() {
-        return LOADED && SECTION_MAPPINGS.get().active;
     }
 
     //The active section's per-voxel id map, or null when this section has none. Fetch once per section
@@ -164,18 +167,6 @@ public final class CreateCopycatCompat {
         }
         SectionMappings m = SECTION_MAPPINGS.get();
         return m.active ? m.ids : null;
-    }
-
-    public static int mapBlockId(Mapper mapper, BlockState state, int baseBlockId, int localIndex) {
-        if (!LOADED || localIndex < 0 || localIndex >= 4096) {
-            return baseBlockId;
-        }
-        SectionMappings mappings = SECTION_MAPPINGS.get();
-        if (!mappings.active) {
-            return baseBlockId;
-        }
-        int mappedId = mappings.ids[localIndex];
-        return mappedId == 0 ? baseBlockId : mappedId;
     }
 
     //Restore a stored variant on world load: the material NBT round-trips through the Mapper storage

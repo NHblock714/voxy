@@ -45,10 +45,17 @@ public final class DomumOrnamentumCompat {
     private static final Map<Mapper, Map<Integer, BakePlan>> BAKE_PLANS = new ConcurrentHashMap<>();
     private static final Map<Object, VariantDescriptor> DESCRIPTORS = new ConcurrentHashMap<>();
 
+    //Walk the superclass chain rather than testing the concrete class alone: an addon subclassing a Domum
+    //block entity lands outside the package but still carries the material data we are after.
     private static final ClassValue<Boolean> DOMUM_BLOCK_ENTITIES = new ClassValue<>() {
         @Override
         protected Boolean computeValue(Class<?> type) {
-            return type.getName().startsWith(PACKAGE_PREFIX);
+            for (Class<?> current = type; current != null; current = current.getSuperclass()) {
+                if (current.getName().startsWith(PACKAGE_PREFIX)) {
+                    return true;
+                }
+            }
+            return false;
         }
     };
 
@@ -133,66 +140,69 @@ public final class DomumOrnamentumCompat {
         int maxY = minY + 15;
         Map<Integer, BakePlan> plans = null;
 
-        for (BlockEntity blockEntity : chunk.getBlockEntities().values()) {
-            if (blockEntity == null || !DOMUM_BLOCK_ENTITIES.get(blockEntity.getClass())) {
-                continue;
-            }
-
-            BlockPos pos = blockEntity.getBlockPos();
-            if (pos.getY() < minY || pos.getY() > maxY) {
-                continue;
-            }
-
-            try {
-                // Domum exposes the immutable MaterialTextureData directly from
-                // its block entity. This avoids building a complete model-data
-                // object for every re-ingested section on a background thread.
-                Object textureData = extractTextureData(blockEntity);
-                ModelData modelData = ModelData.EMPTY;
-                if (textureData == null) {
-                    modelData = blockEntity.getModelData();
-                    textureData = extractTextureData(modelData);
-                }
-                if (textureData == null) {
+        //The iteration itself is inside the guard, not just the body: this runs on an ingest worker over
+        //a map the main thread mutates, so hasNext()/next() can throw ConcurrentModification. Whatever
+        //was collected before the throw still publishes below - a partial dressing beats none, and the
+        //next ingest of this section redoes it.
+        try {
+            for (BlockEntity blockEntity : chunk.getBlockEntities().values()) {
+                if (blockEntity == null || !DOMUM_BLOCK_ENTITIES.get(blockEntity.getClass())) {
                     continue;
                 }
 
-                VariantDescriptor descriptor = DESCRIPTORS.computeIfAbsent(textureData,
-                        DomumOrnamentumCompat::createDescriptor);
-                if (descriptor == null) {
+                BlockPos pos = blockEntity.getBlockPos();
+                if (pos.getY() < minY || pos.getY() > maxY) {
                     continue;
                 }
 
-                int lx = pos.getX() & 15;
-                int ly = pos.getY() & 15;
-                int lz = pos.getZ() & 15;
-                BlockState state = section.getBlockState(lx, ly, lz);
-                if (state == null || state.isAir()) {
-                    continue;
-                }
+                try {
+                    //Domum exposes the immutable MaterialTextureData straight off its block entity, so
+                    //take that rather than building a whole model-data object for every re-ingested
+                    //section on a background thread.
+                    Object textureData = extractTextureData(blockEntity);
+                    ModelData modelData = ModelData.EMPTY;
+                    if (textureData == null) {
+                        modelData = blockEntity.getModelData();
+                        textureData = extractTextureData(modelData);
+                    }
+                    if (textureData == null) {
+                        continue;
+                    }
 
-                int mappedId = mapper.getIdForBlockStateVariant(
-                        state, VARIANT_TYPE, descriptor.key(), descriptor.data());
-                if (plans == null) plans = plansFor(mapper);
-                if (plans.get(mappedId) == null) {
-                    ModelData resolvedModelData = modelData == ModelData.EMPTY
-                            ? createModelData(textureData) : modelData;
-                    plans.putIfAbsent(mappedId, createBakePlan(state, resolvedModelData, descriptor));
-                }
+                    VariantDescriptor descriptor = DESCRIPTORS.computeIfAbsent(textureData,
+                            DomumOrnamentumCompat::createDescriptor);
+                    if (descriptor == null) {
+                        continue;
+                    }
 
-                mappings.put(lx | (lz << 4) | (ly << 8), mappedId);
-            } catch (Throwable ignored) {
+                    int lx = pos.getX() & 15;
+                    int ly = pos.getY() & 15;
+                    int lz = pos.getZ() & 15;
+                    BlockState state = section.getBlockState(lx, ly, lz);
+                    if (state == null || state.isAir()) {
+                        continue;
+                    }
+
+                    int mappedId = mapper.getIdForBlockStateVariant(
+                            state, VARIANT_TYPE, descriptor.key(), descriptor.data());
+                    if (plans == null) plans = plansFor(mapper);
+                    if (plans.get(mappedId) == null) {
+                        ModelData resolvedModelData = modelData == ModelData.EMPTY
+                                ? createModelData(textureData) : modelData;
+                        plans.putIfAbsent(mappedId, createBakePlan(state, resolvedModelData, descriptor));
+                    }
+
+                    mappings.put(lx | (lz << 4) | (ly << 8), mappedId);
+                } catch (Throwable ignored) {
+                }
             }
+        } catch (Throwable ignored) {
         }
         mappings.active = mappings.touchedCount != 0;
     }
 
     public static void endSection() {
         if (LOADED) SECTION_MAPPINGS.get().active = false;
-    }
-
-    public static boolean hasSectionMappings() {
-        return LOADED && SECTION_MAPPINGS.get().active;
     }
 
     //The active section's per-voxel id map, or null when this section has none. Fetch once per section
@@ -203,18 +213,6 @@ public final class DomumOrnamentumCompat {
         }
         SectionMappings m = SECTION_MAPPINGS.get();
         return m.active ? m.ids : null;
-    }
-
-    public static int mapBlockId(Mapper mapper, BlockState state, int baseBlockId, int localIndex) {
-        if (!LOADED || localIndex < 0 || localIndex >= 4096) {
-            return baseBlockId;
-        }
-        SectionMappings mappings = SECTION_MAPPINGS.get();
-        if (!mappings.active) {
-            return baseBlockId;
-        }
-        int mappedId = mappings.ids[localIndex];
-        return mappedId == 0 ? baseBlockId : mappedId;
     }
 
     public static BakePlan getBakePlan(Mapper mapper, int blockId) {
