@@ -818,7 +818,8 @@ public class ModelFactory {
         return result;
     }
 
-    private static BlockColor getColourProvider(BlockState blockState) {
+    //Instance-scoped so the probe can reuse DEFAULT_BIOME (both call sites are instance methods)
+    private BlockColor getColourProvider(BlockState blockState) {
         if (isLumiseneFluidBlockState(blockState)) {
             return null;
         }
@@ -828,14 +829,20 @@ public class ModelFactory {
         if (isFluidBlockState(blockState) || isFluidBlockState(defaultState)) {
             return (state, world, pos, tintIndex) -> blockColors.getColor(state, world, pos, tintIndex);
         }
+        BlockColor provider = (state, world, pos, tintIndex) -> blockColors.getColor(state, world, pos, tintIndex);
+        //Probe through the SAME path the capture uses. The old probe passed a null level and only tint
+        //index 0, which rejected any modded block whose colour provider dereferences the level (it threw,
+        //and the catch read as "no tint") or that only answers on tint index 1 - captureColourConstant
+        //copes with both, so gating more strictly than it just meant those blocks baked untinted and
+        //rendered as their raw greyscale texture at LOD range (grey modded leaves).
         int color;
         try {
-            color = blockColors.getColor(defaultState, null, BlockPos.ZERO, 0);
+            color = captureColourConstant(provider, defaultState, DEFAULT_BIOME);
         } catch (Exception e) {
             return null;
         }
         if (color != 0 && color != -1) {
-            return (state, world, pos, tintIndex) -> blockColors.getColor(state, world, pos, tintIndex);
+            return provider;
         }
         return null;
     }
