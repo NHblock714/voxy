@@ -40,7 +40,7 @@ public final class FrameProfiler {
     private static volatile boolean active;
     //Set when voxy's render begins and cleared when it ends, so the watchdog can tell an in-flight
     //frame from an idle one. Sampling the render thread from the render thread itself only ever
-    //catches the profiler, which is what the first version of this did.
+    //catches the profiler.
     private static volatile long frameStartNanos;
     private static volatile Thread renderThread;
     private static volatile boolean stallCapturedThisFrame;
@@ -101,8 +101,8 @@ public final class FrameProfiler {
     //capture came from. Without this the report silently under-reports whole classes of stall.
     private static volatile boolean insideVoxyRender;
 
-    //Samples the render thread WHILE a frame is overrunning. getStackTrace on another thread is a
-    //safepoint operation, so this is deliberately once per frame and only past the threshold.
+    //Samples the render thread while a frame is overrunning. getStackTrace on another thread is a
+    //safepoint operation, so this runs once per frame and only past the threshold.
     private static void runWatchdog() {
         while (active) {
             try {
@@ -115,7 +115,19 @@ public final class FrameProfiler {
             if (start == 0 || thread == null || stallCapturedThisFrame) {
                 continue;
             }
+            //The render thread is gone (renderer shut down, world left): onFrameEnd will never run
+            //again, so end the capture here rather than leaving it armed and unrecoverable
+            if (!thread.isAlive()) {
+                Logger.info(stopAndDump());
+                return;
+            }
             long elapsedMicros = (System.nanoTime() - start) / 1000;
+            //Past ten seconds this is either a genuine hitch (dimension load, pack reload) or a stale
+            //frameStartNanos from a render loop that stopped without the thread dying. Neither is worth
+            //a stack, and neither means the capture is over - stay alive and wait for the next frame.
+            if (elapsedMicros > 10_000_000) {
+                continue;
+            }
             if (elapsedMicros < STALL_THRESHOLD_MICROS) {
                 continue;
             }
@@ -168,7 +180,7 @@ public final class FrameProfiler {
                     micros(TimingStatistics.C),
             });
             //The render thread's own stack is worthless here - the stall is already over and it would
-            //only show this method. The watchdog samples it mid-stall instead. What IS worth recording
+            //only show this method. The watchdog samples it mid-stall instead. What is worth recording
             //at this point is what voxy's workers were doing, since an idle worker set during a stall
             //rules them out as the cause.
             if (frameMicros >= STALL_THRESHOLD_MICROS) {
@@ -265,6 +277,8 @@ public final class FrameProfiler {
         }
         active = false;
         frameStartNanos = 0;
+        insideVoxyRender = false;
+        renderThread = null;
         if (watchdog != null) {
             watchdog.interrupt();
             watchdog = null;
@@ -329,7 +343,7 @@ public final class FrameProfiler {
             report.append(s).append('\n');
         }
 
-        Path out = Path.of("voxy-frame-capture.txt");
+        Path out = Minecraft.getInstance().gameDirectory.toPath().resolve("voxy-frame-capture.txt");
         try {
             Files.writeString(out, report.toString(), StandardCharsets.UTF_8);
         } catch (IOException e) {
