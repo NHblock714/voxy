@@ -1153,6 +1153,8 @@ public class NodeManager {
                     if (++this.alreadyInFlightWarnCount == 20) {
                         Logger.warn("Suppressing further 'request already in flight' warnings");
                     }
+                } else {
+                    me.cortex.voxy.commonImpl.PerfStats.nodeWarnSuppressed.increment();
                 }
                 return;
             }

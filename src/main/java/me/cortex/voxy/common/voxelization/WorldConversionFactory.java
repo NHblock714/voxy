@@ -174,8 +174,11 @@ public class WorldConversionFactory {
                         var biomeHolder = biomeContainer.get(x, y, z);
                         int bid = biomeCacheMap.getOrDefault(biomeHolder, -1);
                         if (bid == -1) {
+                            me.cortex.voxy.commonImpl.PerfStats.biomeCacheMiss.increment();
                             bid = stateMapper.getIdForBiome(biomeHolder);
                             biomeCacheMap.put(biomeHolder, bid);
+                        } else {
+                            me.cortex.voxy.commonImpl.PerfStats.biomeCacheHit.increment();
                         }
                         biomes[i++] = bid;
                         if (inital==-1) inital = bid;
@@ -194,8 +197,11 @@ public class WorldConversionFactory {
         // Domum Ornamentum model data is only needed for sections that actually
         // contain material-textured block entities. Avoid the extra palette and
         // ThreadLocal lookups for every voxel in normal sections.
-        final boolean hasDomumSectionMappings = DomumOrnamentumCompat.hasSectionMappings()
-                || me.cortex.voxy.commonImpl.compat.CreateCopycatCompat.hasSectionMappings();
+        //Fetch the per-voxel variant id maps ONCE per section (each does a ThreadLocal.get) instead of
+        //two ThreadLocal.get per voxel through mapBlockId. Null when this section has no such blocks.
+        final int[] domumIds = DomumOrnamentumCompat.activeSectionIds();
+        final int[] copycatIds = me.cortex.voxy.commonImpl.compat.CreateCopycatCompat.activeSectionIds();
+        final boolean hasDomumSectionMappings = domumIds != null || copycatIds != null;
         var blockStorage = blockDataAccessor.voxy$getStorage();
         if (blockStorage instanceof SimpleBitStorage bStor) {
             var bDat = bStor.getRaw();
@@ -227,8 +233,8 @@ public class WorldConversionFactory {
                     bId = stateMapper.getIdForBlockState(voxelState);
                 }
                 if (hasDomumSectionMappings && voxelState != null) {
-                    bId = DomumOrnamentumCompat.mapBlockId(stateMapper, voxelState, bId, i);
-                    bId = me.cortex.voxy.commonImpl.compat.CreateCopycatCompat.mapBlockId(stateMapper, voxelState, bId, i);
+                    if (domumIds != null) { int m = domumIds[i]; if (m != 0) bId = m; }
+                    if (copycatIds != null) { int m = copycatIds[i]; if (m != 0) bId = m; }
                 }
                 sample >>>= eBits;
 
@@ -255,8 +261,8 @@ public class WorldConversionFactory {
                     byte light = lightSupplier.supply(i&0xF, (i>>8)&0xF, (i>>4)&0xF);
                     int mappedBlockId = bId;
                     if (hasDomumSectionMappings && voxelState != null) {
-                        mappedBlockId = DomumOrnamentumCompat.mapBlockId(stateMapper, voxelState, mappedBlockId, i);
-                        mappedBlockId = me.cortex.voxy.commonImpl.compat.CreateCopycatCompat.mapBlockId(stateMapper, voxelState, mappedBlockId, i);
+                        if (domumIds != null) { int m = domumIds[i]; if (m != 0) mappedBlockId = m; }
+                        if (copycatIds != null) { int m = copycatIds[i]; if (m != 0) mappedBlockId = m; }
                     }
                     data[i] = Mapper.composeMappingId(light, mappedBlockId, biomes[Integer.compress(i,0b1100_1100_1100)]);
                 }

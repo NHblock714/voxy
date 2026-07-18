@@ -126,10 +126,18 @@ public final class CreateCopycatCompat {
                 //(e.g. hundreds of andesite copycats re-serialize andesite every ingest). The material
                 //-> (nbt,key) mapping is stable and the downstream mapper only reads the tag, so cache
                 //it. BlockStates are interned registry singletons, safe as identity keys.
-                MaterialKey mk = MATERIAL_KEYS.computeIfAbsent(material, m -> {
-                    CompoundTag tag = NbtUtils.writeBlockState(m);
-                    return new MaterialKey(tag, tag.toString());
-                });
+                MaterialKey mk = MATERIAL_KEYS.get(material);
+                if (mk == null) {
+                    me.cortex.voxy.commonImpl.PerfStats.copycatKeyMiss.increment();
+                    CompoundTag tag = NbtUtils.writeBlockState(material);
+                    mk = new MaterialKey(tag, tag.toString());
+                    MaterialKey prior = MATERIAL_KEYS.putIfAbsent(material, mk);
+                    if (prior != null) {
+                        mk = prior;
+                    }
+                } else {
+                    me.cortex.voxy.commonImpl.PerfStats.copycatKeyHit.increment();
+                }
 
                 int mappedId = mapper.getIdForBlockStateVariant(state, VARIANT_TYPE, mk.key, mk.data);
                 materialsFor(mapper).putIfAbsent(mappedId, material);
@@ -146,6 +154,16 @@ public final class CreateCopycatCompat {
 
     public static boolean hasSectionMappings() {
         return LOADED && SECTION_MAPPINGS.get().active;
+    }
+
+    //The active section's per-voxel id map, or null when this section has none. Fetch once per section
+    //so the voxel loop can index it directly instead of a ThreadLocal.get per voxel.
+    public static int[] activeSectionIds() {
+        if (!LOADED) {
+            return null;
+        }
+        SectionMappings m = SECTION_MAPPINGS.get();
+        return m.active ? m.ids : null;
     }
 
     public static int mapBlockId(Mapper mapper, BlockState state, int baseBlockId, int localIndex) {

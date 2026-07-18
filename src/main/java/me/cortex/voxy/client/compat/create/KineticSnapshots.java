@@ -278,6 +278,7 @@ public final class KineticSnapshots {
                     BEARING_POSITIONS.remove(snapPos);
                 }
                 bucket.close();
+                me.cortex.voxy.commonImpl.PerfStats.kineticSnapshotEvicted.increment();
                 return true;
             }
             return false;

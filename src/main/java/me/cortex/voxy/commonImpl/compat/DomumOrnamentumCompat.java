@@ -195,6 +195,16 @@ public final class DomumOrnamentumCompat {
         return LOADED && SECTION_MAPPINGS.get().active;
     }
 
+    //The active section's per-voxel id map, or null when this section has none. Fetch once per section
+    //so the voxel loop can index it directly instead of a ThreadLocal.get per voxel.
+    public static int[] activeSectionIds() {
+        if (!LOADED) {
+            return null;
+        }
+        SectionMappings m = SECTION_MAPPINGS.get();
+        return m.active ? m.ids : null;
+    }
+
     public static int mapBlockId(Mapper mapper, BlockState state, int baseBlockId, int localIndex) {
         if (!LOADED || localIndex < 0 || localIndex >= 4096) {
             return baseBlockId;

@@ -82,13 +82,31 @@ public class VoxyCommands {
                 .then(Commands.literal("kinetics")
                         .executes(VoxyCommands::dumpKinetics))
                 .then(Commands.literal("ship")
-                        .executes(VoxyCommands::dumpShipContraptions));
+                        .executes(VoxyCommands::dumpShipContraptions))
+                .then(Commands.literal("perf")
+                        .executes(VoxyCommands::dumpPerf)
+                        .then(Commands.literal("reset")
+                                .executes(VoxyCommands::resetPerf)));
 
         return Commands.literal("voxy")//.requires((ctx)-> VoxyCommon.getInstance() != null)
                 .then(Commands.literal("reload")
                         .executes(VoxyCommands::reloadInstance))
                 .then(imports)
                 .then(debug);
+    }
+
+    //Live counters for the fork's optimizations - proves they are firing and by how much. Values
+    //accumulate across the session; run "/voxy debug perf reset" to zero them and watch a fresh window
+    //(e.g. reset, fly across a fresh chunk area, then check the biome/copycat cache hit rate).
+    private static int dumpPerf(CommandContext<CommandSourceStack> ctx) {
+        ctx.getSource().sendSuccess(() -> Component.literal(me.cortex.voxy.commonImpl.PerfStats.report()), false);
+        return 1;
+    }
+
+    private static int resetPerf(CommandContext<CommandSourceStack> ctx) {
+        me.cortex.voxy.commonImpl.PerfStats.reset();
+        ctx.getSource().sendSuccess(() -> Component.literal("Voxy optimization stats reset"), false);
+        return 1;
     }
 
     //Arms (or stops early) the per-frame occlusion recorder; the dump file lands in the game dir

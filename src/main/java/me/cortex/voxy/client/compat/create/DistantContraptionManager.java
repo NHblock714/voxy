@@ -137,6 +137,8 @@ public final class DistantContraptionManager {
                     snap.baked = snap.mesh != null;
                     snap.bakeGaveNothing = snap.mesh == null;
                 }
+            } else if (snap.bakeGaveNothing) {
+                me.cortex.voxy.commonImpl.PerfStats.contraptionRebakeSkipped.increment();
             }
             if (snap.mesh == null) {
                 continue;

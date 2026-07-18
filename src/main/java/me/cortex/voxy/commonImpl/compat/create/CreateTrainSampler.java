@@ -225,7 +225,11 @@ public final class CreateTrainSampler {
 
                     //Pose is player-independent - compute once per (shapeId, dimension) per round
                     CarriagePose pose = poseRoundCache.get(new PoseKey(shapeId, playerDim));
+                    if (pose != null) {
+                        me.cortex.voxy.commonImpl.PerfStats.trainPoseCacheHit.increment();
+                    }
                     if (pose == null) {
+                        me.cortex.voxy.commonImpl.PerfStats.trainPoseCacheMiss.increment();
                         Vec3 leading = dce.rotationAnchors.getFirst();
                         Vec3 trailing = dce.rotationAnchors.getSecond();
                         float yaw = 0, pitch = 0;
@@ -287,6 +291,7 @@ public final class CreateTrainSampler {
         }
         //Budget the heavy deserialize+build; over budget this round, retry next tick (not a failure)
         if (this.shapeBuildsThisRound >= SHAPE_BUILDS_PER_ROUND) {
+            me.cortex.voxy.commonImpl.PerfStats.trainShapeBuildDeferred.increment();
             return null;
         }
         try {
