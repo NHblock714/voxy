@@ -85,7 +85,11 @@ public class VoxyConfigMenu implements ConfigEntryPoint {
                                 new BoolOption(
                                         "voxy:ingest_enabled",
                                         Component.translatable("voxy.config.general.ingest"),
-                                        ()->CFG.ingestEnabled, v->CFG.ingestEnabled=v)
+                                        ()->CFG.ingestEnabled, v->CFG.ingestEnabled=v),
+                                new BoolOption(
+                                        "voxy:show_join_message",
+                                        Component.translatable("voxy.config.general.showJoinMessage"),
+                                        ()->CFG.showJoinMessage, v->CFG.showJoinMessage=v)
                         )
                 ).setEnabler("voxy:enabled"),
                 new Page(Component.translatable("voxy.config.rendering"),
