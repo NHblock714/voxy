@@ -272,9 +272,8 @@ public class VoxyRenderSystem {
             this.savedBufferBindings[i] = glGetIntegeri(GL_SHADER_STORAGE_BUFFER_BINDING, i);
         }
 
-        //Upstream 0.2.18 edge-flicker fix: assert the depth state instead of trusting whatever the
-        //previous renderer left behind (a foreign depthFunc/mask made edge terrain flicker with and
-        //without shaders)
+        //Assert the depth state rather than trusting whatever the previous renderer left behind - a
+        //foreign depthFunc/mask makes edge terrain flicker, with and without shaders.
         com.mojang.blaze3d.platform.GlStateManager._enableDepthTest();
         com.mojang.blaze3d.platform.GlStateManager._depthFunc(this.properties.closerEqualDepthCompare());
         com.mojang.blaze3d.platform.GlStateManager._depthMask(true);
@@ -288,14 +287,6 @@ public class VoxyRenderSystem {
 
         if (boundFB == 0) {
             throw new IllegalStateException("Cannot use the default framebuffer as cannot source from it");
-        }
-
-        if (VoxyConfig.CONFIG.getRenderPressureLevel() <= 1) {
-            //Disabled, as in the original base: this auto quality balancer shoves subDivisionSize up by
-        //INCREASE_PER_SECOND/fps EVERY FRAME whenever fps < 55 and then PERSISTS it to the config -
-        //one heavy session quietly turned a hand-tuned 28 into 126 and every distant LOD went mushy
-        //(head-on worst: the subdivision test's screen-space metric is smallest at screen centre).
-        //this.autoBalanceSubDivSize();
         }
 
         this.pipeline.preSetup(viewport);
@@ -408,6 +399,10 @@ public class VoxyRenderSystem {
     }
 
 
+    //Left uncalled, as in the base. It raises subDivisionSize by INCREASE_PER_SECOND/fps every frame
+    //that fps < 55 and persists the result to the config, so one heavy session ratchets a hand-tuned 28
+    //up to 126 and leaves every distant LOD mushy for good - worst head-on, since the subdivision test's
+    //screen-space metric is smallest at screen centre. Wire it up only with a decay path and no persist.
     private void autoBalanceSubDivSize() {
         // Only raise quality when the mesh queue is under control.
         boolean canDecreaseSize = this.renderGen.getTaskCount() < 300;

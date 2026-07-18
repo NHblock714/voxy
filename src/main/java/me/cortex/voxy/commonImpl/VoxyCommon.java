@@ -42,6 +42,19 @@ public class VoxyCommon {
         }
     }
 
+    //The name shown in mod lists, the Sodium options page and the join line. Read from the mod entry
+    //rather than repeated as a literal per call site. Needs a populated ModList, so not usable during
+    //early mixin bootstrap like the fields above.
+    public static String displayName() {
+        var list = ModList.get();
+        if (list == null) {
+            return "voxy";
+        }
+        return list.getModContainerById("voxy")
+                .map(container -> container.getModInfo().getDisplayName())
+                .orElse("voxy");
+    }
+
     //This is hardcoded like this because people do not understand what they are doing
     public static boolean isVerificationFlagOn(String name) {
         return isVerificationFlagOn(name, false);

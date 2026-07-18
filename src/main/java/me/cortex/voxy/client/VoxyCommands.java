@@ -254,7 +254,7 @@ public class VoxyCommands {
         String out = sb.toString();
         Logger.info(out);
         ctx.getSource().sendSuccess(() -> Component.literal(out), false);
-        return 0;
+        return 1;
     }
 
     //Dumps the stored voxel (block + light nibbles) at every lod level for a position, plus the

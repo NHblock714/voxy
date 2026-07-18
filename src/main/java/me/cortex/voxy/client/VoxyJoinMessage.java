@@ -13,8 +13,7 @@ import net.neoforged.neoforge.client.event.ClientTickEvent;
 
 //Prints the build, its maintainer, the group and the fork's repository to chat on world join. Held back
 //a short while: sent straight from LoggingIn the lines land before the chat is up and get swallowed by
-//the join sequence. Toggled by showJoinMessage in voxy-config.json, which is not surfaced in any config
-//screen.
+//the join sequence. Toggled by showJoinMessage, on the general config page.
 public final class VoxyJoinMessage {
     public static final VoxyJoinMessage INSTANCE = new VoxyJoinMessage();
 
@@ -58,7 +57,6 @@ public final class VoxyJoinMessage {
                 .withStyle(ChatFormatting.AQUA);
     }
 
-    //Clicking the group number copies it to the clipboard
     private static Component credits() {
         var group = Component.literal(QQ_GROUP).withStyle(style -> style
                 .withColor(ChatFormatting.WHITE)
@@ -89,8 +87,6 @@ public final class VoxyJoinMessage {
     }
 
     private static String displayName() {
-        return ModList.get().getModContainerById("voxy")
-                .map(container -> container.getModInfo().getDisplayName())
-                .orElse("voxy");
+        return me.cortex.voxy.commonImpl.VoxyCommon.displayName();
     }
 }

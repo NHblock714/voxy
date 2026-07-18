@@ -54,7 +54,7 @@ public final class PerfStats {
         long m = miss.sum();
         long total = h + m;
         double pct = total == 0 ? 0.0 : (100.0 * h / total);
-        return String.format("  %-22s hit=%,d miss=%,d (%.2f%% hit, %,d saved)", name, h, m, pct, h);
+        return String.format("  %-22s hit=%,d miss=%,d (%.2f%% hit)", name, h, m, pct);
     }
 
     public static String report() {

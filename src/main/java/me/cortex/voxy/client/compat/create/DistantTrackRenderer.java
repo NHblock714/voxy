@@ -41,7 +41,6 @@ import static org.lwjgl.opengl.GL11C.glEnable;
 import static org.lwjgl.opengl.GL11C.glStencilFunc;
 import static org.lwjgl.opengl.GL11C.glStencilOp;
 import static org.lwjgl.opengl.GL30C.glBindVertexArray;
-import static org.lwjgl.opengl.GL20C.glUniform2f;
 import static org.lwjgl.opengl.GL20C.glUseProgram;
 
 //Renders Create's track network out to LOD distances using the real track models, baked straight
@@ -139,6 +138,7 @@ public final class DistantTrackRenderer implements LodPipelineHooks.Renderer {
         glStencilOp(GL_KEEP, GL_KEEP, GL_REPLACE);
         int drawn = 0;
         long nowMs = System.currentTimeMillis();
+        boolean occlusionDebug = DistantOcclusionDebug.isActive();
         var transform = new Matrix4f();
         try {
             for (MeshUnit unit : this.units) {
@@ -150,7 +150,7 @@ public final class DistantTrackRenderer implements LodPipelineHooks.Renderer {
                     continue;
                 }
                 //Hand over on vanilla's spherical view distance, for straights and turns alike.
-                //isSectionCompiled is NOT usable vertically: chunks load in a horizontal cylinder
+                //isSectionCompiled is not usable vertically: chunks load in a horizontal cylinder
                 //(full world height), so a section straight below the camera stays compiled even
                 //when it is far past the render distance and vanilla is not drawing it - keying on
                 //compiled made us yield forever there, leaving only voxy's voxelised collision box.
@@ -159,7 +159,7 @@ public final class DistantTrackRenderer implements LodPipelineHooks.Renderer {
                 //below is purely for the occlusion recorder - kept out of the live path so a large
                 //network does not pay an isSectionCompiled section-table lookup per unit per frame.
                 boolean vanillaDraws = distSq < beViewDistSq;
-                if (DistantOcclusionDebug.isActive()) {
+                if (occlusionDebug) {
                     boolean rawCompiled = mc.levelRenderer.isSectionCompiled(unit.gate);
                     if (rawCompiled) {
                         unit.lastCompiledMs = nowMs;
@@ -194,7 +194,7 @@ public final class DistantTrackRenderer implements LodPipelineHooks.Renderer {
         this.clearAll();
     }
 
-    //Baking runs between frames, NOT inside the render hooks, where mid-pipeline GL state would
+    //Baking runs between frames, not inside the render hooks, where mid-pipeline GL state would
     //otherwise interfere with buffer setup.
     @SubscribeEvent
     public void onClientTick(net.neoforged.neoforge.client.event.ClientTickEvent.Post event) {

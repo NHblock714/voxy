@@ -122,8 +122,7 @@ public class VoxyConfig {
     // EclipticSeasons compat: rebuild the LOD renderer when the season changes.
     public boolean eclipticSeasonsReloadOnSeasonChange = false;
 
-    // Print the build, its maintainer and the fork's repository to chat on world join. Set it here -
-    // it is not carried in the config screens.
+    // Print the build, its maintainer and the fork's repository to chat on world join.
     public boolean showJoinMessage = true;
 
     public SSAO.SSAOMode getSSAOMode() {

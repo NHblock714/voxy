@@ -27,7 +27,7 @@ public class VoxyConfigMenu implements ConfigEntryPoint {
 
         var CFG = VoxyConfig.CONFIG;
 
-        var cc = B.registerModOptions("voxy", "Voxy超远视野", VoxyCommon.MOD_VERSION)
+        var cc = B.registerModOptions("voxy", VoxyCommon.displayName(), VoxyCommon.MOD_VERSION)
                 .setIcon(ResourceLocation.parse("voxy:icon.png"));
 
         final var RENDER_RELOAD = OptionFlag.REQUIRES_RENDERER_RELOAD.getId().toString();
