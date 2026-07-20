@@ -40,8 +40,8 @@ public class VoxelIngestService {
         try {
             //Inside the try: the queue holds a world ref per task and the finally below releases it, so
             //anything that can throw has to be covered or the world can never be closed again
-            DomumOrnamentumCompat.beginSection(task.world.getMapper(), task.chunk, task.section, task.cy);
-            me.cortex.voxy.commonImpl.compat.CreateCopycatCompat.beginSection(task.world.getMapper(), task.chunk, task.section, task.cy);
+            DomumOrnamentumCompat.beginSection(task.world.getMapper(), task.world.storage, task.chunk, task.section, task.cx, task.cy, task.cz);
+            me.cortex.voxy.commonImpl.compat.CreateCopycatCompat.beginSection(task.world.getMapper(), task.world.storage, task.chunk, task.section, task.cx, task.cy, task.cz);
             //Read off the section rather than the chunk's block entities: sections streamed by VSS arrive
             //with no chunk at all, and a beacon is a block whether or not its block entity is here.
             long tBeacon = me.cortex.voxy.commonImpl.VoxyProfile.begin();

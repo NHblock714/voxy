@@ -12,6 +12,7 @@ import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.entity.BlockEntity;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.block.state.properties.BlockStateProperties;
+import me.cortex.voxy.common.config.section.SectionStorage;
 import net.minecraft.world.level.chunk.LevelChunk;
 import net.minecraft.world.level.chunk.LevelChunkSection;
 import net.neoforged.fml.ModList;
@@ -32,6 +33,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Predicate;
 
 public final class DomumOrnamentumCompat {
+    public static final String DISGUISE_TABLE = "disguise_domum";
     public static final String VARIANT_TYPE = "domum_ornamentum";
 
     private static final boolean LOADED = ModList.get().isLoaded(VARIANT_TYPE);
@@ -127,14 +129,27 @@ public final class DomumOrnamentumCompat {
         return id != null && VARIANT_TYPE.equals(id.getNamespace());
     }
 
-    public static void beginSection(Mapper mapper, LevelChunk chunk, LevelChunkSection section, int sectionY) {
+    public static void beginSection(Mapper mapper, SectionStorage storage, LevelChunk chunk, LevelChunkSection section, int sectionX, int sectionY, int sectionZ) {
         if (!LOADED) {
             return;
         }
         SectionMappings mappings = SECTION_MAPPINGS.get();
         mappings.reset();
-        if (mapper == null || chunk == null || section == null || chunk.getBlockEntities().isEmpty()
-                || !section.maybeHas(DOMUM_STATE_PREDICATE)) return;
+        //No block entities to ask - a section streamed from the server, or a chunk that has gone. The
+        //materials were recorded the last time they COULD be read, so use those rather than publishing
+        //plain ids over a build that was dressed. Without this a textured build reverts to bare default
+        //material exactly where it is most visible: out at LOD range, where the client never loads the
+        //chunk and only a server-fed section ever arrives.
+        if (mapper == null || section == null) return;
+        if (chunk == null || chunk.getBlockEntities().isEmpty()) {
+            if (section.maybeHas(DOMUM_STATE_PREDICATE)) {
+                int restored = DisguiseStore.load(storage, DISGUISE_TABLE, sectionX, sectionY, sectionZ,
+                        mappings::put);
+                mappings.active = restored != 0;
+            }
+            return;
+        }
+        if (!section.maybeHas(DOMUM_STATE_PREDICATE)) return;
 
         int minY = sectionY << 4;
         int maxY = minY + 15;
@@ -199,6 +214,23 @@ public final class DomumOrnamentumCompat {
         } catch (Throwable ignored) {
         }
         mappings.active = mappings.touchedCount != 0;
+        //Recorded while the block entities are readable, the only moment a material can be derived at
+        //all. Rewritten whole per section, so a block that stopped being textured leaves with the
+        //re-scan that no longer sees it.
+        if (storage != null) {
+            if (mappings.touchedCount == 0) {
+                DisguiseStore.clear(storage, DISGUISE_TABLE, sectionX, sectionY, sectionZ);
+            } else {
+                int[] packed = new int[mappings.touchedCount * 2];
+                for (int i = 0; i < mappings.touchedCount; i++) {
+                    int index = Short.toUnsignedInt(mappings.touched[i]);
+                    packed[i * 2] = index;
+                    packed[i * 2 + 1] = mappings.ids[index];
+                }
+                DisguiseStore.save(storage, DISGUISE_TABLE, sectionX, sectionY, sectionZ,
+                        packed, mappings.touchedCount);
+            }
+        }
     }
 
     public static void endSection() {
@@ -476,7 +508,7 @@ public final class DomumOrnamentumCompat {
         private int touchedCount;
         private boolean active;
 
-        private void reset() {
+        void reset() {
             for (int index = 0; index < this.touchedCount; index++) {
                 this.ids[Short.toUnsignedInt(this.touched[index])] = 0;
             }

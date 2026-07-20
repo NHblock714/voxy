@@ -196,6 +196,19 @@ public class RocksDBStorageBackend extends StorageBackend {
     }
 
     @Override
+    public byte[] getAux(String table, long key) {
+        var handle = this.auxHandle(table, false);
+        if (handle == null) {
+            return null;
+        }
+        try {
+            return this.db.get(handle, longKey(key));
+        } catch (RocksDBException e) {
+            throw new RuntimeException("Reading aux entry", e);
+        }
+    }
+
+    @Override
     public void deleteAux(String table, long key) {
         var handle = this.auxHandle(table, false);
         if (handle == null) {

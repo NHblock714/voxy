@@ -56,6 +56,11 @@ public class SectionSerializationStorage extends SectionStorage {
     }
 
     @Override
+    public byte[] getAux(String table, long key) {
+        return this.backend.getAux(table, key);
+    }
+
+    @Override
     public void deleteAux(String table, long key) {
         this.backend.deleteAux(table, key);
     }

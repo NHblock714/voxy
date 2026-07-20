@@ -44,6 +44,9 @@ public class DelegatingStorageAdaptor extends StorageBackend {
     public void putAux(String table, long key, byte[] value) {this.delegate.putAux(table, key, value);}
 
     @Override
+    public byte[] getAux(String table, long key) {return this.delegate.getAux(table, key);}
+
+    @Override
     public void deleteAux(String table, long key) {this.delegate.deleteAux(table, key);}
 
     @Override

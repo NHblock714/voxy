@@ -41,6 +41,10 @@ public abstract class SectionStorage implements IMappingStorage, IStoredSectionP
 
     public void putAux(String table, long key, byte[] value) {}
 
+    public byte[] getAux(String table, long key) {
+        return null;
+    }
+
     public void deleteAux(String table, long key) {}
 
     public void forEachAux(String table, StorageBackend.AuxEntryConsumer consumer) {}

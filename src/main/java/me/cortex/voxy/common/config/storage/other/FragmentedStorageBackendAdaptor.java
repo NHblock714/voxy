@@ -115,6 +115,9 @@ public class FragmentedStorageBackendAdaptor extends StorageBackend {
     }
 
     @Override
+    public byte[] getAux(String table, long key) {return this.backends[this.getSegmentId(key)].getAux(table, key);}
+
+    @Override
     public void deleteAux(String table, long key) {
         this.backends[this.getSegmentId(key)].deleteAux(table, key);
     }

@@ -63,6 +63,12 @@ public abstract class StorageBackend implements IMappingStorage, IStoredSectionP
 
     public void putAux(String table, long key, byte[] value) {}
 
+    //Single-key read. Used by consumers that ask about one section at a time rather than loading a whole
+    //table up front, so nothing has to be held in memory between the write and the read.
+    public byte[] getAux(String table, long key) {
+        return null;
+    }
+
     public void deleteAux(String table, long key) {}
 
     public void forEachAux(String table, AuxEntryConsumer consumer) {}

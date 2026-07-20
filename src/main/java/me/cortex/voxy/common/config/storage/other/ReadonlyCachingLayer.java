@@ -60,6 +60,9 @@ public class ReadonlyCachingLayer extends StorageBackend {
     public void putAux(String table, long key, byte[] value) {this.onMiss.putAux(table, key, value);}
 
     @Override
+    public byte[] getAux(String table, long key) {return this.onMiss.getAux(table, key);}
+
+    @Override
     public void deleteAux(String table, long key) {this.onMiss.deleteAux(table, key);}
 
     @Override
