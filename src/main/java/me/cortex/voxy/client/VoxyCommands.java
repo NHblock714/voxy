@@ -83,6 +83,8 @@ public class VoxyCommands {
                         .executes(VoxyCommands::dumpKinetics))
                 .then(Commands.literal("ship")
                         .executes(VoxyCommands::dumpShipContraptions))
+                .then(Commands.literal("fog")
+                        .executes(VoxyCommands::dumpFog))
                 .then(Commands.literal("perf")
                         .executes(VoxyCommands::dumpPerf)
                         .then(Commands.literal("reset")
@@ -102,6 +104,60 @@ public class VoxyCommands {
     //Live counters for the fork's optimizations - proves they are firing and by how much. Values
     //accumulate across the session; run "/voxy debug perf reset" to zero them and watch a fresh window
     //(e.g. reset, fly across a fresh chunk area, then check the biome/copycat cache hit rate).
+    //Reports what the fog mixin last captured and what finish() would do with it, so a report of
+    //"the LOD ignores blindness" can be pinned to a value rather than guessed at.
+    private static int dumpFog(CommandContext<CommandSourceStack> ctx) {
+        var mc = Minecraft.getInstance();
+        var vrs = me.cortex.voxy.client.core.IGetVoxyRenderSystem.getNullable();
+        var sb = new StringBuilder("voxy fog state:").append(System.lineSeparator());
+        if (vrs == null) {
+            sb.append("  render system: NULL (voxy not rendering)");
+            String outNull = sb.toString();
+            Logger.info(outNull);
+            ctx.getSource().sendSuccess(() -> Component.literal(outNull), false);
+            return 1;
+        }
+        var cam = mc.gameRenderer.getMainCamera();
+        boolean blind = cam.getEntity() instanceof net.minecraft.world.entity.LivingEntity l
+                && l.hasEffect(net.minecraft.world.effect.MobEffects.BLINDNESS);
+        boolean dark = cam.getEntity() instanceof net.minecraft.world.entity.LivingEntity l2
+                && l2.hasEffect(net.minecraft.world.effect.MobEffects.DARKNESS);
+        sb.append(String.format("  pipeline=%s%n", vrs.getPipelineName()));
+        //From inside the render pass, not from here: this command runs on the main thread where the
+        //fog state is whatever the last writer left behind, which is a different moment entirely.
+        sb.append(String.format("  AT RENDER: restrictedDist=%.2f viewDistance=%.1f skipped=%s%n",
+                me.cortex.voxy.client.core.VoxyRenderSystem.getLastRenderFogEnd(),
+                me.cortex.voxy.client.core.VoxyRenderSystem.getLastRenderVanillaFar(),
+                me.cortex.voxy.client.core.VoxyRenderSystem.wasLastRenderSkipped()));
+        sb.append(String.format("  main-thread RenderSystem start=%.2f end=%.2f (informational)%n",
+                com.mojang.blaze3d.systems.RenderSystem.getShaderFogStart(),
+                com.mojang.blaze3d.systems.RenderSystem.getShaderFogEnd()));
+        sb.append(String.format("  TERRAIN FOG AT RENDER: start=%.2f end=%.2f  <-- what sodium's shader uses%n",
+                me.cortex.voxy.client.core.VoxyRenderSystem.getTerrainFogStartAtRender(),
+                me.cortex.voxy.client.core.VoxyRenderSystem.getTerrainFogEndAtRender()));
+        var fade = me.cortex.voxy.client.core.rendering.LodBoundaryFade.getDistances();
+        sb.append(String.format("  CIRCULAR FADE: configEnabled=%s start=%.1f end=%.1f active=%s%n",
+                me.cortex.voxy.client.config.VoxyConfig.CONFIG.enableLodBoundaryFade,
+                fade.fadeStart(), fade.fadeEnd(), fade.enabled()));
+        sb.append(String.format("  ambient fog band: near=%.1f far=%.1f (baseline 32*srd=%.0f, %d%%)%n",
+                (32f * me.cortex.voxy.client.config.VoxyConfig.CONFIG.sectionRenderDistance
+                    * (me.cortex.voxy.client.config.VoxyConfig.CONFIG.fogDistancePercent / 100.0f)) * 0.5f,
+                32f * me.cortex.voxy.client.config.VoxyConfig.CONFIG.sectionRenderDistance
+                    * (me.cortex.voxy.client.config.VoxyConfig.CONFIG.fogDistancePercent / 100.0f),
+                32f * me.cortex.voxy.client.config.VoxyConfig.CONFIG.sectionRenderDistance,
+                me.cortex.voxy.client.config.VoxyConfig.CONFIG.fogDistancePercent));
+        sb.append(String.format("  restrictingMediumPresent=%s%n",
+                me.cortex.voxy.client.core.VoxyRenderSystem.restrictingMediumPresent()));
+        sb.append(String.format("  camera in fluid=%s blindness=%s darkness=%s%n",
+                cam.getFluidInCamera(), blind, dark));
+        sb.append(String.format("  useEnvironmentalFog=%s fogIntensity=%.2f",
+                me.cortex.voxy.client.config.VoxyConfig.CONFIG.useEnvironmentalFog, me.cortex.voxy.client.config.VoxyConfig.CONFIG.fogIntensity));
+        String out = sb.toString();
+        Logger.info(out);
+        ctx.getSource().sendSuccess(() -> Component.literal(out), false);
+        return 1;
+    }
+
     private static int dumpPerf(CommandContext<CommandSourceStack> ctx) {
         ctx.getSource().sendSuccess(() -> Component.literal(me.cortex.voxy.commonImpl.PerfStats.report()), false);
         return 1;

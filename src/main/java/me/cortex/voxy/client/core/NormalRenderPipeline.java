@@ -101,13 +101,44 @@ public class NormalRenderPipeline extends AbstractRenderPipeline {
     @Override
     protected void finish(Viewport<?> viewport, int sourceFrameBuffer, int srcWidth, int srcHeight) {
         this.finalBlit.bind();
-        //Fog band derived from voxy's own render distance, colour read live each frame. The captured
-        //vanilla fog is a snapshot: leaving water did not refresh it (sodium owns fog setup), so the
-        //stale underwater blue tinted every LOD in the world until the next capture.
-        if (VoxyConfig.CONFIG.useEnvironmentalFog && VoxyConfig.CONFIG.fogIntensity > 0.0f) {
+
+        //Inside a fluid the LOD has to wear vanilla's medium fog, not the ambient band. Vanilla stops
+        //drawing terrain at ~96 blocks underwater while the LOD takes over from the render distance
+        //outward, so an ambient band tuned for open air (it scales with the distance slider, and at a
+        //high setting starts thousands of blocks out) leaves a crystal-clear distant world hanging
+        //behind the fog wall.
+        //
+        //The values come from the fog RenderSystem holds during sodium's terrain pass - the same state
+        //ChunkShaderFogComponent hands the chunk shaders, so the LOD matches the terrain it borders
+        //exactly. Sampled live each frame there, not captured from FogRenderer.setupFog: that method is
+        //cancellable at HEAD and other mods do cancel it, so a capture hook never fires at all.
+        float mediumNear = VoxyRenderSystem.getTerrainFogStartAtRender();
+        float mediumFar = VoxyRenderSystem.getTerrainFogEndAtRender();
+        var mc = net.minecraft.client.Minecraft.getInstance();
+        boolean inMedium = mc.gameRenderer != null
+                && mc.gameRenderer.getMainCamera().getFluidInCamera()
+                    != net.minecraft.world.level.material.FogType.NONE
+                && mediumFar > mediumNear;
+        if (inMedium) {
             float[] fogColor = RenderSystem.getShaderFogColor();
-            float voxyRenderBlocks = 32f * VoxyConfig.CONFIG.sectionRenderDistance;
-            float far = voxyRenderBlocks * (VoxyConfig.CONFIG.fogDistancePercent / 100.0f);
+            glUniform2f(4, mediumNear, mediumFar);
+            glUniform4f(5, fogColor[0], fogColor[1], fogColor[2], 1.0f);
+            glUniform1i(6, RenderSystem.getShaderFogShape().getIndex());
+            //Vanilla's linear ramp at full strength: the ambient intensity/density knobs describe the
+            //open-air band and must not soften a medium that is meant to cut vision off.
+            glUniform1f(7, 1.0f);
+            glUniform1f(8, 0.0f);
+            glUniform1i(9, 1);
+        } else if (VoxyConfig.CONFIG.useEnvironmentalFog && VoxyConfig.CONFIG.fogIntensity > 0.0f) {
+            float[] fogColor = RenderSystem.getShaderFogColor();
+            //Baseline for the percentage slider, not the LOD radius - that is 32*16*srd blocks
+            //(VoxyConfig.getFarEntityRenderDistanceBlocks, HierarchicalOcclusionTraverser), sixteen
+            //times this. 100% therefore closes the fog around the vanilla-ish 32*srd mark rather than
+            //at the far edge of the LOD, and the slider goes to 2000% to reach past the LOD radius.
+            //The slider's range is calibrated to this baseline, so the scale cannot move on its own -
+            //the range and default have to move with it.
+            float fogBaselineBlocks = 32f * VoxyConfig.CONFIG.sectionRenderDistance;
+            float far = fogBaselineBlocks * (VoxyConfig.CONFIG.fogDistancePercent / 100.0f);
             float near = far * 0.5f;
             if (far - near > 1) {
                 glUniform2f(4, near, far);
@@ -115,12 +146,14 @@ public class NormalRenderPipeline extends AbstractRenderPipeline {
                 glUniform1i(6, RenderSystem.getShaderFogShape().getIndex());
                 glUniform1f(7, Math.clamp(VoxyConfig.CONFIG.fogIntensity, 0.0f, 1.0f));
                 glUniform1f(8, Math.clamp(VoxyConfig.CONFIG.fogDensity, 0.0f, 1.0f));
+                glUniform1i(9, 0);
             } else {
                 glUniform2f(4, 0, 0);
                 glUniform4f(5, 0, 0, 0, 0);
                 glUniform1i(6, 0);
                 glUniform1f(7, 0);
                 glUniform1f(8, 0);
+                glUniform1i(9, 0);
             }
         } else {
             glUniform2f(4, 0, 0);
