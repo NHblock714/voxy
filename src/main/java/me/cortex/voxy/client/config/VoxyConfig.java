@@ -77,6 +77,11 @@ public class VoxyConfig {
     // Kinetics had no cap of its own and followed the LOD radius, which also set its eviction distance -
     // so its resident set was whatever the player had ever flown past within that radius.
     public int distantKineticMaxChunks = 48;
+    // Vertex memory contraption snapshots may hold at once. Over it, the furthest meshes are freed while
+    // their block lists stay, so they rebuild on approach instead of being lost - a contraption's source
+    // is a few kilobytes against a few hundred for its mesh. Distance alone is a poor bound because one
+    // dense structure can cost as much as a hundred small ones.
+    public int distantContraptionGpuBudgetMiB = 48;
     // Aero/sable: render simulated contraptions within this % of voxy's LOD render distance.
     public int simulatedContraptionRenderDistancePercent = 50;
     public int serviceThreads = (int) Math.max(CpuLayout.getCoreCount()/1.5, 1);

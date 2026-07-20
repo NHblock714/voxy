@@ -53,11 +53,15 @@ public final class CreateMemoryReport {
         }
 
         long contraptionGpu = 0, contraptionSource = 0;
-        int contraptions = 0, withSource = 0, blocks = 0;
+        int contraptions = 0, withSource = 0, blocks = 0, dormant = 0;
         for (var snap : DistantContraptionManager.snapshots().values()) {
             contraptions++;
             if (snap.mesh() != null) {
                 contraptionGpu += snap.mesh().mesh.gpuByteSize();
+            } else if (snap.source() != null) {
+                //Knows what it is made of, holds no vertex memory - either evicted by the budget or read
+                //off disk and not yet rebuilt
+                dormant++;
             }
             var source = snap.source();
             if (source != null) {
@@ -76,7 +80,11 @@ public final class CreateMemoryReport {
         sb.append(String.format("              gpu=%s  source=%s  (of which generic %s)%n",
                 mib(kineticGpu), mib(kineticSource), mib(kineticGeneric)));
         sb.append(String.format("              source/gpu = %s%n", ratio(kineticSource, kineticGpu)));
-        sb.append(String.format("  contraption count=%d (with source=%d, %d blocks)%n", contraptions, withSource, blocks));
+        sb.append(String.format("  contraption count=%d (with source=%d, dormant=%d, %d blocks)%n",
+                contraptions, withSource, dormant, blocks));
+        sb.append(String.format("              budget=%d MiB, resident=%s%n",
+                me.cortex.voxy.client.config.VoxyConfig.CONFIG.distantContraptionGpuBudgetMiB,
+                mib(DistantContraptionManager.residentGpuBytes())));
         sb.append(String.format("              gpu=%s  source=%s%n", mib(contraptionGpu), contraptionSource == 0 ? "0" : mib(contraptionSource)));
         sb.append(String.format("              source/gpu = %s%n", ratio(contraptionSource, contraptionGpu)));
         sb.append(String.format("  total gpu   %s", mib(kineticGpu + contraptionGpu)));

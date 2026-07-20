@@ -72,7 +72,6 @@ public final class DistantContraptionManager {
     private static final Map<UUID, Snapshot> SNAPSHOTS = new ConcurrentHashMap<>();
     //Read from storage on world entry and baked a few per tick, nearest first, so re-entering a world
     //with a lot of stored structures does not stall on one frame's worth of mesh uploads.
-    private static final List<ContraptionStore.Stored> PENDING = new ArrayList<>();
     private static final int BAKES_PER_TICK = 2;
     private static final PoseStack SCRATCH_POSE = new PoseStack();
 
@@ -240,7 +239,7 @@ public final class DistantContraptionManager {
             }
         }
 
-        bakePending(camX, camY, camZ, dimId);
+        bakeDormant(camX, camY, camZ, maxDist);
 
         //Leave-behinds are permanent while far away: the entity drops off the client at the server's
         //entity tracking range (a few dozen blocks), far inside the LOD radius, so any time-based
@@ -283,17 +282,23 @@ public final class DistantContraptionManager {
             if (seenThisTick.contains(entry.getKey())) {
                 return false;
             }
+            //Another dimension's snapshot is not coming back into view here, and the renderer filters on
+            //dimension anyway, so that one goes entirely - the record is on disk if it is worth keeping.
+            if (!dimId.equals(s.dim)) {
+                dropMesh(s);
+                return true;
+            }
             double sx = s.x - camX, sy = s.y - camY, sz = s.z - camZ;
-            boolean tooFar = (sx * sx + sy * sy + sz * sz) > evictDistSq;
-            if (!tooFar && s.dim.equals(dimId)) {
-                return false;
+            if ((sx * sx + sy * sy + sz * sz) > evictDistSq) {
+                //Only the mesh. The block list it was built from is a few kilobytes against a few
+                //hundred for the mesh, and keeping it is what lets the structure come back on approach
+                //rather than waiting for the next world load to read it off disk again.
+                dropMesh(s);
             }
-            if (s.mesh != null) {
-                s.mesh.close();
-            }
-            me.cortex.voxy.commonImpl.PerfStats.contraptionSnapshotEvicted.increment();
-            return true;
+            return false;
         });
+
+        enforceGpuBudget(camX, camY, camZ);
         snapshotCount = SNAPSHOTS.size();
     }
 
@@ -345,78 +350,150 @@ public final class DistantContraptionManager {
 
     //Called once when a world's stored snapshots are read, before any of them are baked
     public static void loadStored(ClientLevel level) {
-        PENDING.clear();
         var storage = storageFor(level);
         if (storage == null) {
             return;
         }
-        var stored = ContraptionStore.loadAll(storage);
         var here = level.dimension().location();
-        for (var entry : stored) {
+        int restored = 0;
+        for (var entry : ContraptionStore.loadAll(storage)) {
             //Another dimension's records stay on disk; they are read again when the player goes there
-            if (here.equals(entry.dim()) && !SNAPSHOTS.containsKey(entry.id())) {
-                PENDING.add(entry);
-            }
-        }
-        if (!PENDING.isEmpty()) {
-            me.cortex.voxy.common.Logger.info("Restored " + PENDING.size() + " distant contraption(s) for " + here);
-        }
-    }
-
-    //Bakes a few of the restored snapshots per tick, nearest first. Baking uploads a GL buffer, so doing
-    //all of them at once on world entry is a visible stall for exactly the worlds that have enough
-    //stored structures to be worth restoring.
-    private static void bakePending(double camX, double camY, double camZ, ResourceLocation dimId) {
-        if (PENDING.isEmpty()) {
-            return;
-        }
-        for (int done = 0; done < BAKES_PER_TICK && !PENDING.isEmpty(); done++) {
-            int best = -1;
-            double bestDistSq = Double.MAX_VALUE;
-            for (int i = 0; i < PENDING.size(); i++) {
-                var entry = PENDING.get(i);
-                double dx = entry.x() - camX, dy = entry.y() - camY, dz = entry.z() - camZ;
-                double distSq = dx * dx + dy * dy + dz * dz;
-                if (distSq < bestDistSq) {
-                    bestDistSq = distSq;
-                    best = i;
-                }
-            }
-            var entry = PENDING.remove(best);
-            if (SNAPSHOTS.containsKey(entry.id())) {
+            if (!here.equals(entry.dim()) || SNAPSHOTS.containsKey(entry.id())) {
                 continue;
             }
-            var mesh = bakeBlocks(entry.source());
-            if (mesh == null) {
-                continue;
-            }
+            //Dormant: it knows what it is made of and where it stood, and nothing has been uploaded for
+            //it yet. The same pass that rebuilds an evicted snapshot picks these up, nearest first, so
+            //there is one path for "came back into range" and "was just read off disk".
             var snap = new Snapshot();
-            snap.mesh = mesh;
             snap.source = entry.source();
             snap.local.set(entry.pose());
             snap.x = entry.x();
             snap.y = entry.y();
             snap.z = entry.z();
             snap.dim = entry.dim();
-            //Sampled rather than stored: the sampler reads voxy's own voxel store, so it answers for an
-            //unloaded chunk, and a light value taken now matches the terrain the snapshot will be drawn
-            //against. -1 is also the "never refreshed" sentinel the freeze logic reads, so it has to go.
-            var mc = Minecraft.getInstance();
-            if (mc.level != null) {
-                snap.lightPacked = DistantLightSampler.sample(mc.level,
-                        (int) Math.floor(entry.x()), (int) Math.floor(entry.y()), (int) Math.floor(entry.z()));
-            }
             snap.lastSeenMs = System.currentTimeMillis();
-            //Not live: the entity is not here, which is the whole point of having restored it
             snap.live = false;
             SNAPSHOTS.put(entry.id(), snap);
+            restored++;
         }
         snapshotCount = SNAPSHOTS.size();
+        if (restored != 0) {
+            me.cortex.voxy.common.Logger.info("Restored " + restored + " distant contraption(s) for " + here);
+        }
     }
 
-    public static int pendingCount() {
-        return PENDING.size();
+
+
+    private static void dropMesh(Snapshot snap) {
+        if (snap.mesh != null) {
+            snap.mesh.close();
+            snap.mesh = null;
+            me.cortex.voxy.commonImpl.PerfStats.contraptionSnapshotEvicted.increment();
+        }
     }
+
+    //A snapshot that still knows what it is made of but has no mesh right now. It draws nothing and
+    //costs no vertex memory until something brings it back.
+    private static boolean isDormant(Snapshot snap) {
+        return snap.mesh == null && snap.source != null && !snap.bakeGaveNothing;
+    }
+
+    //Vertex memory is the bound that matters - one dense structure can hold as much as a hundred small
+    //ones at the same distance, so a distance cap alone says nothing about what is actually held.
+    //Furthest first, because that is the one whose absence is least likely to be noticed and the one
+    //least likely to be wanted back soon.
+    private static void enforceGpuBudget(double camX, double camY, double camZ) {
+        long budget = (long) VoxyConfig.CONFIG.distantContraptionGpuBudgetMiB * 1024L * 1024L;
+        if (budget <= 0) {
+            return;
+        }
+        long resident = 0;
+        for (var snap : SNAPSHOTS.values()) {
+            if (snap.mesh != null) {
+                resident += snap.mesh.mesh.gpuByteSize();
+            }
+        }
+        //Down to a fraction of the budget rather than exactly to it, or the next structure to come into
+        //range evicts one and the one after that evicts it back
+        long target = (budget * 9L) / 10L;
+        while (resident > budget) {
+            Snapshot furthest = null;
+            double furthestDistSq = -1;
+            for (var snap : SNAPSHOTS.values()) {
+                if (snap.mesh == null || snap.live) {
+                    continue;
+                }
+                double dx = snap.x - camX, dy = snap.y - camY, dz = snap.z - camZ;
+                double distSq = dx * dx + dy * dy + dz * dz;
+                if (distSq > furthestDistSq) {
+                    furthestDistSq = distSq;
+                    furthest = snap;
+                }
+            }
+            if (furthest == null) {
+                //Everything left is live, i.e. Create is drawing it and we are not holding it for long
+                break;
+            }
+            resident -= furthest.mesh.mesh.gpuByteSize();
+            dropMesh(furthest);
+            if (resident <= target) {
+                break;
+            }
+        }
+        residentGpuBytes = resident;
+    }
+
+    //Rebuilds a few dormant snapshots per tick, nearest first, while there is budget for them. Same
+    //pacing as the restore path for the same reason: baking uploads a buffer.
+    private static void bakeDormant(double camX, double camY, double camZ, double maxDist) {
+        long budget = (long) VoxyConfig.CONFIG.distantContraptionGpuBudgetMiB * 1024L * 1024L;
+        double maxDistSq = maxDist * maxDist;
+        for (int done = 0; done < BAKES_PER_TICK; done++) {
+            if (budget > 0 && residentGpuBytes > (budget * 9L) / 10L) {
+                return;
+            }
+            Snapshot nearest = null;
+            double nearestDistSq = Double.MAX_VALUE;
+            for (var snap : SNAPSHOTS.values()) {
+                if (!isDormant(snap)) {
+                    continue;
+                }
+                double dx = snap.x - camX, dy = snap.y - camY, dz = snap.z - camZ;
+                double distSq = dx * dx + dy * dy + dz * dz;
+                if (distSq > maxDistSq || distSq >= nearestDistSq) {
+                    continue;
+                }
+                nearestDistSq = distSq;
+                nearest = snap;
+            }
+            if (nearest == null) {
+                return;
+            }
+            var mesh = bakeBlocks(nearest.source);
+            if (mesh == null) {
+                nearest.bakeGaveNothing = true;
+                continue;
+            }
+            nearest.mesh = mesh;
+            if (nearest.lightPacked < 0) {
+                //Sampled rather than stored: the sampler reads voxy's own voxel store, so it answers for
+                //an unloaded chunk, and a value taken now matches the terrain it will be drawn against.
+                //-1 is also the "never refreshed" sentinel the freeze logic reads, so it has to go.
+                var mc = Minecraft.getInstance();
+                if (mc.level != null) {
+                    nearest.lightPacked = DistantLightSampler.sample(mc.level,
+                            (int) Math.floor(nearest.x), (int) Math.floor(nearest.y), (int) Math.floor(nearest.z));
+                }
+            }
+            residentGpuBytes += mesh.mesh.gpuByteSize();
+        }
+    }
+
+    public static long residentGpuBytes() {
+        return residentGpuBytes;
+    }
+
+    private static volatile long residentGpuBytes;
 
     public static Map<UUID, Snapshot> snapshots() {
         return SNAPSHOTS;
@@ -429,7 +506,6 @@ public final class DistantContraptionManager {
         if (snap != null && snap.mesh != null) {
             snap.mesh.close();
         }
-        PENDING.removeIf(entry -> entry.id().equals(id));
         //And out of storage, or the next world entry restores a structure that was taken apart. This is
         //the one removal that means "gone", as opposed to the distance and presence checks which only
         //mean "not here right now".
@@ -450,7 +526,6 @@ public final class DistantContraptionManager {
             }
         }
         SNAPSHOTS.clear();
-        PENDING.clear();
         snapshotCount = 0;
     }
 }
