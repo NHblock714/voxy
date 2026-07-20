@@ -264,6 +264,11 @@ public class VoxelIngestService {
 
     public static boolean rawIngest(WorldEngine engine, LevelChunk chunk, LevelChunkSection section, int x, int y, int z, DataLayer bl, DataLayer sl) {
         if (!shouldIngestSection(section, x, y, z)) return false;
+        if (chunk == null) {
+            me.cortex.voxy.commonImpl.PerfStats.sectionIngestedChunkless.increment();
+        } else {
+            me.cortex.voxy.commonImpl.PerfStats.sectionIngestedWithChunk.increment();
+        }
         if (engine.instanceIn == null) return false;
         if (!engine.instanceIn.isIngestEnabled(null)) return false;//TODO: dont pass in null
         return engine.instanceIn.getIngestService().rawIngest0(engine, chunk, section, x, y, z, bl, sl);
