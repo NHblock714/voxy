@@ -366,6 +366,9 @@ public class VoxyRenderSystem {
             return;
         }
 
+        //Cheap and idempotent; done here so the profiler can attribute work to the render thread
+        //without a ThreadLocal on every instrumented call
+        me.cortex.voxy.commonImpl.VoxyProfile.markRenderThread();
         TimingStatistics.resetSamplers();
 
         TimingStatistics.all.start();

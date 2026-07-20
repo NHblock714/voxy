@@ -32,7 +32,9 @@ public final class DistantKineticRenderer implements LodPipelineHooks.Renderer {
     //GL buffers, which mid-pipeline would clobber the LOD buffer setup.
     @net.neoforged.bus.api.SubscribeEvent
     public void onClientTick(net.neoforged.neoforge.client.event.ClientTickEvent.Post event) {
+        long t = me.cortex.voxy.commonImpl.VoxyProfile.begin();
         KineticSnapshots.tick(Minecraft.getInstance());
+        me.cortex.voxy.commonImpl.VoxyProfile.end("tick/kineticSnapshots", t);
     }
 
     //Horizontal leave-behind: a chunk unloading takes its kinetic BEs with it - freeze them now,

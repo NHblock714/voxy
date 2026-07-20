@@ -36,6 +36,7 @@ public class VoxelIngestService {
         var task = this.ingestQueue.pop();
 
         var section = task.section;
+        long tIngest = me.cortex.voxy.commonImpl.VoxyProfile.begin();
         try {
             //Inside the try: the queue holds a world ref per task and the finally below releases it, so
             //anything that can throw has to be covered or the world can never be closed again
@@ -43,8 +44,10 @@ public class VoxelIngestService {
             me.cortex.voxy.commonImpl.compat.CreateCopycatCompat.beginSection(task.world.getMapper(), task.chunk, task.section, task.cy);
             //Read off the section rather than the chunk's block entities: sections streamed by VSS arrive
             //with no chunk at all, and a beacon is a block whether or not its block entity is here.
+            long tBeacon = me.cortex.voxy.commonImpl.VoxyProfile.begin();
             me.cortex.voxy.common.world.other.BeaconScanner.scan(
                     task.world.getBeaconIndex(), section, task.cx, task.cy, task.cz);
+            me.cortex.voxy.commonImpl.VoxyProfile.end("ingest/beaconScan", tBeacon);
             var vs = SECTION_CACHE.get().setPosition(task.cx, task.cy, task.cz);
 
             if (section.hasOnlyAir() && task.blockLight==null && task.skyLight==null) {//If the chunk section has lighting data, propagate it
@@ -70,6 +73,7 @@ public class VoxelIngestService {
             //on a laggy system cannot let the idle cleaner close the world out from under its own
             //pending ingests
             task.world.releaseRef();
+            me.cortex.voxy.commonImpl.VoxyProfile.end("ingest/section", tIngest);
         }
     }
 

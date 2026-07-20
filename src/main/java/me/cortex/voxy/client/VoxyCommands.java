@@ -81,6 +81,10 @@ public class VoxyCommands {
                                 .executes(ctx -> occlusionCapture(ctx, 20))
                                 .then(Commands.argument("seconds", IntegerArgumentType.integer(1, 120))
                                         .executes(ctx -> occlusionCapture(ctx, IntegerArgumentType.getInteger(ctx, "seconds"))))))
+                .then(Commands.literal("profile")
+                        .executes(ctx -> profile(ctx, 15))
+                        .then(Commands.argument("seconds", IntegerArgumentType.integer(3, 120))
+                                .executes(ctx -> profile(ctx, IntegerArgumentType.getInteger(ctx, "seconds")))))
                 .then(Commands.literal("createmem")
                         .executes(VoxyCommands::dumpCreateMemory))
                 .then(Commands.literal("kinetics")
@@ -234,6 +238,33 @@ public class VoxyCommands {
 
     //What the distant Create snapshots cost, split GPU vs CPU source. The ratio is the input to
     //deciding which subsystems are worth moving to storage.
+    //Opens a timing window and reports it when it closes. Named sections rather than the pipeline's
+    //A..I samplers, and it covers ingest and storage - which is where a report of "every integration is
+    //off and it still drops frames" has to be answered, since those cannot be switched off.
+    private static int profile(CommandContext<CommandSourceStack> ctx, int seconds) {
+        if (me.cortex.voxy.commonImpl.VoxyProfile.isRunning()) {
+            ctx.getSource().sendFailure(Component.literal("A profile is already running"));
+            return 0;
+        }
+        me.cortex.voxy.commonImpl.VoxyProfile.start();
+        ctx.getSource().sendSuccess(() -> Component.literal(
+                "Profiling for " + seconds + "s - fly the route that drops frames"), false);
+        var source = ctx.getSource();
+        var timer = new java.util.Timer("voxy-profile", true);
+        timer.schedule(new java.util.TimerTask() {
+            @Override
+            public void run() {
+                me.cortex.voxy.commonImpl.VoxyProfile.stop();
+                String msg = me.cortex.voxy.commonImpl.VoxyProfile.report();
+                me.cortex.voxy.common.Logger.info(msg);
+                //Chat is capped and this table is wide; the log has the readable copy
+                Minecraft.getInstance().execute(() -> source.sendSuccess(() -> Component.literal(msg), false));
+                timer.cancel();
+            }
+        }, seconds * 1000L);
+        return 1;
+    }
+
     private static int dumpCreateMemory(CommandContext<CommandSourceStack> ctx) {
         if (!net.neoforged.fml.ModList.get().isLoaded("create")) {
             ctx.getSource().sendSuccess(() -> Component.literal("create not loaded"), false);

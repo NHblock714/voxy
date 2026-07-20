@@ -183,12 +183,15 @@ public class RocksDBStorageBackend extends StorageBackend {
 
     @Override
     public void putAux(String table, long key, byte[] value) {
+        long t = me.cortex.voxy.commonImpl.VoxyProfile.begin();
         try {
             //Aux entries are derived data and regenerate on re-ingest like sections do, but they are far
             //rarer than section writes, so they take the WAL rather than a shutdown-time flush.
             this.db.put(this.auxHandle(table, true), longKey(key), value);
         } catch (RocksDBException e) {
             throw new RuntimeException("Writing aux entry", e);
+        } finally {
+            me.cortex.voxy.commonImpl.VoxyProfile.end("storage/putAux", t);
         }
     }
 
