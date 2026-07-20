@@ -62,13 +62,21 @@ public class VoxyConfig {
     // blocks; encased blocks only need their two axis ends covered). Pure render savings, active even
     // with voxy rendering off; complements the raycast culler, which cannot catch this case.
     public boolean kineticEnclosedCulling = true;
-    // Create distant-integration render caps, in CHUNKS. 0 = follow voxy's LOD radius
-    // (2 * sectionRenderDistance chunks). A lower value renders that integration nearer, cutting GPU
-    // load; for trains it also shrinks the server pose-stream window (less bandwidth) on the integrated
-    // server. Clamped to the LOD radius - there is no LOD terrain to sit against beyond it.
-    public int distantTrainMaxChunks = 0;
-    public int distantTrackMaxChunks = 0;
-    public int distantContraptionMaxChunks = 0;
+    // Create distant-integration render caps, in CHUNKS. 0 = follow voxy's LOD radius. A lower value
+    // renders that integration nearer, cutting GPU load; for trains it also shrinks the server
+    // pose-stream window (less bandwidth) on the integrated server. Clamped to the LOD radius - there is
+    // no LOD terrain to sit against beyond it.
+    //
+    // These are bounded rather than following the LOD radius because that radius is a terrain distance:
+    // at the default it reaches 8192 blocks, where a machine covers a pixel or two but still costs a
+    // resident mesh, a draw call and the tick spent keeping it. Terrain at that range is a horizon;
+    // machinery is not. Raise them if you want distant bases legible from further out.
+    public int distantTrainMaxChunks = 96;
+    public int distantTrackMaxChunks = 96;
+    public int distantContraptionMaxChunks = 64;
+    // Kinetics had no cap of its own and followed the LOD radius, which also set its eviction distance -
+    // so its resident set was whatever the player had ever flown past within that radius.
+    public int distantKineticMaxChunks = 48;
     // Aero/sable: render simulated contraptions within this % of voxy's LOD render distance.
     public int simulatedContraptionRenderDistancePercent = 50;
     public int serviceThreads = (int) Math.max(CpuLayout.getCoreCount()/1.5, 1);

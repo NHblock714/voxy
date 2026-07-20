@@ -243,7 +243,8 @@ public class VoxyCommands {
                 .append(" distantKinetics=").append(cfg.distantKinetics)
                 .append(" enclosedCulling=").append(cfg.kineticEnclosedCulling)
                 .append(" reach=").append((int) reach)
-                .append(" lodMax=").append((int) cfg.createRenderDistance(0))
+                .append(" kineticMax=").append((int) cfg.createRenderDistance(cfg.distantKineticMaxChunks))
+                .append(" lodMax=").append((int) cfg.createLodRadius())
                 .append(" sectionsDrawnLastFrame=").append(me.cortex.voxy.client.compat.create.DistantKineticRenderer.lastFrameSectionsDrawn)
                 .append('\n')
                 .append(me.cortex.voxy.client.compat.create.KineticSnapshots.debugDump(cam.x, cam.y, cam.z));

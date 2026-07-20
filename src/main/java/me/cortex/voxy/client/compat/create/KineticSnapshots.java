@@ -262,9 +262,9 @@ public final class KineticSnapshots {
         //purpose, but the sweep only visits LOADED chunks, so without this a long session across a
         //machine-heavy world accumulates a snapshot (VAO+VBO+heap verts) for every kinetic BE ever
         //passed, and the per-frame draw loop iterates all of them. The renderer only draws snapshots
-        //within createRenderDistance(0); anything past it is pure waste. Evict buckets beyond that
+        //within the kinetic render distance; anything past it is pure waste. Evict buckets beyond that
         //(plus 2 chunks of hysteresis) so the resident set is a spatial working set, not cumulative.
-        double maxDist = cfg.createRenderDistance(0) + 32.0;
+        double maxDist = cfg.createRenderDistance(cfg.distantKineticMaxChunks) + 32.0;
         double maxDistSq = maxDist * maxDist;
         SECTIONS.entrySet().removeIf(entry -> {
             long key = entry.getKey();

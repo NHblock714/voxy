@@ -53,10 +53,10 @@ public final class DistantKineticRenderer implements LodPipelineHooks.Renderer {
     @Override
     public void render(me.cortex.voxy.client.core.AbstractRenderPipeline pipeline, Viewport<?> viewport, int depthFunc) {
         pipeline.setupAndBindOpaque(viewport);
-        this.renderCommon(pipeline, viewport.MVP, viewport.cameraX, viewport.cameraY, viewport.cameraZ, depthFunc);
+        this.renderCommon(pipeline, viewport, viewport.MVP, viewport.cameraX, viewport.cameraY, viewport.cameraZ, depthFunc);
     }
 
-    private void renderCommon(me.cortex.voxy.client.core.AbstractRenderPipeline pipeline, Matrix4f viewProjection,
+    private void renderCommon(me.cortex.voxy.client.core.AbstractRenderPipeline pipeline, Viewport<?> viewport, Matrix4f viewProjection,
                               double camX, double camY, double camZ, int depthFunc) {
         lastFrameSectionsDrawn = 0;
         var sections = KineticSnapshots.sections();
@@ -79,7 +79,7 @@ public final class DistantKineticRenderer implements LodPipelineHooks.Renderer {
         //Pull the gate in by the section half-diagonal so the snapshot owns that band.
         double reach = Math.max(0, mc.options.getEffectiveRenderDistance() * 16.0 - 14.0);
         double reachSq = reach * reach;
-        double maxDist = cfg.createRenderDistance(0);
+        double maxDist = cfg.createRenderDistance(cfg.distantKineticMaxChunks);
         double maxDistSq = maxDist * maxDist;
 
         boolean renderStateActive = false;
@@ -96,6 +96,12 @@ public final class DistantKineticRenderer implements LodPipelineHooks.Renderer {
                 double dx = ox + 8 - camX, dy = oy + 8 - camY, dz = oz + 8 - camZ;
                 double distSq = dx * dx + dy * dy + dz * dz;
                 if (distSq < reachSq || distSq > maxDistSq) {
+                    continue;
+                }
+                //Before any state setup, so a frame looking away from every machine never binds the
+                //shader at all. Snapshots are captured per 16-block section, hence the cube.
+                if (viewport != null && !DistantVisibility.isBoxVisible(viewport,
+                        ox, oy, oz, ox + 16, oy + 16, oz + 16)) {
                     continue;
                 }
 

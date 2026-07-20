@@ -42,7 +42,6 @@ public final class DistantContraptionManager {
         ResourceLocation dim;
         int lightPacked = -1;
         long lastSeenMs;
-        boolean baked;
         //Set once a bake ran on a non-empty contraption but produced no drawable mesh (all non-MODEL
         //blocks); stops the per-tick 64KB re-bake retry for structures that can never draw.
         boolean bakeGaveNothing;
@@ -134,7 +133,6 @@ public final class DistantContraptionManager {
                 //64KB native buffer every tick forever for a snapshot that can never draw was pure waste.
                 if (!contraption.getBlocks().isEmpty()) {
                     snap.mesh = bakeContraption(contraption);
-                    snap.baked = snap.mesh != null;
                     snap.bakeGaveNothing = snap.mesh == null;
                 }
             } else if (snap.bakeGaveNothing) {
@@ -246,6 +244,32 @@ public final class DistantContraptionManager {
             if (s.mesh != null) {
                 s.mesh.close();
             }
+            return true;
+        });
+
+        //An upper bound the presence check cannot provide. Presence only fires within a few dozen blocks,
+        //so a snapshot the player leaves behind and never walks back to is kept for the whole session -
+        //and one left in another dimension is kept forever, since the renderer skips it on dim and the
+        //check above never looks at dim either. Both cost the same VBO as a visible one.
+        //
+        //This is an addition to the presence check, not a replacement: a time-based expiry would delete
+        //legitimate snapshots long before the player is far enough away to look back at them, which is
+        //why there is none. Distance is safe because anything past the render radius is not drawn.
+        double evictDistSq = (maxDist + 32.0) * (maxDist + 32.0);
+        SNAPSHOTS.entrySet().removeIf(entry -> {
+            var s = entry.getValue();
+            if (seenThisTick.contains(entry.getKey())) {
+                return false;
+            }
+            double sx = s.x - camX, sy = s.y - camY, sz = s.z - camZ;
+            boolean tooFar = (sx * sx + sy * sy + sz * sz) > evictDistSq;
+            if (!tooFar && s.dim.equals(dimId)) {
+                return false;
+            }
+            if (s.mesh != null) {
+                s.mesh.close();
+            }
+            me.cortex.voxy.commonImpl.PerfStats.contraptionSnapshotEvicted.increment();
             return true;
         });
         snapshotCount = SNAPSHOTS.size();
