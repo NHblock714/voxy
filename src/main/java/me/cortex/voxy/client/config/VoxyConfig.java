@@ -53,8 +53,13 @@ public class VoxyConfig {
     // the player walked past, drawn statically beyond the render distance.
     public boolean distantContraptions = true;
     //Beacon beams past vanilla's own beam range. Not a create integration - it reads the voxel store
-    //directly - but it shares the distant-render hook and radius.
+    //directly - but it shares the distant-render hook.
     public boolean distantBeacons = true;
+    //How far out beams are drawn, in CHUNKS. 0 follows voxy's LOD radius. A beam is a landmark rather
+    //than scenery, so this is deliberately more generous than the machinery caps - but not the terrain
+    //radius, which at the default reaches far enough that a beam is a subpixel line costing a solve
+    //over the voxel store every rebuild.
+    public int distantBeaconMaxChunks = 192;
     // Create: cull placed kinetic machine moving parts (rotating shafts/gears/machine animations)
     // beyond the render distance so they stop floating over the LOD. Off = Create draws them natively.
     public boolean distantKinetics = true;

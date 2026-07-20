@@ -140,7 +140,7 @@ public final class DistantBeaconRenderer implements LodPipelineHooks.Renderer {
         this.builtForFrame = now;
         this.discard();
 
-        double maxDist = VoxyConfig.CONFIG.createLodRadius();
+        double maxDist = VoxyConfig.CONFIG.createRenderDistance(VoxyConfig.CONFIG.distantBeaconMaxChunks);
         double maxDistSq = maxDist * maxDist;
         var mc = Minecraft.getInstance();
         int[] skipped = new int[3];
