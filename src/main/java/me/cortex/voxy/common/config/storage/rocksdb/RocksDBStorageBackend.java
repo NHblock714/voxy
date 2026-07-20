@@ -16,7 +16,9 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.function.LongConsumer;
 
 public class RocksDBStorageBackend extends StorageBackend {
@@ -26,6 +28,8 @@ public class RocksDBStorageBackend extends StorageBackend {
     private final RocksDB db;
     private final ColumnFamilyHandle worldSections;
     private final ColumnFamilyHandle idMappings;
+    //Aux families by cf name, opened from what the store already held and extended on first write
+    private final Map<String, ColumnFamilyHandle> auxHandles = new HashMap<>();
     private final ReadOptions sectionReadOps;
     private final WriteOptions sectionWriteOps;
 
@@ -131,10 +135,95 @@ public class RocksDBStorageBackend extends StorageBackend {
             this.worldSections = handles.get(1);
             this.idMappings = handles.get(2);
 
+            //Discovered families past the known three, in the order they were appended above. Aux tables
+            //the store already carries have to land here or a reopen would create a second family under
+            //a name that already exists.
+            for (int i = 3; i < cfDescriptors.size(); i++) {
+                this.auxHandles.put(new String(cfDescriptors.get(i).getName()), handles.get(i));
+            }
+
             this.db.flushWal(true);
         } catch (RocksDBException e) {
             throw new RuntimeException(e);
         }
+    }
+
+    //Aux tables are column families named "aux_<table>". They are created on open when the store already
+    //has them and on demand when it does not, so a world gains one the first time something writes to it
+    //rather than on every open.
+    private static String auxCfName(String table) {
+        return "aux_" + table;
+    }
+
+    private ColumnFamilyHandle auxHandle(String table, boolean createIfAbsent) {
+        String name = auxCfName(table);
+        synchronized (this.auxHandles) {
+            ColumnFamilyHandle existing = this.auxHandles.get(name);
+            if (existing != null || !createIfAbsent) {
+                return existing;
+            }
+            try {
+                var handle = this.db.createColumnFamily(
+                        new ColumnFamilyDescriptor(name.getBytes(), new ColumnFamilyOptions()
+                                .setCompressionType(CompressionType.ZSTD_COMPRESSION)
+                                .optimizeForSmallDb()));
+                this.auxHandles.put(name, handle);
+                this.closeList.add(handle);
+                return handle;
+            } catch (RocksDBException e) {
+                throw new RuntimeException("Creating aux column family " + name, e);
+            }
+        }
+    }
+
+    @Override
+    public boolean supportsAuxTable(String table) {
+        return true;
+    }
+
+    @Override
+    public void putAux(String table, long key, byte[] value) {
+        try {
+            //Aux entries are derived data and regenerate on re-ingest like sections do, but they are far
+            //rarer than section writes, so they take the WAL rather than a shutdown-time flush.
+            this.db.put(this.auxHandle(table, true), longKey(key), value);
+        } catch (RocksDBException e) {
+            throw new RuntimeException("Writing aux entry", e);
+        }
+    }
+
+    @Override
+    public void deleteAux(String table, long key) {
+        var handle = this.auxHandle(table, false);
+        if (handle == null) {
+            return;
+        }
+        try {
+            this.db.delete(handle, longKey(key));
+        } catch (RocksDBException e) {
+            throw new RuntimeException("Deleting aux entry", e);
+        }
+    }
+
+    @Override
+    public void forEachAux(String table, AuxEntryConsumer consumer) {
+        var handle = this.auxHandle(table, false);
+        if (handle == null) {
+            return;
+        }
+        try (var iter = this.db.newIterator(handle)) {
+            for (iter.seekToFirst(); iter.isValid(); iter.next()) {
+                byte[] key = iter.key();
+                if (key.length != 8) {
+                    continue;
+                }
+                consumer.accept(ByteBuffer.wrap(key).getLong(0), iter.value());
+            }
+        }
+    }
+
+    private static byte[] longKey(long key) {
+        return ByteBuffer.allocate(8).putLong(0, key).array();
     }
 
     //Families the store holds beyond the ones this build uses. A store that does not exist yet, or that
