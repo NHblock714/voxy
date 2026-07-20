@@ -187,9 +187,25 @@ public abstract class AbstractRenderPipeline extends TrackedObject {
         //sides share the one clip-control mode, and only z is affected by it
         glUniform4f(4, ndcRemapScale, ndcRemapBias,
                 1.0f / ndcRemapScale, -ndcRemapBias / ndcRemapScale);
+        var boundary = me.cortex.voxy.client.core.rendering.LodBoundaryFade.getDistances();
+        glUniform1f(6, boundary.fadeStart());
+        glUniform1f(7, boundary.fadeEnd());
+        glUniform1i(10, 0);
         glDepthMask(true);
         glColorMask(false,false,false,false);
         this.depthStencilSetup.blit();
+
+        if (boundary.enabled() && this.useBoundaryGuardPass()) {
+            //Second pass over the same shader, stencil writes masked off: the dithered LOD-won pixels
+            //in the band keep stencil=1 but trade the cleared FAR depth for the vanilla surface pushed
+            //slightly outward. Without it those pixels read as empty to HiZ and stop occluding the
+            //pre-translucent hook geometry, which ignores stencil and tests depth alone.
+            glStencilMask(0x00);
+            glUniform1i(10, 1);
+            this.depthStencilSetup.blit();
+            glUniform1i(10, 0);
+            glStencilMask(0xFF);
+        }
 
 
         glDepthFunc(this.properties.closerEqualDepthCompare());
@@ -201,6 +217,14 @@ public abstract class AbstractRenderPipeline extends TrackedObject {
         //distant water. Bit1 is the hook's "keep my depth" mark, tested full-mask where it matters.
         glStencilOp(GL_KEEP, GL_KEEP, GL_KEEP);
         glStencilFunc(GL_EQUAL, 1, 0x1);
+    }
+
+    //The normal pipeline composites from a cleared private colour target, so a band pixel whose LOD
+    //geometry is missing would show through to nothing - hence the guard depth. Iris draws into an
+    //already-populated gbuffer where a missing LOD pixel simply keeps vanilla's colour, and applying
+    //the guard there rejects coarse LOD across the whole band instead.
+    protected boolean useBoundaryGuardPass() {
+        return true;
     }
 
     //Rewrites every vanilla-covered (stencil==0) pixel back to the NEAR sentinel. The setup pass

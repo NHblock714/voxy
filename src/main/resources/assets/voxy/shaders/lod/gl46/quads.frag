@@ -208,10 +208,21 @@ void main() {
         return;
     }
 
-    //Check the minimum bounding texture and ensure we are greater than it
-    if (DEPTH_SCALAR_COMPARE(gl_FragCoord.z, texelFetch(depthTex, ivec2(gl_FragCoord.xy), 0).r)) {
-        discard;
-        return;
+    //Check the minimum bounding texture and ensure we are greater than it.
+    //With the circular handover on, opaque terrain lets the stencil be the sole arbiter: the chunk
+    //bounds mask is square and would cut exactly the band the circle wants to dither. Translucent
+    //keeps the mask unconditionally so water is not given a second, circular edge on top of the
+    //square one it already has.
+    #ifdef TRANSLUCENT
+    const bool useChunkBounds = true;
+    #else
+    bool useChunkBounds = circularLodBoundaryEnabled < 0.5;
+    #endif
+    if (useChunkBounds) {
+        if (DEPTH_SCALAR_COMPARE(gl_FragCoord.z, texelFetch(depthTex, ivec2(gl_FragCoord.xy), 0).r)) {
+            discard;
+            return;
+        }
     }
 
 

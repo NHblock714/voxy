@@ -207,7 +207,32 @@ public class VoxyConfigMenu implements ConfigEntryPoint {
                                         .setFormatter(v->Component.literal(v+"%"))
                                         .setImpact(OptionImpact.LOW)
                         )
-                        .setEnablerInherit(s->!IrisUtil.irisShaderPackEnabled(), ConfigState.UPDATE_ON_REBUILD)
+                        .setEnablerInherit(s->!IrisUtil.irisShaderPackEnabled(), ConfigState.UPDATE_ON_REBUILD),
+                        //Not under the shaderpack gate above: that gate is for the ambient fog options,
+                        //which only exist on the non-shader blit. The circular handover is decided in the
+                        //shared depth/stencil setup and applies to both pipelines.
+                        new Group(
+                                new BoolOption(
+                                        "voxy:lod_boundary_fade",
+                                        Component.translatable("voxy.config.general.lodBoundaryFade"),
+                                        ()->CFG.enableLodBoundaryFade, v->CFG.enableLodBoundaryFade=v)
+                                        .setImpact(OptionImpact.MEDIUM)
+                                        .setPostChangeFlags(RENDER_RELOAD),
+                                new IntOption(
+                                        "voxy:lod_boundary_fade_length",
+                                        Component.translatable("voxy.config.general.lodBoundaryFadeLength"),
+                                        ()->CFG.lodBoundaryFadeLength, v->CFG.lodBoundaryFadeLength=v,
+                                        new Range(8, 64, 4))
+                                        .setEnabler("voxy:lod_boundary_fade")
+                                        .setImpact(OptionImpact.LOW),
+                                new IntOption(
+                                        "voxy:lod_boundary_inset",
+                                        Component.translatable("voxy.config.general.lodBoundaryInset"),
+                                        ()->CFG.lodBoundaryInset, v->CFG.lodBoundaryInset=v,
+                                        new Range(8, 32, 2))
+                                        .setEnabler("voxy:lod_boundary_fade")
+                                        .setImpact(OptionImpact.LOW)
+                        )
                 ).setEnablerAND("voxy:enabled", "voxy:rendering"),
                 new Page(Component.translatable("voxy.config.compat"),
                         new Group(

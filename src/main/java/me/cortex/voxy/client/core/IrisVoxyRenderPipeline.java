@@ -313,4 +313,9 @@ public class IrisVoxyRenderPipeline extends AbstractRenderPipeline {
         return this.data.resolutionScale;
     }
 
+
+    @Override
+    protected boolean useBoundaryGuardPass() {
+        return false;
+    }
 }

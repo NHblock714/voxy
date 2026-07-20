@@ -71,6 +71,14 @@ public class VoxyConfig {
     public int serviceThreads = (int) Math.max(CpuLayout.getCoreCount()/1.5, 1);
     public float subDivisionSize = 28;
     public int skyFogDistance = 96;
+
+    //Circular, dithered vanilla->LOD handover, replacing the chunk-square edge. Off by default here:
+    //it makes opaque LOD rasterize across the whole vanilla-covered region instead of being masked out,
+    //and shader packs that ship their own LOD fade (Photon and friends) double up with it.
+    public boolean enableLodBoundaryFade = false;
+    public int lodBoundaryFadeLength = 16;
+    public int lodBoundaryInset = 8;
+    public int lodBoundaryBuffer = 1;
     public float fogIntensity = 1.0f;
     public float fogDensity = 0.0f;
     // Scales voxy's self-defined LOD fog distance (100 = fog reaches full at voxy's render edge).
@@ -174,6 +182,9 @@ public class VoxyConfig {
     public void sanitize() {
         this.subDivisionSize = Math.clamp(this.subDivisionSize, MIN_SUBDIVISION_SIZE, MAX_SUBDIVISION_SIZE);
         this.skyFogDistance = Math.clamp(this.skyFogDistance, 0, 1024);
+        this.lodBoundaryFadeLength = Math.clamp(this.lodBoundaryFadeLength, 8, 64);
+        this.lodBoundaryInset = Math.clamp(this.lodBoundaryInset, 8, 32);
+        this.lodBoundaryBuffer = Math.clamp(this.lodBoundaryBuffer, 0, 4);
         this.cloudDistance = Math.clamp(this.cloudDistance, 0, MAX_CLOUD_DISTANCE);
         this.fogIntensity = Math.clamp(this.fogIntensity, 0.0f, 1.0f);
         this.fogDensity = Math.clamp(this.fogDensity, 0.0f, 1.0f);

@@ -4,6 +4,10 @@ layout(binding = 0, std140) uniform SceneUniform {
     uint frameId;
     vec3 cameraSubPos;
     float fluidDatumY;
+    float circularLodBoundaryEnabled;
+    float lodBoundaryFadeStart;
+    float lodBoundaryFadeEnd;
+    float _scenePadding;
 };
 
 //TODO: see if making the stride 2*4*4 bytes or something cause you get that 16 byte write
