@@ -240,6 +240,14 @@ public class VoxelIngestService {
         }
     }
 
+    //Sections that arrive without an owning chunk - VSS streams them from the server, so the client has
+    //no LevelChunk and no block entities to read. This signature is what VSS 0.2.8 resolves by reflection
+    //to install its column consumer; it registers the consumer inside the same try as the lookup, so the
+    //lookup failing takes the whole server-fed ingest path with it rather than just this call.
+    public static boolean rawIngest(WorldIdentifier id, LevelChunkSection section, int x, int y, int z, DataLayer bl, DataLayer sl) {
+        return rawIngest(id, null, section, x, y, z, bl, sl);
+    }
+
     //The owning chunk has to come along: the variant compats (Domum, Create copycats) read the section's
     //block entities in beginSection to re-register their materials, and with a null chunk they bail, so a
     //re-ingest through here would republish the section stripped of its dressing.
