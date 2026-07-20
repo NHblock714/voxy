@@ -41,6 +41,10 @@ public class VoxelIngestService {
             //anything that can throw has to be covered or the world can never be closed again
             DomumOrnamentumCompat.beginSection(task.world.getMapper(), task.chunk, task.section, task.cy);
             me.cortex.voxy.commonImpl.compat.CreateCopycatCompat.beginSection(task.world.getMapper(), task.chunk, task.section, task.cy);
+            //Read off the section rather than the chunk's block entities: sections streamed by VSS arrive
+            //with no chunk at all, and a beacon is a block whether or not its block entity is here.
+            me.cortex.voxy.common.world.other.BeaconScanner.scan(
+                    task.world.getBeaconIndex(), section, task.cx, task.cy, task.cz);
             var vs = SECTION_CACHE.get().setPosition(task.cx, task.cy, task.cz);
 
             if (section.hasOnlyAir() && task.blockLight==null && task.skyLight==null) {//If the chunk section has lighting data, propagate it
