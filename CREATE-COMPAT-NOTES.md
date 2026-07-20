@@ -158,13 +158,15 @@ Create 机器方块 = 静态模型部分 + 运动部分。静态部分在 LOD �
 
 ## 7. 配置项(客户端 UI + 带宽)
 
-**距离基线**:`NormalRenderPipeline` 里 voxy LOD 半径 = `32 × sectionRenderDistance` **block**(默认 16→512 block=32 区块;UI 上限 64→2048 block=128 区块;TOML 注释写的"512 chunks"是**错的**,实为 block)。三个 Create 联动渲染器全部以此为上限。
+**距离基线**:`sectionRenderDistance` 数的是 **32 区块一节**,所以 voxy LOD 半径 = `32 × 16 × sectionRenderDistance` **block**(默认 16→8192 block=512 区块;UI 上限 64→32768 block=2048 区块)。与 `getFarEntityRenderDistanceBlocks`、`HierarchicalOcclusionTraverser` 同式。三个 Create 联动渲染器全部以此为上限。
+
+> `createLodRadius()` 一度漏了 `×16`,调用方却按 block 用 → 联动渲染器只画到地形距离的 1/16。已修(见 commit「Measure the Create distant-render radius in blocks, not chunks」)。修之前下面那些 `*MaxChunks` 上限**从未生效**(基线太小,永远先被它自己夹住)。
 
 **两套 UI 都要同步**:voxy 有**两个**配置界面——① Sodium 视频设置里的联动页(`VoxyConfigMenu`,Sodium 0.8 原生 API)② NeoForge Mods 菜单 TOML(`VoxyNeoForgeConfig`)。加字段时两边都得补。`VoxyConfig` JSON 是权威值,两 UI 都读写它。
 
 **config 项**(`VoxyConfig` JSON + `VoxyConfigMenu` Sodium 页 + `VoxyNeoForgeConfig` TOML,三处同步):
 - 开关:`distantTrains`/`distantTracks`/`distantContraptions` + `distantKinetics`(kinetic 距离剔除总开关,关=Create 原生可能浮空)+ `kineticEnclosedCulling`(包裹态剔除)。
-- 距离上限(区块,0=跟随 LOD 半径):`distantTrainMaxChunks`/`distantTrackMaxChunks`/`distantContraptionMaxChunks`。经 `VoxyConfig.createRenderDistance(maxChunks)=min(maxChunks×16, 32×sectionRenderDistance)` 换算,各渲染器统一取用;contraption 的 manager 快照与 renderer 绘制用同一上限(不快照不画的)。
+- 距离上限(区块,0=跟随 LOD 半径):`distantTrainMaxChunks`/`distantTrackMaxChunks`/`distantContraptionMaxChunks`。经 `VoxyConfig.createRenderDistance(maxChunks)=min(maxChunks×16, createLodRadius())` 换算,各渲染器统一取用;contraption 的 manager 快照与 renderer 绘制用同一上限(不快照不画的)。
 
 **带宽对齐**:`CreateTrainSampler` 原先无脑发到 3072 block,而客户端只画到 LOD 半径(≤2048,默认仅 512)——512–3072 那圈一直在发但客户端从不画(面积 ∝ r²,默认浪费 ≈97%)。控制点 `commonImpl/compat/create/DistantTrainConfig`(dist-safe,无客户端类引用,同 `SableContraptionRenderDistance` 套路)合成**两路输入取 min**:
 - **客户端偏好**(`VoxyConfig.save→syncDistantTrainConfig→updateClientConfig`):本机想要多远。**集成服(单人/开房主机)** 同 JVM → 采样窗口收到 = 客户端实际渲染距离,直接砍浪费;`distantTrains` 关则停发(0 带宽)。专用服无客户端写此 → 留默认 `HARD_MAX`。
