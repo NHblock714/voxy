@@ -253,7 +253,31 @@ public class VoxelIngestService {
     //to install its column consumer; it registers the consumer inside the same try as the lookup, so the
     //lookup failing takes the whole server-fed ingest path with it rather than just this call.
     public static boolean rawIngest(WorldIdentifier id, LevelChunkSection section, int x, int y, int z, DataLayer bl, DataLayer sl) {
-        return rawIngest(id, null, section, x, y, z, bl, sl);
+        return rawIngest(id, recoverChunk(id, x, z), section, x, y, z, bl, sl);
+    }
+
+    //The variant compats read a section's block entities to re-register Domum and copycat materials, and
+    //bail with no chunk - so a section arriving without one publishes plain block ids OVER voxels that
+    //already carried their dressing, and that write goes to disk. A server-fed section is not required
+    //to be a chunk the client lacks: the sender covers a radius that overlaps what is loaded here.
+    //
+    //The dimension key is checked rather than assuming the client is where the section is for. This pack
+    //runs sable sub-levels and generated mirror_* dimensions, so the active level is often not the one an
+    //engine belongs to, and a chunk fetched from the wrong level would decorate with the wrong materials.
+    //No match, or nothing loaded there, leaves the chunk null and the section undressed - what it was.
+    private static LevelChunk recoverChunk(WorldIdentifier id, int chunkX, int chunkZ) {
+        if (id == null) {
+            return null;
+        }
+        if (!net.neoforged.fml.loading.FMLEnvironment.dist.isClient()) {
+            return null;
+        }
+        try {
+            //Named only here, so this class never resolves a client type on a dedicated server
+            return me.cortex.voxy.client.ClientChunkRecovery.find(id, chunkX, chunkZ);
+        } catch (Throwable ignored) {
+            return null;
+        }
     }
 
     //The owning chunk has to come along: the variant compats (Domum, Create copycats) read the section's

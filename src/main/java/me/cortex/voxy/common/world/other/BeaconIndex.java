@@ -73,15 +73,31 @@ public final class BeaconIndex {
         }
     }
 
-    //Absolute block positions of every known beacon. Snapshot: the caller is on the render thread and the
-    //map is written by ingest workers.
+    //Absolute block positions of every known beacon.
+    //
+    //Copied under the lock and walked outside it. fastutil's synchronized wrapper does not cover the
+    //iterator, and the caller here is the render thread solving a beam per entry - which acquires
+    //storage sections and so must not run holding a lock an ingest worker needs to write.
     public void forEach(BeaconConsumer consumer) {
-        for (var entry : this.sections.long2ObjectEntrySet()) {
-            long key = entry.getLongKey();
+        long[] keys;
+        short[][] values;
+        synchronized (this.sections) {
+            int n = this.sections.size();
+            keys = new long[n];
+            values = new short[n][];
+            int i = 0;
+            for (var entry : this.sections.long2ObjectEntrySet()) {
+                keys[i] = entry.getLongKey();
+                values[i] = entry.getValue();
+                i++;
+            }
+        }
+        for (int i = 0; i < keys.length; i++) {
+            long key = keys[i];
             int ox = BlockPos.getX(key) << 4;
             int oy = BlockPos.getY(key) << 4;
             int oz = BlockPos.getZ(key) << 4;
-            for (short packed : entry.getValue()) {
+            for (short packed : values[i]) {
                 consumer.accept(ox + ((packed >> 8) & 0xF), oy + ((packed >> 4) & 0xF), oz + (packed & 0xF));
             }
         }
@@ -89,8 +105,10 @@ public final class BeaconIndex {
 
     public int count() {
         int total = 0;
-        for (var locals : this.sections.values()) {
-            total += locals.length;
+        synchronized (this.sections) {
+            for (var locals : this.sections.values()) {
+                total += locals.length;
+            }
         }
         return total;
     }

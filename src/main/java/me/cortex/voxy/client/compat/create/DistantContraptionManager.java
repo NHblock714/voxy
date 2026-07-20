@@ -40,6 +40,11 @@ public final class DistantContraptionManager {
         //opaque VBO. Without this a snapshot can never be re-baked, only held or lost - which is what
         //makes the resident set a one-way ratchet. About 12 bytes a block plus the state reference.
         Source source;
+        //Vertex bytes this snapshot's mesh took when it last had one. Kept across a drop so admission
+        //can ask whether rebuilding it would exceed the budget, rather than only whether there is room
+        //right now - the two differ by exactly the size of the thing being admitted, which is what made
+        //rebuild and evict chase each other every tick.
+        long lastMeshBytes;
         //M_local from AbstractContraptionEntity.applyLocalTransforms; the world position is kept
         //separately as doubles so the draw can be camera-relative without float world-coord error.
         final Matrix4f local = new Matrix4f();
@@ -406,6 +411,7 @@ public final class DistantContraptionManager {
 
     private static void dropMesh(Snapshot snap) {
         if (snap.mesh != null) {
+            snap.lastMeshBytes = snap.mesh.mesh.gpuByteSize();
             snap.mesh.close();
             snap.mesh = null;
             me.cortex.voxy.commonImpl.PerfStats.contraptionSnapshotEvicted.increment();
@@ -468,14 +474,14 @@ public final class DistantContraptionManager {
     private static void bakeDormant(double camX, double camY, double camZ, double maxDist) {
         long budget = (long) VoxyConfig.CONFIG.distantContraptionGpuBudgetMiB * 1024L * 1024L;
         double maxDistSq = maxDist * maxDist;
+        //Candidates rejected for size this tick. Without this the loop keeps picking the same nearest
+        //one, finds it does not fit, and burns its whole allowance doing nothing.
+        var tooBig = new java.util.HashSet<Snapshot>();
         for (int done = 0; done < BAKES_PER_TICK; done++) {
-            if (budget > 0 && residentGpuBytes > (budget * 9L) / 10L) {
-                return;
-            }
             Snapshot nearest = null;
             double nearestDistSq = Double.MAX_VALUE;
             for (var snap : SNAPSHOTS.values()) {
-                if (!isDormant(snap)) {
+                if (!isDormant(snap) || tooBig.contains(snap)) {
                     continue;
                 }
                 double dx = snap.x - camX, dy = snap.y - camY, dz = snap.z - camZ;
@@ -489,12 +495,22 @@ public final class DistantContraptionManager {
             if (nearest == null) {
                 return;
             }
+            //Would rebuilding it overflow the budget? Asking whether there is room now instead admits a
+            //mesh that immediately puts the total over, the eviction pass takes it straight back out,
+            //and the two repeat every tick - a full bake and buffer upload, twenty times a second.
+            //A snapshot never yet baked has no size to check, so it is admitted and measured.
+            if (budget > 0 && nearest.lastMeshBytes > 0
+                    && residentGpuBytes + nearest.lastMeshBytes > budget) {
+                tooBig.add(nearest);
+                continue;
+            }
             var mesh = bakeBlocks(nearest.source);
             if (mesh == null) {
                 nearest.bakeGaveNothing = true;
                 continue;
             }
             nearest.mesh = mesh;
+            nearest.lastMeshBytes = mesh.mesh.gpuByteSize();
             if (nearest.lightPacked < 0) {
                 //Sampled rather than stored: the sampler reads voxy's own voxel store, so it answers for
                 //an unloaded chunk, and a value taken now matches the terrain it will be drawn against.

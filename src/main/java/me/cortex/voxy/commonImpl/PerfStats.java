@@ -50,6 +50,9 @@ public final class PerfStats {
     public static final LongAdder neighborFaceUniformFill = new LongAdder();
     //Ingest writes whose values all matched the uniform value, so the section stayed uniform
     public static final LongAdder sectionUniformWriteSkipped = new LongAdder();
+    //Sections whose translucent or double-sided quad bucket filled up and had quads dropped. Non-zero
+    //means geometry is missing from those sections - see the guard in RenderDataFactory.
+    public static final LongAdder quadBucketOverflow = new LongAdder();
 
     //--- section saving ---
     //Batched section writes: sections/commits is the headline (>1 means batching is working at all)
@@ -89,7 +92,8 @@ public final class PerfStats {
                 "neighbour uniform fill", neighborFaceUniformFill.sum(), sectionMaterializeContended.sum())).append('\n');
         sb.append(String.format("  %-22s %,d", "uniform writes skipped", sectionUniformWriteSkipped.sum())).append('\n');
         sb.append(String.format("  %-22s from server=%,d from this client=%,d",
-                "section ingest source", sectionIngestedChunkless.sum(), sectionIngestedWithChunk.sum()));
+                "section ingest source", sectionIngestedChunkless.sum(), sectionIngestedWithChunk.sum())).append('\n');
+        sb.append(String.format("  %-22s %,d", "quad bucket overflows", quadBucketOverflow.sum()));
         return sb.toString();
     }
 
@@ -99,7 +103,7 @@ public final class PerfStats {
                 trainPoseCacheHit, trainPoseCacheMiss, trainShapeBuildDeferred,
                 saveBatchCommits, saveBatchSections,
                 sectionUniformKept, sectionMaterialized, sectionMaterializeContended, neighborFaceUniformFill, sectionUniformWriteSkipped,
-                sectionIngestedChunkless, sectionIngestedWithChunk}) {
+                sectionIngestedChunkless, sectionIngestedWithChunk, quadBucketOverflow}) {
             a.reset();
         }
     }
