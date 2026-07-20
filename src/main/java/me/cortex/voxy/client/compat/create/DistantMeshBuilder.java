@@ -33,6 +33,15 @@ public final class DistantMeshBuilder {
 
     public void rawVertex(float x, float y, float z, float u, float v, int skyLight, int blockLight, float shade, int face, int tintRgb) {
         this.ensure(DistantMesh.STRIDE);
+        //Six comparisons against a mesh baked once and then drawn every frame it is in range. Note quad()
+        //writes its vertices straight to the buffer rather than coming through here, so it accumulates
+        //separately - miss that and the bounds cover only hand-built geometry.
+        if (x < this.minX) this.minX = x;
+        if (y < this.minY) this.minY = y;
+        if (z < this.minZ) this.minZ = z;
+        if (x > this.maxX) this.maxX = x;
+        if (y > this.maxY) this.maxY = y;
+        if (z > this.maxZ) this.maxZ = z;
         this.buffer.putFloat(x).putFloat(y).putFloat(z);
         this.buffer.putFloat(u).putFloat(v);
         this.buffer.put((byte) (blockLight * 16 + 8)).put((byte) (skyLight * 16 + 8));
@@ -123,7 +132,14 @@ public final class DistantMeshBuilder {
                 y = this.scratch.y;
                 z = this.scratch.z;
             }
-            this.buffer.putFloat(x + ox).putFloat(y + oy).putFloat(z + oz);
+            float wx = x + ox, wy = y + oy, wz = z + oz;
+            if (wx < this.minX) this.minX = wx;
+            if (wy < this.minY) this.minY = wy;
+            if (wz < this.minZ) this.minZ = wz;
+            if (wx > this.maxX) this.maxX = wx;
+            if (wy > this.maxY) this.maxY = wy;
+            if (wz > this.maxZ) this.maxZ = wz;
+            this.buffer.putFloat(wx).putFloat(wy).putFloat(wz);
             this.buffer.putFloat(Float.intBitsToFloat(vertices[base + 4]));
             this.buffer.putFloat(Float.intBitsToFloat(vertices[base + 5]));
             this.buffer.put(lightU).put(lightV).put(shade).put(face);
@@ -158,6 +174,17 @@ public final class DistantMeshBuilder {
         }
     }
 
+    //Mesh-local extent of everything written so far, or an inverted box if nothing was
+    private float minX = Float.MAX_VALUE, minY = Float.MAX_VALUE, minZ = Float.MAX_VALUE;
+    private float maxX = -Float.MAX_VALUE, maxY = -Float.MAX_VALUE, maxZ = -Float.MAX_VALUE;
+
+    public float minX() { return this.minX; }
+    public float minY() { return this.minY; }
+    public float minZ() { return this.minZ; }
+    public float maxX() { return this.maxX; }
+    public float maxY() { return this.maxY; }
+    public float maxZ() { return this.maxZ; }
+
     public boolean isEmpty() {
         return this.vertexCount < 4;
     }
@@ -169,6 +196,7 @@ public final class DistantMeshBuilder {
     public static final class CpuMesh {
         private ByteBuffer buffer;
         public final int quadCount;
+        public float minX, minY, minZ, maxX, maxY, maxZ;
 
         private CpuMesh(ByteBuffer buffer, int quadCount) {
             this.buffer = buffer;
@@ -199,6 +227,8 @@ public final class DistantMeshBuilder {
         this.buffer.flip();
         this.buffer.limit(quadCount * 4 * DistantMesh.STRIDE);
         var cpu = new CpuMesh(this.buffer, quadCount);
+        cpu.minX = this.minX; cpu.minY = this.minY; cpu.minZ = this.minZ;
+        cpu.maxX = this.maxX; cpu.maxY = this.maxY; cpu.maxZ = this.maxZ;
         //Ownership moves to the CpuMesh - discard() must not free it from under the new owner
         this.buffer = null;
         return cpu;
@@ -210,7 +240,10 @@ public final class DistantMeshBuilder {
             return null;
         }
         try {
-            return new DistantMesh(cpu.buffer, cpu.quadCount);
+            var mesh = new DistantMesh(cpu.buffer, cpu.quadCount);
+            mesh.minX = cpu.minX; mesh.minY = cpu.minY; mesh.minZ = cpu.minZ;
+            mesh.maxX = cpu.maxX; mesh.maxY = cpu.maxY; mesh.maxZ = cpu.maxZ;
+            return mesh;
         } finally {
             cpu.free();
         }

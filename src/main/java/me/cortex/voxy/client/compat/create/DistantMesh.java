@@ -49,6 +49,9 @@ public final class DistantMesh {
         return (long) this.quadCount * 4L * STRIDE;
     }
 
+    //Mesh-local extent, so a draw can frustum-test without the caller having to know what went in
+    public float minX, minY, minZ, maxX, maxY, maxZ;
+
     DistantMesh(ByteBuffer vertexData, int quadCount) {
         this.quadCount = quadCount;
         ensureIndexCapacity(quadCount);
