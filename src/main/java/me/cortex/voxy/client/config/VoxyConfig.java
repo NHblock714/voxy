@@ -82,6 +82,12 @@ public class VoxyConfig {
     // is a few kilobytes against a few hundred for its mesh. Distance alone is a poor bound because one
     // dense structure can cost as much as a hundred small ones.
     public int distantContraptionGpuBudgetMiB = 48;
+    // Same for kinetics, except a kinetic snapshot is dropped whole rather than reduced to its source.
+    // Measured at 1.17x, its source is larger than the mesh it produces - almost all of it a recorded
+    // vertex stream that cannot be rebuilt from the block state - so keeping the source to rebuild from
+    // would cost more than the mesh it released. Dropping it entirely and letting the sweep capture it
+    // again when the player returns is the cheaper trade.
+    public int distantKineticGpuBudgetMiB = 32;
     // Aero/sable: render simulated contraptions within this % of voxy's LOD render distance.
     public int simulatedContraptionRenderDistancePercent = 50;
     public int serviceThreads = (int) Math.max(CpuLayout.getCoreCount()/1.5, 1);

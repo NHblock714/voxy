@@ -99,6 +99,7 @@ public final class DistantContraptionManager {
             }
             return;
         }
+        loadStoredOnce(level);
         long now = System.currentTimeMillis();
         double maxDistSq = maxDist * maxDist;
         var dimId = level.dimension().location();
@@ -348,7 +349,26 @@ public final class DistantContraptionManager {
         return engine == null ? null : engine.storage;
     }
 
-    //Called once when a world's stored snapshots are read, before any of them are baked
+    //Which dimension's records have been read. Reading is driven from the tick rather than a level
+    //event because it needs voxy's world engine for the dimension to exist, and nothing guarantees that
+    //has happened by the time a level load fires - a miss there would leave the feature silently doing
+    //nothing, which is indistinguishable from having stored nothing.
+    private static ResourceLocation loadedFor;
+
+    private static void loadStoredOnce(ClientLevel level) {
+        var here = level.dimension().location();
+        if (here.equals(loadedFor)) {
+            return;
+        }
+        var storage = storageFor(level);
+        if (storage == null) {
+            //Engine not up yet - try again next tick
+            return;
+        }
+        loadedFor = here;
+        loadStored(level);
+    }
+
     public static void loadStored(ClientLevel level) {
         var storage = storageFor(level);
         if (storage == null) {
@@ -526,6 +546,7 @@ public final class DistantContraptionManager {
             }
         }
         SNAPSHOTS.clear();
+        loadedFor = null;
         snapshotCount = 0;
     }
 }

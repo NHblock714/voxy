@@ -186,6 +186,63 @@ public final class KineticSnapshots {
         return ANCHOR_RECAPTURED.remove(pos);
     }
 
+
+    //Distance alone does not bound what is held: a dense factory inside the render radius can hold more
+    //than a sparse world's entire radius does. Furthest bucket first, and the whole bucket goes - unlike
+    //a contraption, a kinetic snapshot's source is larger than the mesh it builds (measured at 1.17x,
+    //nearly all of it recorded vertex data that cannot be rebuilt from the block state), so keeping the
+    //source to rebuild from would cost more than the mesh it freed. The sweep captures it again when the
+    //player comes back.
+    private static void enforceGpuBudget(double camX, double camY, double camZ) {
+        long budget = (long) VoxyConfig.CONFIG.distantKineticGpuBudgetMiB * 1024L * 1024L;
+        if (budget <= 0) {
+            return;
+        }
+        long resident = 0;
+        for (var bucket : SECTIONS.values()) {
+            if (bucket.mesh != null) {
+                resident += bucket.mesh.gpuByteSize();
+            }
+        }
+        long target = (budget * 9L) / 10L;
+        while (resident > budget) {
+            long furthestKey = 0;
+            double furthestDistSq = -1;
+            boolean found = false;
+            for (var entry : SECTIONS.entrySet()) {
+                if (entry.getValue().mesh == null) {
+                    continue;
+                }
+                long key = entry.getKey();
+                double dx = ((BlockPos.getX(key) << 4) + 8) - camX;
+                double dy = ((BlockPos.getY(key) << 4) + 8) - camY;
+                double dz = ((BlockPos.getZ(key) << 4) + 8) - camZ;
+                double distSq = dx * dx + dy * dy + dz * dz;
+                if (distSq > furthestDistSq) {
+                    furthestDistSq = distSq;
+                    furthestKey = key;
+                    found = true;
+                }
+            }
+            if (!found) {
+                break;
+            }
+            var bucket = SECTIONS.remove(furthestKey);
+            if (bucket == null) {
+                break;
+            }
+            resident -= bucket.mesh == null ? 0 : bucket.mesh.gpuByteSize();
+            for (BlockPos snapPos : bucket.geoms.keySet()) {
+                BEARING_POSITIONS.remove(snapPos);
+            }
+            bucket.close();
+            me.cortex.voxy.commonImpl.PerfStats.kineticSnapshotEvicted.increment();
+            if (resident <= target) {
+                break;
+            }
+        }
+    }
+
     public static Map<Long, Bucket> sections() {
         return SECTIONS;
     }
@@ -283,6 +340,8 @@ public final class KineticSnapshots {
             }
             return false;
         });
+        enforceGpuBudget(cam.x, cam.y, cam.z);
+
         //Prune sections emptied by removals
         SECTIONS.values().removeIf(bucket -> {
             if (bucket.geoms.isEmpty()) {
