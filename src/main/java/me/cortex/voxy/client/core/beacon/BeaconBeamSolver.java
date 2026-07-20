@@ -32,7 +32,10 @@ public final class BeaconBeamSolver {
         boolean anyColorSeen = false;
 
         var mapper = engine.getMapper();
-        int top = Math.min(by + MAX_SCAN_HEIGHT, by + MAX_SCAN_HEIGHT);
+        //Deliberately not clamped to the build height: vanilla's own last beam segment runs to 1024, and
+        //sections above the world are the cheapest possible acquire - the backend misses, nothing is
+        //deserialised, and no voxel is read.
+        int top = by + MAX_SCAN_HEIGHT;
 
         //One acquire per section rather than per block: the column walks 16 blocks of a section before
         //it needs the next one, and acquire/release is the expensive part
