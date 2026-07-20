@@ -4,6 +4,7 @@ import me.cortex.voxy.client.compat.LodPipelineHooks;
 import me.cortex.voxy.client.compat.create.DistantMesh;
 import me.cortex.voxy.client.compat.create.DistantMeshBuilder;
 import me.cortex.voxy.client.compat.create.DistantShaders;
+import me.cortex.voxy.client.compat.create.DistantVisibility;
 import me.cortex.voxy.client.config.VoxyConfig;
 import me.cortex.voxy.client.core.AbstractRenderPipeline;
 import me.cortex.voxy.client.core.rendering.Viewport;
@@ -42,7 +43,9 @@ public final class DistantBeaconRenderer implements LodPipelineHooks.Renderer {
     private final List<Built> built = new ArrayList<>();
     private long builtForFrame = -1;
 
-    private record Built(DistantMesh mesh, double x, double y, double z) {}
+    //topY is kept so the draw can frustum-test the beam: it is a tall thin column, and testing only its
+    //base rejects it whenever the base is below the view while the visible part is not.
+    private record Built(DistantMesh mesh, double x, double y, double z, double topY) {}
 
     @Override
     public void render(AbstractRenderPipeline pipeline, Viewport<?> viewport, int depthFunc) {
@@ -90,7 +93,27 @@ public final class DistantBeaconRenderer implements LodPipelineHooks.Renderer {
         try {
             var transform = new Matrix4f();
             int drawn = 0;
+            //Handover decided per frame rather than per rebuild. Deciding it while building meant a beam
+            //that vanilla had just stopped drawing did not exist on our side until the next rebuild, so
+            //crossing the boundary outward left a gap for up to the rebuild interval. Everything in LOD
+            //range is built; this is the only thing that decides who draws it.
+            double vanillaRange = Math.min(VANILLA_BEAM_RANGE,
+                    Minecraft.getInstance().options.getEffectiveRenderDistance() * 16.0);
+            double vanillaRangeSq = vanillaRange * vanillaRange;
+            lastVanillaRange = (int) vanillaRange;
+            int vanillaOwned = 0;
             for (var beam : this.built) {
+                double bdx = beam.x - viewport.cameraX, bdz = beam.z - viewport.cameraZ;
+                if (bdx * bdx + bdz * bdz < vanillaRangeSq) {
+                    vanillaOwned++;
+                    continue;
+                }
+                //A beam is a 1024-block column, so its box is tall and thin
+                if (!DistantVisibility.isBoxVisible(viewport,
+                        beam.x - CORE_RADIUS, beam.y, beam.z - CORE_RADIUS,
+                        beam.x + CORE_RADIUS, beam.topY, beam.z + CORE_RADIUS)) {
+                    continue;
+                }
                 transform.set(viewport.MVP).translate(
                         (float) (beam.x - viewport.cameraX),
                         (float) (beam.y - viewport.cameraY),
@@ -100,6 +123,7 @@ public final class DistantBeaconRenderer implements LodPipelineHooks.Renderer {
                 drawn++;
             }
             lastFrameBeamsDrawn = drawn;
+            lastVanillaOwned = vanillaOwned;
         } finally {
             glStencilFunc(GL_EQUAL, 1, 0x1);
             glStencilOp(GL_KEEP, GL_KEEP, GL_KEEP);
@@ -119,12 +143,6 @@ public final class DistantBeaconRenderer implements LodPipelineHooks.Renderer {
         double maxDist = VoxyConfig.CONFIG.createLodRadius();
         double maxDistSq = maxDist * maxDist;
         var mc = Minecraft.getInstance();
-        //Read here rather than inside renderLevel's own frame: the sable render-distance mixin rewrites
-        //that method's call sites, and this is a different one, so this is the real setting.
-        double vanillaRange = Math.min(VANILLA_BEAM_RANGE, mc.options.getEffectiveRenderDistance() * 16.0);
-        double vanillaRangeSq = vanillaRange * vanillaRange;
-        lastVanillaRange = (int) vanillaRange;
-
         int[] skipped = new int[3];
         try {
             engine.getBeaconIndex().forEach((bx, by, bz) -> {
@@ -135,15 +153,6 @@ public final class DistantBeaconRenderer implements LodPipelineHooks.Renderer {
                     skipped[1]++;
                     return;
                 }
-                //Vanilla draws a beam only where it renders the block entity, which needs the chunk to be
-                //within the render distance as well as inside BeaconRenderer's own 256 - so the handover
-                //is at whichever is nearer. A short render distance is the case that matters: the client
-                //still holds chunk data out to the server's view distance, so asking whether the chunk is
-                //loaded says yes long after vanilla has stopped drawing anything in it.
-                if (horizontalSq < vanillaRangeSq) {
-                    skipped[0]++;
-                    return;
-                }
                 var segments = BeaconBeamSolver.solve(engine, bx, by, bz);
                 if (segments.isEmpty()) {
                     skipped[2]++;
@@ -151,7 +160,11 @@ public final class DistantBeaconRenderer implements LodPipelineHooks.Renderer {
                 }
                 var mesh = bake(segments, by);
                 if (mesh != null) {
-                    this.built.add(new Built(mesh, bx + 0.5, by, bz + 0.5));
+                    double topY = by;
+                    for (var seg : segments) {
+                        topY = Math.max(topY, seg.yTop());
+                    }
+                    this.built.add(new Built(mesh, bx + 0.5, by, bz + 0.5, topY));
                 }
             });
         } catch (Throwable t) {
