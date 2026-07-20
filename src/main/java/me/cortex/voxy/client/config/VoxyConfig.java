@@ -241,11 +241,16 @@ public class VoxyConfig {
         );
     }
 
-    // Effective distant-render radius in blocks for a Create integration given its chunk cap. 0 (or
-    // negative) follows voxy's LOD radius (32 * sectionRenderDistance); a positive cap is clamped to
-    // it, since there is no LOD terrain to occlude against past the LOD radius.
+    // Effective distant-render radius in BLOCKS for a Create integration given its chunk cap. 0 (or
+    // negative) follows voxy's LOD radius; a positive cap is clamped to it, since there is no LOD
+    // terrain to occlude against past the LOD radius.
+    //
+    // sectionRenderDistance counts 32-chunk sections, so the radius is 32*16*srd blocks - the same
+    // expression getFarEntityRenderDistanceBlocks and HierarchicalOcclusionTraverser use. Dropping the
+    // 16 gives the radius in chunks, which every Create distant renderer would then read as blocks and
+    // stop drawing at a sixteenth of the LOD range while the terrain under it kept going.
     public double createLodRadius() {
-        return 32.0 * this.sectionRenderDistance;
+        return 32.0 * 16.0 * this.sectionRenderDistance;
     }
 
     public double createRenderDistance(int maxChunks) {
