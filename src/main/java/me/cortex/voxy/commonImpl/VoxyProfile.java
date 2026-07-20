@@ -55,8 +55,32 @@ public final class VoxyProfile {
         }
     }
 
+    //GPU-side samples, kept apart from the CPU sections because they answer a different question. GPU
+    //work is submitted in microseconds and finishes whenever it finishes, so a pass that halves the
+    //frame rate leaves no CPU time behind - a profile that finds nothing on the CPU has not found
+    //nothing.
+    private static final Map<String, Entry> GPU = new ConcurrentHashMap<>();
+    private static volatile int gpuSamples;
+
+    public static void recordGpuMillis(String label, double millis) {
+        if (!enabled) {
+            return;
+        }
+        var entry = GPU.computeIfAbsent(label, k -> new Entry());
+        entry.nanos.add((long) (millis * 1.0e6));
+        entry.calls.increment();
+    }
+
+    public static void noteGpuFrame() {
+        if (enabled) {
+            gpuSamples++;
+        }
+    }
+
     public static void start() {
         ENTRIES.clear();
+        GPU.clear();
+        gpuSamples = 0;
         windowStartNanos = System.nanoTime();
         enabled = true;
     }
@@ -99,7 +123,25 @@ public final class VoxyProfile {
         sb.append(String.format("  %-28s %9s %9.1f %9.2f%n", "== render thread total", "",
                 renderTotal / 1.0e6, (renderTotal / 1.0e6) / (windowMs / 1000.0)));
         sb.append("  ms/s on the render thread is milliseconds lost per second of play; anything not\n");
-        sb.append("  marked 'on rt' is worker time and only costs frames through contention.");
+        sb.append("  marked 'on rt' is worker time and only costs frames through contention.\n");
+
+        if (GPU.isEmpty()) {
+            sb.append("  (no GPU samples - the pipeline did not run, or timer queries are unsupported)");
+            return sb.toString();
+        }
+        var gpuRows = new ArrayList<Map.Entry<String, Entry>>(GPU.entrySet());
+        gpuRows.sort((a, b) -> Long.compare(b.getValue().nanos.sum(), a.getValue().nanos.sum()));
+        double gpuTotalPerFrame = 0;
+        sb.append(String.format("  GPU passes over %,d sampled frames:%n", gpuSamples));
+        for (var row : gpuRows) {
+            var e = row.getValue();
+            long calls = e.calls.sum();
+            double perFrame = calls == 0 ? 0 : (e.nanos.sum() / 1.0e6) / calls;
+            gpuTotalPerFrame += perFrame;
+            sb.append(String.format("  %-28s %19.3f ms/frame%n", row.getKey(), perFrame));
+        }
+        sb.append(String.format("  %-28s %19.3f ms/frame%n", "== gpu total", gpuTotalPerFrame));
+        sb.append("  16.7 ms/frame is the whole 60fps budget, spent inside voxy alone.");
         return sb.toString();
     }
 }
