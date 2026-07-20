@@ -81,6 +81,8 @@ public class VoxyCommands {
                                 .executes(ctx -> occlusionCapture(ctx, 20))
                                 .then(Commands.argument("seconds", IntegerArgumentType.integer(1, 120))
                                         .executes(ctx -> occlusionCapture(ctx, IntegerArgumentType.getInteger(ctx, "seconds"))))))
+                .then(Commands.literal("createmem")
+                        .executes(VoxyCommands::dumpCreateMemory))
                 .then(Commands.literal("kinetics")
                         .executes(VoxyCommands::dumpKinetics))
                 .then(Commands.literal("ship")
@@ -226,6 +228,19 @@ public class VoxyCommands {
         }
         String msg = sb.toString();
         me.cortex.voxy.common.Logger.info("[beacons]\n" + msg);
+        ctx.getSource().sendSuccess(() -> Component.literal(msg), false);
+        return 1;
+    }
+
+    //What the distant Create snapshots cost, split GPU vs CPU source. The ratio is the input to
+    //deciding which subsystems are worth moving to storage.
+    private static int dumpCreateMemory(CommandContext<CommandSourceStack> ctx) {
+        if (!net.neoforged.fml.ModList.get().isLoaded("create")) {
+            ctx.getSource().sendSuccess(() -> Component.literal("create not loaded"), false);
+            return 0;
+        }
+        String msg = me.cortex.voxy.client.compat.create.CreateMemoryReport.dump();
+        me.cortex.voxy.common.Logger.info(msg);
         ctx.getSource().sendSuccess(() -> Component.literal(msg), false);
         return 1;
     }

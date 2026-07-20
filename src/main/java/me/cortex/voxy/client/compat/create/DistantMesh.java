@@ -39,6 +39,16 @@ public final class DistantMesh {
     private final int vbo;
     private final int quadCount;
 
+    public int quadCount() {
+        return this.quadCount;
+    }
+
+    //Vertex bytes held on the GPU. The shared index buffer is not counted - it is one allocation for
+    //every mesh in the game, so charging it per mesh would say the wrong thing about what a mesh costs.
+    public long gpuByteSize() {
+        return (long) this.quadCount * 4L * STRIDE;
+    }
+
     DistantMesh(ByteBuffer vertexData, int quadCount) {
         this.quadCount = quadCount;
         ensureIndexCapacity(quadCount);
