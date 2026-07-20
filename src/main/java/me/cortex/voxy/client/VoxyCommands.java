@@ -68,6 +68,8 @@ public class VoxyCommands {
                         .then(Commands.argument("attemptRepair", BoolArgumentType.bool())
                                 .executes(ctx->verifyTLNs(ctx, BoolArgumentType.getBool(ctx, "attemptRepair"))))
                 )
+                .then(Commands.literal("beacons")
+                        .executes(VoxyCommands::dumpBeacons))
                 .then(Commands.literal("probe")
                         .then(Commands.argument("x", IntegerArgumentType.integer())
                                 .then(Commands.argument("y", IntegerArgumentType.integer())
@@ -194,6 +196,40 @@ public class VoxyCommands {
     //Dumps the kinetic snapshot pipeline: config gates, draw counters, queue/sweep state, recent
     //capture attempts (renderer + vertex counts) and the buckets near the camera. Run it standing at
     //a broken machine: it distinguishes captured-nothing / captured-garbage / captured-but-not-drawn.
+    //The beacon index has to be verifiable before anything draws from it, or a missing beam is
+    //ambiguous between "never indexed" and "indexed but not rendered". Persistent=false means the
+    //storage stack has no aux table and the index is memory-only for this session.
+    private static int dumpBeacons(CommandContext<CommandSourceStack> ctx) {
+        var mc = net.minecraft.client.Minecraft.getInstance();
+        var engine = WorldIdentifier.ofEngineNullable(mc.level);
+        if (engine == null) {
+            ctx.getSource().sendFailure(Component.translatable("No voxy world engine for this dimension"));
+            return 1;
+        }
+        var index = engine.getBeaconIndex();
+        var cam = mc.gameRenderer.getMainCamera().getPosition();
+        var sb = new StringBuilder("beacon index: count=").append(index.count())
+                .append(" persistent=").append(index.isPersistent())
+                .append(" | ").append(me.cortex.voxy.client.core.beacon.DistantBeaconRenderer.debugDump())
+                .append('\n');
+        var rows = new java.util.ArrayList<String>();
+        index.forEach((x, y, z) -> {
+            double dx = x - cam.x, dz = z - cam.z;
+            rows.add(String.format("  %d %d %d  (%.0fm)", x, y, z, Math.sqrt(dx * dx + dz * dz)));
+        });
+        java.util.Collections.sort(rows);
+        for (int i = 0; i < Math.min(rows.size(), 32); i++) {
+            sb.append(rows.get(i)).append('\n');
+        }
+        if (rows.size() > 32) {
+            sb.append("  ... ").append(rows.size() - 32).append(" more").append('\n');
+        }
+        String msg = sb.toString();
+        me.cortex.voxy.common.Logger.info("[beacons]\n" + msg);
+        ctx.getSource().sendSuccess(() -> Component.literal(msg), false);
+        return 1;
+    }
+
     private static int dumpKinetics(CommandContext<CommandSourceStack> ctx) {
         if (!net.neoforged.fml.ModList.get().isLoaded("create")) {
             ctx.getSource().sendSuccess(() -> Component.literal("create not loaded"), false);

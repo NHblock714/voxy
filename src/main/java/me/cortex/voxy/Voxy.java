@@ -102,6 +102,12 @@ public class Voxy {
                 //Ship-borne kinetics render natively (a ship is one connected drivetrain - copies
                 //cannot keep adjacent shafts in sync); the cull exempts them entirely.
             }
+
+            //Beacon beams derived from the voxel store, so one shows up whether or not its chunk was
+            //ever loaded this session. Vanilla, not create - registered unconditionally.
+            var beaconRenderer = new me.cortex.voxy.client.core.beacon.DistantBeaconRenderer();
+            NeoForge.EVENT_BUS.register(beaconRenderer);
+            me.cortex.voxy.client.compat.LodPipelineHooks.register(beaconRenderer);
         }
     }
 

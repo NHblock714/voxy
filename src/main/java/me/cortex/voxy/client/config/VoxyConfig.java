@@ -52,6 +52,9 @@ public class VoxyConfig {
     // Create: hold a frozen client-side snapshot of contraptions (bearings/pistons/gantries/mounted)
     // the player walked past, drawn statically beyond the render distance.
     public boolean distantContraptions = true;
+    //Beacon beams past vanilla's own beam range. Not a create integration - it reads the voxel store
+    //directly - but it shares the distant-render hook and radius.
+    public boolean distantBeacons = true;
     // Create: cull placed kinetic machine moving parts (rotating shafts/gears/machine animations)
     // beyond the render distance so they stop floating over the LOD. Off = Create draws them natively.
     public boolean distantKinetics = true;
