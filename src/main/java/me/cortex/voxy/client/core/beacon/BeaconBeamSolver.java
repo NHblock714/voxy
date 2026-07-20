@@ -26,6 +26,13 @@ public final class BeaconBeamSolver {
     public record Segment(int colorRgb, int yBottom, int yTop) {}
 
     public static List<Segment> solve(WorldEngine engine, int bx, int by, int bz) {
+        //A beacon with no base emits nothing. The gate is in BeaconBlockEntity.getBeamSections, which
+        //returns an empty list while levels == 0 - the beam segments are still computed and stored, they
+        //are just never handed out, so neither the vanilla renderer nor Quark's replacement draws them.
+        //Reading tick() alone suggests otherwise and is how this was missed.
+        if (!hasBase(engine, bx, by, bz)) {
+            return List.of();
+        }
         var segments = new ArrayList<Segment>();
         int currentColor = 0xFFFFFF;
         int segmentBottom = by + 1;
@@ -61,6 +68,13 @@ public final class BeaconBeamSolver {
                         } catch (Exception e) {
                             state = null;
                         }
+                        if (state != null && isRedirector(state)) {
+                            //Quark's Beacon Redirection turns the beam at a corundum cluster, so it stops
+                            //being a vertical column and this solver cannot describe it. Drawing the
+                            //straight beam anyway would put a beam through terrain the real one turns
+                            //away from - worse than drawing none until redirection is implemented.
+                            return List.of();
+                        }
                         Integer tint = state == null ? null : tintOf(state);
                         if (tint != null) {
                             //Vanilla's rule: the first coloured block replaces white outright, and only
@@ -75,10 +89,11 @@ public final class BeaconBeamSolver {
                                 segmentBottom = y;
                             }
                         } else if (state != null && isBeamStopper(mapper, blockId, state)) {
-                            if (y > segmentBottom) {
-                                segments.add(new Segment(currentColor, segmentBottom, y));
-                            }
-                            return segments;
+                            //Vanilla clears checkingBeamSections here rather than keeping what it has, so
+                            //an obstructed beacon shows no beam at all - not one cut off at the ceiling.
+                            //A beacon under a roof is the ordinary case of this and looked, before, like
+                            //an unlit beacon emitting a stub.
+                            return List.of();
                         }
                     }
                     y++;
@@ -94,6 +109,40 @@ public final class BeaconBeamSolver {
         return segments;
     }
 
+    //Only the first pyramid layer, because only levels != 0 matters here - the higher layers change the
+    //powers on offer, not whether there is a beam. Vanilla's updateBase walks 3x3 up to 9x9 for the same
+    //first answer.
+    private static boolean hasBase(WorldEngine engine, int bx, int by, int bz) {
+        for (int dx = -1; dx <= 1; dx++) {
+            for (int dz = -1; dz <= 1; dz++) {
+                if (!isBaseBlock(engine, bx + dx, by - 1, bz + dz)) {
+                    return false;
+                }
+            }
+        }
+        return true;
+    }
+
+    private static boolean isBaseBlock(WorldEngine engine, int x, int y, int z) {
+        var section = engine.acquireIfExists(0, x >> 5, y >> 5, z >> 5);
+        if (section == null) {
+            //The layer under the beacon was never ingested, so there is nothing to justify a beam with
+            return false;
+        }
+        try {
+            long voxel = section.get((x & 31) | ((z & 31) << 5) | ((y & 31) << 10));
+            if (voxel == 0 || Mapper.isAir(voxel)) {
+                return false;
+            }
+            return engine.getMapper().getBlockStateFromBlockId(Mapper.getBlockId(voxel))
+                    .is(net.minecraft.tags.BlockTags.BEACON_BASE_BLOCKS);
+        } catch (Exception e) {
+            return false;
+        } finally {
+            section.release();
+        }
+    }
+
     //The vanilla hook for "this block tints a beacon beam" - stained glass and panes implement it, and so
     //do modded blocks that opt in, without any of them needing a Level to ask
     private static Integer tintOf(BlockState state) {
@@ -101,6 +150,17 @@ public final class BeaconBeamSolver {
             return beam.getColor().getTextureDiffuseColor();
         }
         return null;
+    }
+
+    //What Quark turns a beam on: corundum clusters when its Corundum module is on, amethyst otherwise.
+    //Matched by registry name so this needs no compile-time dependency on Quark, and costs nothing in a
+    //game without it - the amethyst check answers first for every block that is not a cluster.
+    private static boolean isRedirector(BlockState state) {
+        if (state.is(net.minecraft.world.level.block.Blocks.AMETHYST_CLUSTER)) {
+            return true;
+        }
+        var key = net.minecraft.core.registries.BuiltInRegistries.BLOCK.getKey(state.getBlock());
+        return key != null && key.getPath().endsWith("corundum_cluster");
     }
 
     //Vanilla kills the beam on anything that blocks all light, bedrock excepted
