@@ -227,12 +227,92 @@ public class ModelFactory {
         }
     }
 
+    //Retire a bake that threw. The state MUST end up mapped: leaving idMappings at -1 makes
+    //RenderDataFactory raise IdNotYetComputedException for every section containing it, and
+    //RenderGenerationService re-queues that task with no attempt cap - the workers would spin on it
+    //forever and pin the sections they hold. Model id 0 is read as air (RenderDataFactory's
+    //`modelId == 0` branch), so the state simply renders as nothing at LOD range, and the mapping
+    //also stops addEntry from queueing it again.
+    private void retireFailedBake(int blockId) {
+        //Two throw sites fire after the mapping was already set correctly; do not turn a block that
+        //actually baked into air.
+        if (this.idMappings[blockId] == -1) {
+            this.idMappings[blockId] = 0;
+        }
+        this.blockStatesInFlightLock.lock();
+        try {
+            this.blockStatesInFlight.remove(blockId);
+        } finally {
+            this.blockStatesInFlightLock.unlock();
+        }
+    }
+
+    //Per-block, because Logger.error also puts a line in chat and a block like IE's conveyor brings
+    //dozens of states with it.
+    private static final ObjectSet<Block> LOGGED_BAKE_FAILURE = new ObjectOpenHashSet<>();
+
+    //What processTextureBakeResult has claimed so far, so a throw partway through can be undone.
+    //Bakery thread only. An orphaned model id is not harmless: it stays in modelTexture2id, so a
+    //later state that bakes to identical textures dedups onto it and inherits a slot whose model
+    //data and atlas tile were never uploaded, with a zeroed metadata entry that reads as "all six
+    //faces exist" - garbage geometry rather than the air fallback.
+    private ModelEntry pendingEntry;
+    private int pendingModelId = -1;
+    private int pendingBiomeColourEntries = -1;
+    private ModelBakeResultUpload pendingUpload;
+
+    private void rollbackPendingBake() {
+        if (this.pendingEntry != null) {
+            this.modelTexture2id.removeInt(this.pendingEntry);
+            //Ids are handed out as modelTexture2id.size(), so dropping the entry hands this id to the
+            //next model. Anything already keyed to it has to go back, or that model inherits it.
+            //The fluid slot: only written when the model has one, so a reusing model would keep the
+            //stale value and getFluidClientStateId would hand back a fluid it never declared.
+            this.fluidStateLUT[this.pendingModelId] = -1;
+            //The biome-colour list: its entries are (modelId, state) pairs, and addBiome writes each
+            //one straight into MODEL_SIZE*modelId's tint field - a stale pair repaints whatever model
+            //ends up with the id, on the next biome that streams in.
+            while (this.modelsRequiringBiomeColours.size() > this.pendingBiomeColourEntries) {
+                this.modelsRequiringBiomeColours.remove(this.modelsRequiringBiomeColours.size() - 1);
+            }
+            this.pendingEntry = null;
+            this.pendingModelId = -1;
+            this.pendingBiomeColourEntries = -1;
+        }
+        if (this.pendingUpload != null) {
+            this.pendingUpload.free();
+            this.pendingUpload = null;
+        }
+    }
+
+    private void reportBakeFailure(BlockState state, Throwable t) {
+        boolean first;
+        synchronized (LOGGED_BAKE_FAILURE) {
+            first = LOGGED_BAKE_FAILURE.add(state.getBlock());
+        }
+        if (first) {
+            Logger.error("Model bake failed for " + state + "; this block renders as air at LOD range", t);
+        }
+    }
+
     private boolean processModelResult() {
         var bake = this.blockBakeQueue.poll();
         if (bake == null) return false;
         ColourDepthTextureData[] textureData = new ColourDepthTextureData[6];
 
-        int flags = this.bakery2.renderToOutput(bake.blockId, bake.state, this.bakeScratchBuffer);
+        //Baking runs someone else's model code on our worker thread. A model that throws used to take
+        //the whole bakery down with it: the thread's uncaught handler stops the loop, every later block
+        //silently never bakes, and the next tick rethrows on the render thread. The guard covers the
+        //result handling too, not just the bake - a state whose fluid failed earlier throws from
+        //processTextureBakeResult, and that would kill the thread just the same.
+        int flags;
+        try {
+            flags = this.bakery2.renderToOutput(bake.blockId, bake.state, this.bakeScratchBuffer);
+        } catch (Throwable t) {
+            this.reportBakeFailure(bake.state, t);
+            this.retireFailedBake(bake.blockId);
+            return true;
+        }
 
 
         {//Create texture data
@@ -292,8 +372,16 @@ public class ModelFactory {
             layer = RenderType.solid();
         }
         boolean centeredGroundCross = (flags & SoftwareModelTextureBakery.FLAG_CENTERED_GROUND_CROSS) != 0;
-        var bakeResult = this.processTextureBakeResult(
-                bake.blockId, bake.state, textureData, isShaded, hasDarkenedTextures, layer, centeredGroundCross);
+        ModelBakeResultUpload bakeResult;
+        try {
+            bakeResult = this.processTextureBakeResult(
+                    bake.blockId, bake.state, textureData, isShaded, hasDarkenedTextures, layer, centeredGroundCross);
+        } catch (Throwable t) {
+            this.reportBakeFailure(bake.state, t);
+            this.rollbackPendingBake();
+            this.retireFailedBake(bake.blockId);
+            return true;
+        }
         if (bakeResult!=null) {
             this.uploadResults.add(bakeResult);
         }
@@ -457,6 +545,9 @@ public class ModelFactory {
                 //NOTE: we set the mapping at the very end so that race conditions with this and getMetadata dont occur
                 //this.idMappings[blockId] = modelId;
                 this.modelTexture2id.put(entry, modelId);
+                this.pendingEntry = entry;
+                this.pendingModelId = modelId;
+                this.pendingBiomeColourEntries = this.modelsRequiringBiomeColours.size();
             }
         }
 
@@ -473,6 +564,7 @@ public class ModelFactory {
 
 
         ModelBakeResultUpload uploadResult = new ModelBakeResultUpload();
+        this.pendingUpload = uploadResult;
         uploadResult.modelId = modelId;
         long uploadPtr = uploadResult.model.address;
 
@@ -725,6 +817,10 @@ public class ModelFactory {
         }
         this.blockStatesInFlightLock.unlock();
 
+        this.pendingEntry = null;
+        this.pendingModelId = -1;
+        this.pendingBiomeColourEntries = -1;
+        this.pendingUpload = null;
         return uploadResult;
     }
 

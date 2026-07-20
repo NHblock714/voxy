@@ -25,6 +25,8 @@ import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.levelgen.SingleThreadedRandomSource;
 import net.minecraft.world.level.lighting.LevelLightEngine;
 import net.minecraft.world.level.material.FluidState;
+import net.minecraft.client.resources.model.BakedModel;
+import net.neoforged.neoforge.client.ChunkRenderTypeSet;
 import net.neoforged.neoforge.client.model.data.ModelData;
 import org.jetbrains.annotations.Nullable;
 import org.joml.Matrix4f;
@@ -131,7 +133,7 @@ public class SoftwareModelTextureBakery {
         //null-layer query skips that gate entirely (same shape as the contraption mesh path, which
         //renders every copycat correctly)
         RenderType quadQueryLayer = me.cortex.voxy.commonImpl.compat.CreateCopycatCompat.isCopycatState(state)
-                ? null : layer;
+                ? null : resolveQueryLayer(model, modelState, modelData, layer);
 
         for (Direction direction : new Direction[] { Direction.DOWN, Direction.UP, Direction.NORTH, Direction.SOUTH,
                 Direction.WEST, Direction.EAST, null }) {
@@ -322,6 +324,34 @@ public class SoftwareModelTextureBakery {
     private static final long SINGLE_FACE_OUTPUT_SIZE = (ModelFactory.MODEL_TEXTURE_SIZE
             * ModelFactory.MODEL_TEXTURE_SIZE) * 8;
     // Faces are appended in direction order: down, up, north, south, west, east.
+
+    //The layer to hand getQuads. It has to come from the MODEL's declared set, not from the block's
+    //registered chunk render type: those disagree more often than one would hope, and the chunk mesher
+    //only ever queries what the model declares, so a model is within its rights to assume it never
+    //sees anything else. Immersive Engineering's conveyor is the case that found this - it declares
+    //{cutout, translucent} and keys an internal per-layer cache on exactly those, so being asked for
+    //the block's registered solid() handed it a null cache and it threw.
+    //A copycat is the deliberate exception and never reaches here; its gate is bypassed with null.
+    private static RenderType resolveQueryLayer(BakedModel model, BlockState modelState, ModelData modelData,
+                                                RenderType layer) {
+        ChunkRenderTypeSet declared;
+        try {
+            declared = model.getRenderTypes(modelState, new SingleThreadedRandomSource(42L), modelData);
+        } catch (Throwable t) {
+            //A model that cannot even report its layers is not going to survive being queried for one
+            return layer;
+        }
+        if (declared == null || declared.isEmpty() || declared.contains(layer)) {
+            return layer;
+        }
+        //Not declared: take the model at its word and ask for something it does claim to emit, rather
+        //than nothing at all - the final opaque/cutout/translucent call is made from the baked pixels
+        //afterwards, so querying a neighbouring layer costs correctness nothing here.
+        for (RenderType candidate : declared) {
+            return candidate;
+        }
+        return layer;
+    }
 
     public int renderToOutput(int blockId, BlockState state, long outputBuffer) {
         MemoryUtil.memSet(outputBuffer, 0, 16 * 16 * 8 * 6);
