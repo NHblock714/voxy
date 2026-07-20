@@ -20,6 +20,9 @@ import java.util.List;
 import java.util.function.LongConsumer;
 
 public class RocksDBStorageBackend extends StorageBackend {
+    private static final String WORLD_SECTIONS_CF = "world_sections";
+    private static final String ID_MAPPINGS_CF = "id_mappings";
+
     private final RocksDB db;
     private final ColumnFamilyHandle worldSections;
     private final ColumnFamilyHandle idMappings;
@@ -76,11 +79,17 @@ public class RocksDBStorageBackend extends StorageBackend {
                 .setFilterPolicy(filter)
         );
 
-        final List<ColumnFamilyDescriptor> cfDescriptors = Arrays.asList(
-            new ColumnFamilyDescriptor(RocksDB.DEFAULT_COLUMN_FAMILY, cfOpts),
-            new ColumnFamilyDescriptor("world_sections".getBytes(), cfWorldSecOpts),
-            new ColumnFamilyDescriptor("id_mappings".getBytes(), cfOpts)
-        );
+        //Every column family present on disk has to be named at open time or RocksDB refuses the whole
+        //database with "Column families not opened: <name>" - so a store written by a build that knows
+        //one more family than this one would be unopenable rather than merely missing a feature. Ask the
+        //store what it holds and open all of it; the ones we have no use for cost an unread handle.
+        final List<ColumnFamilyDescriptor> cfDescriptors = new ArrayList<>();
+        cfDescriptors.add(new ColumnFamilyDescriptor(RocksDB.DEFAULT_COLUMN_FAMILY, cfOpts));
+        cfDescriptors.add(new ColumnFamilyDescriptor(WORLD_SECTIONS_CF.getBytes(), cfWorldSecOpts));
+        cfDescriptors.add(new ColumnFamilyDescriptor(ID_MAPPINGS_CF.getBytes(), cfOpts));
+        for (String extra : listExtraColumnFamilies(path)) {
+            cfDescriptors.add(new ColumnFamilyDescriptor(extra.getBytes(), cfOpts));
+        }
 
         final DBOptions options = new DBOptions()
                 //.setUnorderedWrite(true)
@@ -117,12 +126,38 @@ public class RocksDBStorageBackend extends StorageBackend {
             this.closeList.add(bCache);
             this.closeList.addAll(handles);
 
+            //Handles come back positionally against cfDescriptors, and the two we use are added there
+            //before any discovered family, so these indices hold whatever else the store contains.
             this.worldSections = handles.get(1);
             this.idMappings = handles.get(2);
 
             this.db.flushWal(true);
         } catch (RocksDBException e) {
             throw new RuntimeException(e);
+        }
+    }
+
+    //Families the store holds beyond the ones this build uses. A store that does not exist yet, or that
+    //cannot be read here, yields nothing: open() is then creating it, and createMissingColumnFamilies
+    //puts the known set in place.
+    private static List<String> listExtraColumnFamilies(String path) {
+        if (!new File(path).exists()) {
+            return List.of();
+        }
+        try (var probeOpts = new Options()) {
+            List<String> extras = new ArrayList<>();
+            for (byte[] name : RocksDB.listColumnFamilies(probeOpts, path)) {
+                String cf = new String(name);
+                if (cf.equals(new String(RocksDB.DEFAULT_COLUMN_FAMILY))
+                        || cf.equals(WORLD_SECTIONS_CF) || cf.equals(ID_MAPPINGS_CF)) {
+                    continue;
+                }
+                extras.add(cf);
+            }
+            return extras;
+        } catch (RocksDBException e) {
+            //Not a readable store - let open() produce the real error instead of masking it here
+            return List.of();
         }
     }
 
