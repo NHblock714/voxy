@@ -70,6 +70,10 @@ public final class DistantContraptionManager {
     }
 
     private static final Map<UUID, Snapshot> SNAPSHOTS = new ConcurrentHashMap<>();
+    //Read from storage on world entry and baked a few per tick, nearest first, so re-entering a world
+    //with a lot of stored structures does not stall on one frame's worth of mesh uploads.
+    private static final List<ContraptionStore.Stored> PENDING = new ArrayList<>();
+    private static final int BAKES_PER_TICK = 2;
     private static final PoseStack SCRATCH_POSE = new PoseStack();
 
     //Diagnostics for /voxy debug trains
@@ -222,11 +226,21 @@ public final class DistantContraptionManager {
             snap.lastSeenMs = now;
         }
 
+        var storage = storageFor(level);
         for (var entry : SNAPSHOTS.entrySet()) {
             if (!seenThisTick.contains(entry.getKey())) {
-                entry.getValue().live = false;
+                var snap = entry.getValue();
+                //The tick it stops being live is the tick its pose stops changing, so that is when the
+                //record is worth writing. Writing while live would rewrite the same blocks every tick
+                //for a pose that is about to change again.
+                if (snap.live && storage != null) {
+                    ContraptionStore.save(storage, entry.getKey(), snap);
+                }
+                snap.live = false;
             }
         }
+
+        bakePending(camX, camY, camZ, dimId);
 
         //Leave-behinds are permanent while far away: the entity drops off the client at the server's
         //entity tracking range (a few dozen blocks), far inside the LOD radius, so any time-based
@@ -323,6 +337,87 @@ public final class DistantContraptionManager {
         return CarriageMeshBaker.bake(source.blocks(), source.modelData());
     }
 
+
+    private static me.cortex.voxy.common.config.section.SectionStorage storageFor(ClientLevel level) {
+        var engine = me.cortex.voxy.commonImpl.WorldIdentifier.ofEngineNullable(level);
+        return engine == null ? null : engine.storage;
+    }
+
+    //Called once when a world's stored snapshots are read, before any of them are baked
+    public static void loadStored(ClientLevel level) {
+        PENDING.clear();
+        var storage = storageFor(level);
+        if (storage == null) {
+            return;
+        }
+        var stored = ContraptionStore.loadAll(storage);
+        var here = level.dimension().location();
+        for (var entry : stored) {
+            //Another dimension's records stay on disk; they are read again when the player goes there
+            if (here.equals(entry.dim()) && !SNAPSHOTS.containsKey(entry.id())) {
+                PENDING.add(entry);
+            }
+        }
+        if (!PENDING.isEmpty()) {
+            me.cortex.voxy.common.Logger.info("Restored " + PENDING.size() + " distant contraption(s) for " + here);
+        }
+    }
+
+    //Bakes a few of the restored snapshots per tick, nearest first. Baking uploads a GL buffer, so doing
+    //all of them at once on world entry is a visible stall for exactly the worlds that have enough
+    //stored structures to be worth restoring.
+    private static void bakePending(double camX, double camY, double camZ, ResourceLocation dimId) {
+        if (PENDING.isEmpty()) {
+            return;
+        }
+        for (int done = 0; done < BAKES_PER_TICK && !PENDING.isEmpty(); done++) {
+            int best = -1;
+            double bestDistSq = Double.MAX_VALUE;
+            for (int i = 0; i < PENDING.size(); i++) {
+                var entry = PENDING.get(i);
+                double dx = entry.x() - camX, dy = entry.y() - camY, dz = entry.z() - camZ;
+                double distSq = dx * dx + dy * dy + dz * dz;
+                if (distSq < bestDistSq) {
+                    bestDistSq = distSq;
+                    best = i;
+                }
+            }
+            var entry = PENDING.remove(best);
+            if (SNAPSHOTS.containsKey(entry.id())) {
+                continue;
+            }
+            var mesh = bakeBlocks(entry.source());
+            if (mesh == null) {
+                continue;
+            }
+            var snap = new Snapshot();
+            snap.mesh = mesh;
+            snap.source = entry.source();
+            snap.local.set(entry.pose());
+            snap.x = entry.x();
+            snap.y = entry.y();
+            snap.z = entry.z();
+            snap.dim = entry.dim();
+            //Sampled rather than stored: the sampler reads voxy's own voxel store, so it answers for an
+            //unloaded chunk, and a light value taken now matches the terrain the snapshot will be drawn
+            //against. -1 is also the "never refreshed" sentinel the freeze logic reads, so it has to go.
+            var mc = Minecraft.getInstance();
+            if (mc.level != null) {
+                snap.lightPacked = DistantLightSampler.sample(mc.level,
+                        (int) Math.floor(entry.x()), (int) Math.floor(entry.y()), (int) Math.floor(entry.z()));
+            }
+            snap.lastSeenMs = System.currentTimeMillis();
+            //Not live: the entity is not here, which is the whole point of having restored it
+            snap.live = false;
+            SNAPSHOTS.put(entry.id(), snap);
+        }
+        snapshotCount = SNAPSHOTS.size();
+    }
+
+    public static int pendingCount() {
+        return PENDING.size();
+    }
+
     public static Map<UUID, Snapshot> snapshots() {
         return SNAPSHOTS;
     }
@@ -334,6 +429,17 @@ public final class DistantContraptionManager {
         if (snap != null && snap.mesh != null) {
             snap.mesh.close();
         }
+        PENDING.removeIf(entry -> entry.id().equals(id));
+        //And out of storage, or the next world entry restores a structure that was taken apart. This is
+        //the one removal that means "gone", as opposed to the distance and presence checks which only
+        //mean "not here right now".
+        var level = Minecraft.getInstance().level;
+        if (level != null) {
+            var storage = storageFor(level);
+            if (storage != null) {
+                ContraptionStore.remove(storage, id);
+            }
+        }
         snapshotCount = SNAPSHOTS.size();
     }
 
@@ -344,6 +450,7 @@ public final class DistantContraptionManager {
             }
         }
         SNAPSHOTS.clear();
+        PENDING.clear();
         snapshotCount = 0;
     }
 }

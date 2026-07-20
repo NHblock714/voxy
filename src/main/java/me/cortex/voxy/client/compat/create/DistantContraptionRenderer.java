@@ -48,6 +48,15 @@ public final class DistantContraptionRenderer implements LodPipelineHooks.Render
         DistantContraptionManager.update(mc.level, cam.x, cam.y, cam.z, maxDist);
     }
 
+    //Stored snapshots are read once the world is up. Not on login: the voxy world engine for the
+    //dimension does not exist yet at that point, so there is nothing to read from.
+    @net.neoforged.bus.api.SubscribeEvent
+    public void onLevelLoad(net.neoforged.neoforge.event.level.LevelEvent.Load event) {
+        if (event.getLevel() instanceof net.minecraft.client.multiplayer.ClientLevel level) {
+            DistantContraptionManager.loadStored(level);
+        }
+    }
+
     @net.neoforged.bus.api.SubscribeEvent
     public void onLogout(net.neoforged.neoforge.client.event.ClientPlayerNetworkEvent.LoggingOut event) {
         DistantContraptionManager.clearAll();
