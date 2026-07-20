@@ -162,8 +162,33 @@ public final class DistantMeshBuilder {
         return this.vertexCount < 4;
     }
 
-    //Uploads and frees the CPU buffer; returns null for empty meshes
-    public DistantMesh build() {
+    //Vertex data ready for the GPU but not on it. Owns the native buffer that the builder gave up, so it
+    //has to be either uploaded or freed - letting the reference go leaks. Exists so assembling a mesh
+    //(pure arithmetic over block models) can happen away from the render thread while the upload, which
+    //is the only part that touches GL, stays on it.
+    public static final class CpuMesh {
+        private ByteBuffer buffer;
+        public final int quadCount;
+
+        private CpuMesh(ByteBuffer buffer, int quadCount) {
+            this.buffer = buffer;
+            this.quadCount = quadCount;
+        }
+
+        public int byteSize() {
+            return this.buffer == null ? 0 : this.buffer.limit();
+        }
+
+        public void free() {
+            if (this.buffer != null) {
+                MemoryUtil.memFree(this.buffer);
+                this.buffer = null;
+            }
+        }
+    }
+
+    //Hands the assembled buffer over; returns null for empty meshes. No GL, safe off the render thread.
+    public CpuMesh assemble() {
         int quadCount = this.vertexCount / 4;
         if (quadCount == 0) {
             MemoryUtil.memFree(this.buffer);
@@ -173,10 +198,27 @@ public final class DistantMeshBuilder {
         //Truncate any trailing partial quad from a capture stream
         this.buffer.flip();
         this.buffer.limit(quadCount * 4 * DistantMesh.STRIDE);
-        var mesh = new DistantMesh(this.buffer, quadCount);
-        MemoryUtil.memFree(this.buffer);
+        var cpu = new CpuMesh(this.buffer, quadCount);
+        //Ownership moves to the CpuMesh - discard() must not free it from under the new owner
         this.buffer = null;
-        return mesh;
+        return cpu;
+    }
+
+    //Render thread only. Consumes the CpuMesh, freeing it whether or not the upload succeeds.
+    public static DistantMesh upload(CpuMesh cpu) {
+        if (cpu == null) {
+            return null;
+        }
+        try {
+            return new DistantMesh(cpu.buffer, cpu.quadCount);
+        } finally {
+            cpu.free();
+        }
+    }
+
+    //Uploads and frees the CPU buffer; returns null for empty meshes
+    public DistantMesh build() {
+        return upload(this.assemble());
     }
 
     //Frees the native buffer without building - for exception paths that abandon a partial bake, so

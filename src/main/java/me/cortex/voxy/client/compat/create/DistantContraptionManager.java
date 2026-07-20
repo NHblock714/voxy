@@ -35,6 +35,11 @@ public final class DistantContraptionManager {
 
     public static final class Snapshot {
         CarriageMeshBaker.BakedCarriage mesh;
+        //The blocks the mesh was built from. Kept because nothing else keeps them: the entity is the
+        //only other copy and it is gone by the time the snapshot matters, and the mesh itself is an
+        //opaque VBO. Without this a snapshot can never be re-baked, only held or lost - which is what
+        //makes the resident set a one-way ratchet. About 12 bytes a block plus the state reference.
+        Source source;
         //M_local from AbstractContraptionEntity.applyLocalTransforms; the world position is kept
         //separately as doubles so the draw can be camera-relative without float world-coord error.
         final Matrix4f local = new Matrix4f();
@@ -61,6 +66,7 @@ public final class DistantContraptionManager {
         public ResourceLocation dim() { return this.dim; }
         public int lightPacked() { return this.lightPacked; }
         public CarriageMeshBaker.BakedCarriage mesh() { return this.mesh; }
+        public Source source() { return this.source; }
     }
 
     private static final Map<UUID, Snapshot> SNAPSHOTS = new ConcurrentHashMap<>();
@@ -132,7 +138,9 @@ public final class DistantContraptionManager {
                 //still produced no mesh (a structure of purely non-MODEL blocks), stop - re-baking a
                 //64KB native buffer every tick forever for a snapshot that can never draw was pure waste.
                 if (!contraption.getBlocks().isEmpty()) {
-                    snap.mesh = bakeContraption(contraption);
+                    var collected = collectBlocks(contraption);
+                    snap.mesh = bakeBlocks(collected);
+                    snap.source = snap.mesh == null ? null : collected;
                     snap.bakeGaveNothing = snap.mesh == null;
                 }
             } else if (snap.bakeGaveNothing) {
@@ -275,7 +283,17 @@ public final class DistantContraptionManager {
         snapshotCount = SNAPSHOTS.size();
     }
 
-    private static CarriageMeshBaker.BakedCarriage bakeContraption(Contraption contraption) {
+    //Everything a bake consumes, kept together because both halves come out of the same walk over the
+    //contraption and both are needed to reproduce it - the copycat model data is read from block entity
+    //nbt that goes away with the entity.
+    public record Source(List<ShapeBlock> blocks,
+                         Map<BlockPos, net.neoforged.neoforge.client.model.data.ModelData> modelData) {
+        public int blockCount() {
+            return this.blocks.size();
+        }
+    }
+
+    private static Source collectBlocks(Contraption contraption) {
         List<ShapeBlock> blocks = new ArrayList<>();
         Map<BlockPos, net.neoforged.neoforge.client.model.data.ModelData> blockEntityData = null;
         for (var entry : contraption.getBlocks().entrySet()) {
@@ -298,7 +316,11 @@ public final class DistantContraptionManager {
                 blockEntityData.put(pos, copycatData);
             }
         }
-        return CarriageMeshBaker.bake(blocks, blockEntityData);
+        return new Source(blocks, blockEntityData);
+    }
+
+    private static CarriageMeshBaker.BakedCarriage bakeBlocks(Source source) {
+        return CarriageMeshBaker.bake(source.blocks(), source.modelData());
     }
 
     public static Map<UUID, Snapshot> snapshots() {
