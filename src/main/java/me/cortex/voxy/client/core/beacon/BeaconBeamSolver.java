@@ -27,9 +27,9 @@ public final class BeaconBeamSolver {
 
     public static List<Segment> solve(WorldEngine engine, int bx, int by, int bz) {
         //A beacon with no base emits nothing. The gate is in BeaconBlockEntity.getBeamSections, which
-        //returns an empty list while levels == 0 - the beam segments are still computed and stored, they
-        //are just never handed out, so neither the vanilla renderer nor Quark's replacement draws them.
-        //Reading tick() alone suggests otherwise and is how this was missed.
+        //returns an empty list while levels == 0 - the segments are still computed and stored, they are
+        //just never handed out, so neither the vanilla renderer nor Quark's replacement draws them.
+        //tick() alone reads as though there were no such gate.
         if (!hasBase(engine, bx, by, bz)) {
             return List.of();
         }
@@ -39,9 +39,9 @@ public final class BeaconBeamSolver {
         boolean anyColorSeen = false;
 
         var mapper = engine.getMapper();
-        //Deliberately not clamped to the build height: vanilla's own last beam segment runs to 1024, and
-        //sections above the world are the cheapest possible acquire - the backend misses, nothing is
-        //deserialised, and no voxel is read.
+        //Not clamped to the build height: vanilla's own last beam segment runs to 1024, and sections
+        //above the world are the cheapest possible acquire - the backend misses, nothing is deserialised,
+        //and no voxel is read.
         int top = by + MAX_SCAN_HEIGHT;
 
         //One acquire per section rather than per block: the column walks 16 blocks of a section before
@@ -89,10 +89,9 @@ public final class BeaconBeamSolver {
                                 segmentBottom = y;
                             }
                         } else if (state != null && isBeamStopper(mapper, blockId, state)) {
-                            //Vanilla clears checkingBeamSections here rather than keeping what it has, so
-                            //an obstructed beacon shows no beam at all - not one cut off at the ceiling.
-                            //A beacon under a roof is the ordinary case of this and looked, before, like
-                            //an unlit beacon emitting a stub.
+                            //Vanilla clears checkingBeamSections here rather than keeping what it has,
+                            //so an obstructed beacon shows no beam at all rather than one cut off at the
+                            //ceiling. A beacon under a roof is the ordinary case.
                             return List.of();
                         }
                     }

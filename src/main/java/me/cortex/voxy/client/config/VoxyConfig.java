@@ -56,9 +56,9 @@ public class VoxyConfig {
     //directly - but it shares the distant-render hook.
     public boolean distantBeacons = true;
     //How far out beams are drawn, in CHUNKS. 0 follows voxy's LOD radius. A beam is a landmark rather
-    //than scenery, so this is deliberately more generous than the machinery caps - but not the terrain
-    //radius, which at the default reaches far enough that a beam is a subpixel line costing a solve
-    //over the voxel store every rebuild.
+    //than scenery, which is why it reaches further than the machinery caps - but not as far as the
+    //terrain radius, where a beam is a subpixel line still costing a solve over the voxel store on
+    //every rebuild.
     public int distantBeaconMaxChunks = 192;
     // Create: cull placed kinetic machine moving parts (rotating shafts/gears/machine animations)
     // beyond the render distance so they stop floating over the LOD. Off = Create draws them natively.
@@ -79,8 +79,8 @@ public class VoxyConfig {
     public int distantTrainMaxChunks = 96;
     public int distantTrackMaxChunks = 96;
     public int distantContraptionMaxChunks = 64;
-    // Kinetics had no cap of its own and followed the LOD radius, which also set its eviction distance -
-    // so its resident set was whatever the player had ever flown past within that radius.
+    // Also bounds kinetics' eviction distance, so the resident set is a spatial working set rather than
+    // everywhere within the LOD radius the player has flown past.
     public int distantKineticMaxChunks = 48;
     // Vertex memory contraption snapshots may hold at once. Over it, the furthest meshes are freed while
     // their block lists stay, so they rebuild on approach instead of being lost - a contraption's source
@@ -88,10 +88,9 @@ public class VoxyConfig {
     // dense structure can cost as much as a hundred small ones.
     public int distantContraptionGpuBudgetMiB = 48;
     // Same for kinetics, except a kinetic snapshot is dropped whole rather than reduced to its source.
-    // Measured at 1.17x, its source is larger than the mesh it produces - almost all of it a recorded
-    // vertex stream that cannot be rebuilt from the block state - so keeping the source to rebuild from
-    // would cost more than the mesh it released. Dropping it entirely and letting the sweep capture it
-    // again when the player returns is the cheaper trade.
+    // Its source measures larger than the mesh it produces - almost all of it a recorded vertex stream
+    // that cannot be rebuilt from the block state - so holding the source to rebuild from costs more
+    // than the mesh it releases. The sweep captures it again when the player returns.
     public int distantKineticGpuBudgetMiB = 32;
     // Aero/sable: render simulated contraptions within this % of voxy's LOD render distance.
     public int simulatedContraptionRenderDistancePercent = 50;

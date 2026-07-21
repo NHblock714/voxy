@@ -15,10 +15,9 @@ public final class SableShipContent {
     //times a frame.
     //
     //The weak reference alone does not let a closed world go: the container holds its own strong Level
-    //field, so caching the container strongly pins the level the weak reference was there to release.
-    //Leaving the world takes the level to null, which used to return early and leave that pin in place
-    //until the next world's first call - so every world exit held the whole previous level, its chunks
-    //and its block entities.
+    //field, so caching the container pins the level the weak reference is there to release. Leaving the
+    //world takes the level to null, and that path has to clear the cache - returning early there holds
+    //the whole previous level, its chunks and its block entities, until the next world's first call.
     private static java.lang.ref.WeakReference<net.minecraft.client.multiplayer.ClientLevel> cachedLevel = new java.lang.ref.WeakReference<>(null);
     private static ClientSubLevelContainer cachedContainer;
 

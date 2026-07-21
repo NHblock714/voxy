@@ -103,9 +103,8 @@ public class MixinClientSubLevelFinalizeLighting {
             return level.getBrightness(LightLayer.SKY, pos);
         }
 
-        //Straight to the voxel store. There used to be a packet-derived cache between these two, but
-        //nothing ever filled it - the method that populated it had no callers - so it answered -1 every
-        //time and every lookup fell through to here anyway, having first taken a static monitor.
+        //Straight to the voxel store: a chunk the client does not have has no brightness to read, and
+        //this is the only remaining source.
         return voxy$readVoxySkyLight(level, pos);
     }
 
