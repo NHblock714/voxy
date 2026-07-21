@@ -95,5 +95,11 @@
   "voxy.config.general.lodBoundaryFadeLength": "LOD 过渡宽度",
   "voxy.config.general.lodBoundaryFadeLength.tooltip": "交接带宽度，单位为方块。加宽后移动变化更渐进，但抖动区域也会更宽。",
   "voxy.config.general.lodBoundaryInset": "LOD 过渡安全内缩",
-  "voxy.config.general.lodBoundaryInset.tooltip": "将过渡外沿从原版渲染距离向内移动，确保交接带后方已有原版区块。"
+  "voxy.config.general.lodBoundaryInset.tooltip": "将过渡外沿从原版渲染距离向内移动，确保交接带后方已有原版区块。",
+  "voxy.config.compat.farPlayers": "远景玩家渲染",
+  "voxy.config.compat.farPlayers.tooltip": "在渲染距离之外绘制其他玩家。若已有其他模组提供该功能请关闭——两套同时运行会在近处玩家旁边多出一个身体",
+  "voxy.config.compat.farPlayerNames": "远景玩家名牌",
+  "voxy.config.compat.farPlayerNames.tooltip": "为远景玩家显示名牌",
+  "voxy.config.compat.shareFarPlayerPosition": "共享我的位置",
+  "voxy.config.compat.shareFarPlayerPosition.tooltip": "允许服务端转发你的位置，让其他玩家在渲染距离外也能看到你"
 }

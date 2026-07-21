@@ -309,6 +309,24 @@ public class VoxyConfigMenu implements ConfigEntryPoint {
                                         ()->CFG.distantBeaconMaxChunks, v->CFG.distantBeaconMaxChunks=v,
                                         new Range(0, 512, 16))
                                         .setFormatter(VoxyConfigMenu::formatCreateDistance)
+                                        .setImpact(OptionImpact.LOW),
+                                //Some server mods ship a far-player renderer of their own. Two of them
+                                //running at once puts a second body next to a player who is standing
+                                //right there, so this needs to be reachable without editing a file.
+                                new BoolOption(
+                                        "voxy:far_players",
+                                        Component.translatable("voxy.config.compat.farPlayers"),
+                                        ()->CFG.enableFarPlayerRendering, v->CFG.enableFarPlayerRendering=v)
+                                        .setImpact(OptionImpact.LOW),
+                                new BoolOption(
+                                        "voxy:far_player_names",
+                                        Component.translatable("voxy.config.compat.farPlayerNames"),
+                                        ()->CFG.renderFarPlayerNames, v->CFG.renderFarPlayerNames=v)
+                                        .setImpact(OptionImpact.LOW),
+                                new BoolOption(
+                                        "voxy:share_far_player_position",
+                                        Component.translatable("voxy.config.compat.shareFarPlayerPosition"),
+                                        ()->CFG.shareFarPlayerPosition, v->CFG.shareFarPlayerPosition=v)
                                         .setImpact(OptionImpact.LOW)
                         ), new Group(
                                 new BoolOption(

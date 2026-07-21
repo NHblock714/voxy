@@ -95,5 +95,11 @@
   "voxy.config.general.lodBoundaryFadeLength": "LOD transition width",
   "voxy.config.general.lodBoundaryFadeLength.tooltip": "Width of the handoff band in blocks. Wider values change more gradually while moving, but make the dithered region wider.",
   "voxy.config.general.lodBoundaryInset": "LOD transition safety inset",
-  "voxy.config.general.lodBoundaryInset.tooltip": "Moves the outer handoff edge inward from vanilla render distance so loaded vanilla terrain remains behind the transition."
+  "voxy.config.general.lodBoundaryInset.tooltip": "Moves the outer handoff edge inward from vanilla render distance so loaded vanilla terrain remains behind the transition.",
+  "voxy.config.compat.farPlayers": "Far player rendering",
+  "voxy.config.compat.farPlayers.tooltip": "Draw other players beyond the render distance. Turn off if another mod already provides this - two far-player renderers put a second body beside a player who is standing right there",
+  "voxy.config.compat.farPlayerNames": "Far player names",
+  "voxy.config.compat.farPlayerNames.tooltip": "Show name tags on far players",
+  "voxy.config.compat.shareFarPlayerPosition": "Share my position",
+  "voxy.config.compat.shareFarPlayerPosition.tooltip": "Let the server relay your position so others can see you beyond their render distance"
 }
