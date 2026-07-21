@@ -129,12 +129,21 @@ final class FarEntityRenderer {
             if (distanceSquared > maximumDistanceSquared) {
                 continue;
             }
-            int chunkX = Mth.floor(positionX) >> 4;
-            int chunkZ = Mth.floor(positionZ) >> 4;
-            boolean realPlayerPresent = level.getPlayerByUUID(tracked.uuid()) != null;
-            if (realPlayerPresent && level.hasChunk(chunkX, chunkZ)
-                    && distanceSquared <= vanillaDistanceSquared) {
-                continue;
+            //Vanilla owns anyone it actually has, and the test for that uses the real entity's own
+            //position - not the tracked copy, which is resampled every half second and so lags a moving
+            //player by several blocks. Deciding from the stale copy lets a player standing well inside
+            //the render distance fail the chunk or distance test for one interval, so a proxy is drawn
+            //over a body vanilla is already drawing, at the position it held half a second ago.
+            var realPlayer = level.getPlayerByUUID(tracked.uuid());
+            if (realPlayer != null) {
+                double rdx = realPlayer.getX() - viewerX;
+                double rdy = realPlayer.getY() - viewerY;
+                double rdz = realPlayer.getZ() - viewerZ;
+                if (rdx * rdx + rdy * rdy + rdz * rdz <= vanillaDistanceSquared
+                        && level.hasChunk(realPlayer.blockPosition().getX() >> 4,
+                                          realPlayer.blockPosition().getZ() >> 4)) {
+                    continue;
+                }
             }
 
             PlayerProxy player = this.playerProxies.get(tracked.uuid());
