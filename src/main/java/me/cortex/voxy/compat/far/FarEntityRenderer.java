@@ -38,6 +38,15 @@ import java.util.UUID;
 import java.util.concurrent.atomic.AtomicInteger;
 
 final class FarEntityRenderer {
+    //Seating a far player on its vehicle can throw from the vehicle's own code; counted rather than
+    //logged per frame, since a contraption that is not ready stays not ready for many frames.
+    private static final java.util.concurrent.atomic.LongAdder FAR_MOUNT_ERRORS =
+            new java.util.concurrent.atomic.LongAdder();
+
+    public static long farMountErrors() {
+        return FAR_MOUNT_ERRORS.sum();
+    }
+
     private static final float WALK_ANIMATION_SCALE = 0.4F;
     private static final AtomicInteger NEXT_PROXY_ID = new AtomicInteger(1_000_000_000);
     private final FarPlayerTracker tracker;
@@ -150,8 +159,17 @@ final class FarEntityRenderer {
                         this.activeProxyVehicles.add(tracked.vehicleUuid());
                     }
                     if (player.getVehicle() != vehicle) {
-                        if (player.isPassenger()) player.stopRiding();
-                        player.startRiding(vehicle);
+                        //Mounting is done so the rider poses against its vehicle, but it runs a vehicle's
+                        //own accept check, and a Create contraption entity answers that by dereferencing
+                        //a contraption it does not have yet - the structure nbt arrives after the entity,
+                        //and this is a render, so it lands in that window whenever a far player is on one.
+                        //Failing to seat costs a pose; throwing costs the frame.
+                        try {
+                            if (player.isPassenger()) player.stopRiding();
+                            player.startRiding(vehicle);
+                        } catch (Throwable t) {
+                            FAR_MOUNT_ERRORS.increment();
+                        }
                     }
                     if (!useLiveVehicle && this.renderedProxyVehicles.add(tracked.vehicleUuid())) {
                         poseStack.pushPose();
