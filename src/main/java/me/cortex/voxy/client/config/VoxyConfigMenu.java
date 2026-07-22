@@ -16,7 +16,6 @@ import net.caffeinemc.mods.sodium.api.config.option.OptionImpact;
 import net.caffeinemc.mods.sodium.api.config.option.Range;
 import net.caffeinemc.mods.sodium.api.config.structure.ConfigBuilder;
 import net.minecraft.client.Minecraft;
-import net.minecraft.ChatFormatting;
 import net.minecraft.network.chat.Component;
 import net.minecraft.resources.ResourceLocation;
 import net.neoforged.fml.ModList;
@@ -151,8 +150,7 @@ public class VoxyConfigMenu implements ConfigEntryPoint {
                                         .setImpact(OptionImpact.HIGH),
                                 new BoolOption(
                                         "voxy:lod_boundary_fade",
-                                        Component.translatable("voxy.config.general.lodBoundaryFade.warning")
-                                                .withStyle(ChatFormatting.RED, ChatFormatting.BOLD),
+                                        Component.translatable("voxy.config.general.lodBoundaryFade"),
                                         ()->CFG.enableLodBoundaryFade, v->CFG.enableLodBoundaryFade=v)
                                         .setImpact(OptionImpact.LOW),
                                 new IntOption(
@@ -361,6 +359,19 @@ public class VoxyConfigMenu implements ConfigEntryPoint {
                                         ()->CFG.kineticEnclosedCulling, v->CFG.kineticEnclosedCulling=v)
                                         .setImpact(OptionImpact.LOW)
                         ).setEnablerInherit(s->createInstalled), new Group(
+                                new BoolOption(
+                                        "voxy:distant_beacons",
+                                        Component.translatable("voxy.config.compat.distantBeacons"),
+                                        ()->CFG.distantBeacons, v->CFG.distantBeacons=v)
+                                        .setImpact(OptionImpact.LOW),
+                                new IntOption(
+                                        "voxy:distant_beacon_distance",
+                                        Component.translatable("voxy.config.compat.distantBeaconDistance"),
+                                        ()->CFG.distantBeaconMaxChunks, v->CFG.distantBeaconMaxChunks=v,
+                                        new Range(0, 512, 16))
+                                        .setFormatter(VoxyConfigMenu::formatCreateDistance)
+                                        .setImpact(OptionImpact.LOW)
+                        ), new Group(
                                 new BoolOption(
                                         "voxy:es_snow_lod",
                                         Component.translatable("voxy.config.compat.esSnowLod"),

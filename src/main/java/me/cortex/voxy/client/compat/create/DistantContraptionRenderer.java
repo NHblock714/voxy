@@ -62,10 +62,10 @@ public final class DistantContraptionRenderer implements LodPipelineHooks.Render
     @Override
     public void render(me.cortex.voxy.client.core.AbstractRenderPipeline pipeline, Viewport<?> viewport, int depthFunc) {
         pipeline.setupAndBindOpaque(viewport);
-        this.renderCommon(pipeline, viewport.MVP, viewport.cameraX, viewport.cameraY, viewport.cameraZ, depthFunc);
+        this.renderCommon(pipeline, viewport, viewport.MVP, viewport.cameraX, viewport.cameraY, viewport.cameraZ, depthFunc);
     }
 
-    private void renderCommon(me.cortex.voxy.client.core.AbstractRenderPipeline pipeline, Matrix4f viewProjection,
+    private void renderCommon(me.cortex.voxy.client.core.AbstractRenderPipeline pipeline, Viewport<?> viewport, Matrix4f viewProjection,
                               double camX, double camY, double camZ, int depthFunc) {
         lastFrameDrawn = 0;
         var snapshots = DistantContraptionManager.snapshots();
@@ -102,6 +102,13 @@ public final class DistantContraptionRenderer implements LodPipelineHooks.Render
                 //ends well inside the render distance, so yielding on distance alone left a ring
                 //(tracking range -> render distance) where neither side drew.
                 if ((distSq < reachSq && snap.live()) || distSq > maxDistSq) {
+                    continue;
+                }
+                //Before any state setup, so a frame with every contraption behind the camera never binds
+                //the shader. The bounds are contraption-local and the frozen pose can rotate them, hence
+                //going through the transform rather than testing an axis-aligned box at the origin.
+                if (viewport != null && !DistantVisibility.isTransformedBoxVisible(
+                        viewport, snap.local(), snap.x(), snap.y(), snap.z(), snap.mesh().localBounds)) {
                     continue;
                 }
 

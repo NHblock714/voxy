@@ -50,11 +50,11 @@ public final class DistantTrainRenderer implements LodPipelineHooks.Renderer {
         //bogeys still go through vanilla-style buffers, which cannot, so they skip there for now.
         pipeline.setupAndBindOpaque(viewport);
         //renderCommon only reads viewProjection (copies via transform.set), never mutates it
-        this.renderCommon(pipeline, viewport.MVP,
+        this.renderCommon(pipeline, viewport, viewport.MVP,
                 viewport.cameraX, viewport.cameraY, viewport.cameraZ, depthFunc);
     }
 
-    private void renderCommon(me.cortex.voxy.client.core.AbstractRenderPipeline pipeline, Matrix4f viewProjection, double camX, double camY, double camZ, int depthFunc) {
+    private void renderCommon(me.cortex.voxy.client.core.AbstractRenderPipeline pipeline, Viewport<?> viewport, Matrix4f viewProjection, double camX, double camY, double camZ, int depthFunc) {
         lastFrameCarriagesDrawn = 0;
         if (DistantTrainManager.isEmpty()) {
             return;
@@ -139,6 +139,22 @@ public final class DistantTrainRenderer implements LodPipelineHooks.Renderer {
                         track.lightPacked = DistantLightSampler.sample(mc.level,
                                 (int) java.lang.Math.floor(px), (int) java.lang.Math.floor(py), (int) java.lang.Math.floor(pz));
                         track.lightSampledAtMs = nowMs;
+                    }
+
+                    //A carriage rotates with its track, so its model-local box cannot be used directly -
+                    //the widest extent is taken as a radius instead, which no rotation can exceed. Also
+                    //covers the bogeys drawn just below, which sit at the same place.
+                    if (viewport != null) {
+                        var cm = entry.mesh().mesh;
+                        float r = Math.max(
+                                Math.max(Math.max(Math.abs(cm.minX), Math.abs(cm.maxX)),
+                                         Math.max(Math.abs(cm.minY), Math.abs(cm.maxY))),
+                                Math.max(Math.abs(cm.minZ), Math.abs(cm.maxZ)));
+                        if (!DistantVisibility.isBoxVisible(viewport,
+                                camX + dx - r, camY + dy - r, camZ + dz - r,
+                                camX + dx + r, camY + dy + r, camZ + dz + r)) {
+                            continue;
+                        }
                     }
 
                     if (!renderStateActive) {

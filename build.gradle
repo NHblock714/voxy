@@ -153,23 +153,17 @@ if (!isInGHA) {
     }
 }
 
-//The mods this fork compiles against are not redistributable, so libs/ is gitignored and a fresh clone
-//has to be populated by hand (see README). The compat sources are not separable from the rest - the
-//mixins, config and Voxy entrypoint all reference them - so a missing jar is a hard stop here rather
-//than several hundred "cannot find symbol" further down.
-def localJars(String... names) {
-    def dir = file("libs/aero-spike")
-    def missing = names.findAll { !new File(dir, it).exists() }
-    if (!missing.isEmpty()) {
-        throw new GradleException("Missing compile-time jars in ${dir}:\n  " + missing.join("\n  ")
-                + "\nSee README.md for where to obtain them.")
-    }
-    return files(names.collect { new File(dir, it) })
-}
-
 configurations {
     sodiumDistribution
+    createDistribution
+    sableDistribution
 }
+
+// Distribution configurations are only containers used to obtain the public mod jars. They must
+// not pull optional mods (or those mods' dependency graphs) into Neo-Voxy's runtime classpath.
+configurations.sodiumDistribution.transitive = false
+configurations.createDistribution.transitive = false
+configurations.sableDistribution.transitive = false
 
 def sodiumVersion = "mc1.21.1-0.8.12-neoforge"
 def sodiumNestedJar = "META-INF/jarjar/net.caffeinemc.sodium-neoforge-0.8.12+mc1.21.1-mod.jar"
@@ -189,6 +183,64 @@ tasks.register("extractSodiumCompileJar", Copy) {
     rename { "sodium-neoforge-0.8.12-mod.jar" }
 }
 
+// Create publishes Ponder and the matching combined Flywheel API/implementation inside its
+// NeoForge distribution. Extracting those exact nested jars avoids hand-maintained libs/ files and
+// guarantees that CI cannot accidentally compile against a mismatched Flywheel or Ponder build.
+def createVersion = "6.0.10+mc1.21.1"
+def createPonderNestedJar = "META-INF/jarjar/ponder-neoforge-1.0.82+mc1.21.1.jar"
+def createFlywheelNestedJar = "META-INF/jarjar/flywheel-neoforge-1.21.1-1.0.6.jar"
+def createCompileDir = layout.buildDirectory.dir("generated/compile-deps/create")
+def createPonderCompileJar = createCompileDir.map { it.file("ponder-neoforge-1.0.82+mc1.21.1.jar") }
+def createFlywheelCompileJar = createCompileDir.map { it.file("flywheel-neoforge-1.21.1-1.0.6.jar") }
+
+tasks.register("extractCreateCompileJars", Sync) {
+    from({
+        zipTree(configurations.createDistribution.singleFile).matching {
+            include createPonderNestedJar
+            include createFlywheelNestedJar
+        }
+    })
+    into(createCompileDir)
+    eachFile { path = name }
+    includeEmptyDirs = false
+    doLast {
+        def missing = [createPonderCompileJar.get().asFile, createFlywheelCompileJar.get().asFile]
+                .findAll { !it.isFile() }
+        if (!missing.isEmpty()) {
+            throw new GradleException("Create ${createVersion} no longer contains the expected "
+                    + "Ponder/Flywheel jars: " + missing.collect { it.name }.join(", "))
+        }
+    }
+}
+
+// Sable likewise ships its companion API and generated Rapier implementation as nested jars.
+def sableVersion = "2.0.3+mc1.21.1"
+def sableCompanionNestedJar = "META-INF/jarjar/sable-companion-common-1.21.1-1.6.0.jar"
+def sableRapierNestedJar = "META-INF/jarjar/dev.ryanhcode.sable.sable-sable_rapier-1.21.1-2.0.3.jar"
+def sableCompileDir = layout.buildDirectory.dir("generated/compile-deps/sable")
+def sableCompanionCompileJar = sableCompileDir.map { it.file("sable-companion-common-1.21.1-1.6.0.jar") }
+def sableRapierCompileJar = sableCompileDir.map { it.file("dev.ryanhcode.sable.sable-sable_rapier-1.21.1-2.0.3.jar") }
+
+tasks.register("extractSableCompileJars", Sync) {
+    from({
+        zipTree(configurations.sableDistribution.singleFile).matching {
+            include sableCompanionNestedJar
+            include sableRapierNestedJar
+        }
+    })
+    into(sableCompileDir)
+    eachFile { path = name }
+    includeEmptyDirs = false
+    doLast {
+        def missing = [sableCompanionCompileJar.get().asFile, sableRapierCompileJar.get().asFile]
+                .findAll { !it.isFile() }
+        if (!missing.isEmpty()) {
+            throw new GradleException("Sable ${sableVersion} no longer contains the expected "
+                    + "companion/Rapier jars: " + missing.collect { it.name }.join(", "))
+        }
+    }
+}
+
 dependencies {
     // To change the versions see the gradle.properties file
     implementation "net.neoforged:neoforge:${project.neoforge_version}"
@@ -200,9 +252,11 @@ dependencies {
 
     implementation("maven.modrinth:lithium:mc1.21.1-0.15.1-neoforge")
 
-    // Create (distant train sampler on the server; client render path is Create-free)
-    compileOnly localJars("create-1.21.1-6.0.10.jar", "ponder-neoforge-1.0.82+mc1.21.1.jar",
-            "flywheel-neoforge-api-1.21.1-1.0.6.jar")
+    // Create and its version-matched nested compile APIs (optional at runtime).
+    createDistribution "maven.modrinth:create:${createVersion}"
+    compileOnly files(configurations.createDistribution)
+    compileOnly files(createPonderCompileJar, createFlywheelCompileJar)
+            .builtBy(tasks.named("extractCreateCompileJars"))
 
     //Sodium's options GUI is extended through this event API; reese's is its own hard dependency.
     compileOnly("maven.modrinth:sodium-options-api:neoforge-1.21.1-1.0.10")
@@ -211,23 +265,21 @@ dependencies {
 
     compileOnly("curse.maven:irisshaders-455508:6661598")
 
-    // sable 2.0.3 contraption-LOD compat (compileOnly): root API jar + jar-in-jar companion/rapier impl.
-    compileOnly localJars("sable-neoforge-1.21.1-2.0.3.jar")
-    compileOnly localJars("sable-companion-common-1.21.1-1.6.0.jar")
-    compileOnly localJars("dev.ryanhcode.sable.sable-sable_rapier-1.21.1-2.0.3.jar")
+    // Sable root API + its version-matched nested companion/Rapier implementation.
+    sableDistribution "maven.modrinth:sable:${sableVersion}"
+    compileOnly files(configurations.sableDistribution)
+    compileOnly files(sableCompanionCompileJar, sableRapierCompileJar)
+            .builtBy(tasks.named("extractSableCompileJars"))
 
     // EclipticSeasons (compileOnly): native snow-LOD compat, gated at runtime on "eclipticseasons".
-    compileOnly localJars("EclipticSeasons-1.21.1-neoforge-0.13.8.4.1.jar")
+    compileOnly("maven.modrinth:ecliptic-seasons:0.13.8.4.1") { transitive = false }
 
     // bits_n_bobs + its azimuth framework, for the cogwheel-chain LOD snapshot (optional at runtime)
-    compileOnly localJars("bits_n_bobs-2.1.11-beta.jar")
-    compileOnly localJars("azimuth-1.4.1.jar")
-
-    // flywheel impl (jarjar'd inside Create at runtime), for the capture gate bypass mixin target
-    compileOnly localJars("flywheel-neoforge-impl-1.21.1-1.0.6.jar")
+    compileOnly("maven.modrinth:create-bits-n-bobs:2.1.11-beta") { transitive = false }
+    compileOnly("maven.modrinth:azimuth-api:1.4.1") { transitive = false }
 
     // EntityCulling (nowheel's base), to read its culled flag for the contraption handover
-    compileOnly localJars("entityculling-neoforge-1.10.5-mc1.21.1.jar")
+    compileOnly("maven.modrinth:entityculling:1.10.5") { transitive = false }
 }
 
 
@@ -253,9 +305,137 @@ java {
 }
 
 jar {
+    // The full nested-dependency archive is only an input to slimJar. Keep it out of build/libs so
+    // users and CI cannot accidentally publish the ~90 MiB intermediate.
+    destinationDirectory.set(layout.buildDirectory.dir("intermediate-jars"))
     from("LICENSE") {
         rename { "${it}_${project.archives_base_name}"}
     }
+}
+
+// Build the distributable JAR without an external Python post-processing step. NeoForge requires
+// nested jarjar archives to remain STORED, so this task rewrites the outer archive explicitly while
+// trimming native libraries that cannot run on the two supported desktop targets (Windows/Linux
+// x86_64). It also removes the Java-9 module descriptors from the two LWJGL extension jars: on a
+// dedicated server those descriptors require the client-only org.lwjgl module before FML can start.
+def slimJarOutput = layout.buildDirectory.file("libs/neo-voxy.jar")
+
+tasks.register('slimJar') {
+    group = 'build'
+    description = 'Creates the trimmed Windows/Linux distributable JAR without external tools'
+    dependsOn tasks.named('jar')
+
+    def sourceJar = tasks.named('jar').flatMap { it.archiveFile }
+    inputs.file(sourceJar)
+    outputs.file(slimJarOutput)
+
+    doLast {
+        def source = sourceJar.get().asFile
+        def target = slimJarOutput.get().asFile
+        target.parentFile.mkdirs()
+
+        def putEntry
+        putEntry = { java.util.zip.ZipOutputStream output, String name, byte[] data,
+                     int requestedMethod, long timestamp ->
+            def entry = new java.util.zip.ZipEntry(name)
+            if (timestamp >= 0L) entry.time = timestamp
+            int method = requestedMethod == java.util.zip.ZipEntry.STORED
+                    ? java.util.zip.ZipEntry.STORED : java.util.zip.ZipEntry.DEFLATED
+            entry.method = method
+            if (method == java.util.zip.ZipEntry.STORED) {
+                def crc = new java.util.zip.CRC32()
+                crc.update(data)
+                entry.size = data.length
+                entry.compressedSize = data.length
+                entry.crc = crc.value
+            }
+            output.putNextEntry(entry)
+            if (data.length != 0) output.write(data)
+            output.closeEntry()
+        }
+
+        def rewriteNested = { byte[] inputBytes, Closure<Boolean> shouldDrop, String label ->
+            def bytesOut = new ByteArrayOutputStream(inputBytes.length)
+            int removed = 0
+            new java.util.zip.ZipInputStream(new ByteArrayInputStream(inputBytes)).withCloseable { input ->
+                new java.util.zip.ZipOutputStream(bytesOut).withCloseable { output ->
+                    java.util.zip.ZipEntry entry
+                    while ((entry = input.nextEntry) != null) {
+                        byte[] data = entry.directory ? new byte[0] : input.readAllBytes()
+                        if (shouldDrop.call(entry.name)) {
+                            removed++
+                        } else {
+                            putEntry(output, entry.name, data, entry.method, entry.time)
+                        }
+                        input.closeEntry()
+                    }
+                }
+            }
+            logger.lifecycle("  ${label}: removed ${removed} unused entries")
+            return bytesOut.toByteArray()
+        }
+
+        boolean foundRocks = false
+        boolean foundSqlite = false
+        int foundLwjgl = 0
+        def rocksKeep = ['librocksdbjni-win64.dll', 'librocksdbjni-linux64.so'] as Set
+        def sqliteKeep = ['org/sqlite/native/Windows/x86_64/',
+                          'org/sqlite/native/Linux/x86_64/']
+
+        if (target.exists() && !target.delete()) {
+            throw new GradleException("Could not replace ${target}")
+        }
+
+        new java.util.zip.ZipFile(source).withCloseable { input ->
+            new java.util.zip.ZipOutputStream(new BufferedOutputStream(new FileOutputStream(target))).withCloseable { output ->
+                def entries = input.entries()
+                while (entries.hasMoreElements()) {
+                    def entry = entries.nextElement()
+                    byte[] data = entry.directory ? new byte[0] : input.getInputStream(entry).withCloseable { it.readAllBytes() }
+                    String name = entry.name
+
+                    if (name.startsWith('META-INF/jarjar/rocksdbjni-') && name.endsWith('.jar')) {
+                        foundRocks = true
+                        data = rewriteNested(data, { String nestedName ->
+                            String baseName = nestedName.substring(nestedName.lastIndexOf('/') + 1)
+                            boolean nativeFile = baseName.startsWith('librocksdbjni-') &&
+                                    (baseName.endsWith('.so') || baseName.endsWith('.dll') || baseName.endsWith('.jnilib'))
+                            return nativeFile && !rocksKeep.contains(baseName)
+                        }, 'rocksdbjni')
+                    } else if (name.startsWith('META-INF/jarjar/sqlite-jdbc-') && name.endsWith('.jar')) {
+                        foundSqlite = true
+                        data = rewriteNested(data, { String nestedName ->
+                            if (!nestedName.startsWith('org/sqlite/native/') || nestedName.endsWith('/')) return false
+                            return !sqliteKeep.any { nestedName.startsWith(it) }
+                        }, 'sqlite-jdbc')
+                    } else if ((name.startsWith('META-INF/jarjar/lwjgl-zstd-') ||
+                                name.startsWith('META-INF/jarjar/lwjgl-lmdb-')) && name.endsWith('.jar')) {
+                        foundLwjgl++
+                        data = rewriteNested(data, { String nestedName ->
+                            nestedName == 'META-INF/versions/9/module-info.class'
+                        }, name.substring(name.lastIndexOf('/') + 1))
+                    }
+
+                    // Every nested archive must be random-accessible to NeoForge's jarjar loader.
+                    int method = name.startsWith('META-INF/jarjar/') && name.endsWith('.jar')
+                            ? java.util.zip.ZipEntry.STORED : entry.method
+                    putEntry(output, name, data, method, entry.time)
+                }
+            }
+        }
+
+        if (!foundRocks || !foundSqlite || foundLwjgl != 2) {
+            target.delete()
+            throw new GradleException("Expected nested dependencies were not found " +
+                    "(rocksdb=${foundRocks}, sqlite=${foundSqlite}, lwjgl=${foundLwjgl}/2)")
+        }
+        logger.lifecycle(String.format(Locale.ROOT, 'Slim JAR: %.1f MB -> %.1f MB',
+                source.length() / 1048576.0d, target.length() / 1048576.0d))
+    }
+}
+
+tasks.named('build') {
+    dependsOn tasks.named('slimJar')
 }
 
 def pythonExecutable = System.getProperty('os.name').toLowerCase(Locale.ROOT).contains('windows') ? 'python' : 'python3'

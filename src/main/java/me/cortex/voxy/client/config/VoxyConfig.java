@@ -30,6 +30,9 @@ public class VoxyConfig {
     public static final int MIN_REQUEST_DISTANCE = 8;
     // ClientInformation serializes the view distance as one signed byte.
     public static final int MAX_REQUEST_DISTANCE = 127;
+    // A 127-chunk integrated-server radius covers roughly 65k chunks and can stall both the server
+    // and client render thread. Dedicated servers retain their own configured limit.
+    public static final int MAX_INTEGRATED_REQUEST_DISTANCE = 32;
     public static final int MAX_CLOUD_DISTANCE = 128;
     public static final float MIN_SUBDIVISION_SIZE = 28.0f;
     public static final float MAX_SUBDIVISION_SIZE = 256.0f;
@@ -55,6 +58,11 @@ public class VoxyConfig {
     // Create: hold a frozen client-side snapshot of contraptions (bearings/pistons/gantries/mounted)
     // the player walked past, drawn statically beyond the render distance.
     public boolean distantContraptions = true;
+    // Draw beacon beams past vanilla's own block-entity render range. The beam is rebuilt from the
+    // persistent Voxy voxel store, so it remains available when the source chunk is not loaded.
+    public boolean distantBeacons = true;
+    // Maximum beacon-beam distance in chunks. 0 follows Voxy's LOD radius.
+    public int distantBeaconMaxChunks = 192;
     // Create: cull placed kinetic machine moving parts (rotating shafts/gears/machine animations)
     // beyond the render distance so they stop floating over the LOD. Off = Create draws them natively.
     public boolean distantKinetics = true;
@@ -62,13 +70,16 @@ public class VoxyConfig {
     // blocks; encased blocks only need their two axis ends covered). Pure render savings, active even
     // with voxy rendering off; complements the raycast culler, which cannot catch this case.
     public boolean kineticEnclosedCulling = true;
-    // Create distant-integration render caps, in CHUNKS. 0 = follow voxy's LOD radius
-    // (2 * sectionRenderDistance chunks). A lower value renders that integration nearer, cutting GPU
-    // load; for trains it also shrinks the server pose-stream window (less bandwidth) on the integrated
-    // server. Clamped to the LOD radius - there is no LOD terrain to sit against beyond it.
-    public int distantTrainMaxChunks = 0;
-    public int distantTrackMaxChunks = 0;
-    public int distantContraptionMaxChunks = 0;
+    // Create distant-integration render caps, in CHUNKS. 0 follows Voxy's LOD radius. Bounded defaults
+    // keep tiny distant machinery from holding meshes and draw calls all the way to the terrain horizon.
+    public int distantTrainMaxChunks = 96;
+    public int distantTrackMaxChunks = 96;
+    public int distantContraptionMaxChunks = 64;
+    public int distantKineticMaxChunks = 48;
+    // GPU working-set budgets. Contraption source data is retained for cheap rebuilds; kinetic captures
+    // are evicted whole because retaining their recorded vertex streams would cost more than the mesh.
+    public int distantContraptionGpuBudgetMiB = 48;
+    public int distantKineticGpuBudgetMiB = 32;
     // Aero/sable: render simulated contraptions within this % of voxy's LOD render distance.
     public int simulatedContraptionRenderDistancePercent = 50;
     public int serviceThreads = (int) Math.max(CpuLayout.getCoreCount()/1.5, 1);
@@ -90,7 +101,7 @@ public class VoxyConfig {
     public int earthCurveRatio = 0;
     // FakeSight-style chunk request extension. 127 is the protocol ceiling because vanilla writes
     // ClientInformation.viewDistance as a signed byte.
-    public boolean enableExtendedRequestDistance = true;
+    public boolean enableExtendedRequestDistance = false;
     public boolean followLodRequestDistance = true;
     public int requestDistance = 48;
     public String ssaoMode;
@@ -268,11 +279,10 @@ public class VoxyConfig {
         );
     }
 
-    // Effective distant-render radius in blocks for a Create integration given its chunk cap. 0 (or
-    // negative) follows voxy's LOD radius (32 * sectionRenderDistance); a positive cap is clamped to
-    // it, since there is no LOD terrain to occlude against past the LOD radius.
+    // Effective distant-render radius in blocks. sectionRenderDistance counts 32-chunk sections, so
+    // the block radius is 32 * 16 * sectionRenderDistance.
     public double createLodRadius() {
-        return 32.0 * this.sectionRenderDistance;
+        return 32.0 * 16.0 * this.sectionRenderDistance;
     }
 
     public double createRenderDistance(int maxChunks) {

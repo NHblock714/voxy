@@ -97,11 +97,11 @@ public final class DistantTrackRenderer implements LodPipelineHooks.Renderer {
         //so occlusion is per-pixel; the iris pipeline uses the shader pack's patched fragment shader.
         pipeline.setupAndBindOpaque(viewport);
         //renderCommon only reads viewProjection (copies via transform.set), never mutates it
-        this.renderCommon(pipeline, viewport.MVP,
+        this.renderCommon(pipeline, viewport, viewport.MVP,
                 viewport.cameraX, viewport.cameraY, viewport.cameraZ, depthFunc);
     }
 
-    private void renderCommon(me.cortex.voxy.client.core.AbstractRenderPipeline pipeline, Matrix4f viewProjection, double camX, double camY, double camZ, int depthFunc) {
+    private void renderCommon(me.cortex.voxy.client.core.AbstractRenderPipeline pipeline, Viewport<?> viewport, Matrix4f viewProjection, double camX, double camY, double camZ, int depthFunc) {
         lastFrameTilesDrawn = 0;
         var cfg = VoxyConfig.CONFIG;
         if (!cfg.isRenderingEnabled() || !cfg.distantTracks) {
@@ -169,6 +169,15 @@ public final class DistantTrackRenderer implements LodPipelineHooks.Renderer {
                             Math.sqrt(distSq), rawCompiled, compiled && !rawCompiled, vanillaDraws);
                 }
                 if (vanillaDraws) {
+                    continue;
+                }
+                //Rail networks stretch across a map, so the share of track outside the view is high -
+                //higher than for machinery, which clusters where the player built. The mesh carries its
+                //own extent, which for a bezier is the only way to know how far the curve reaches.
+                var m = unit.mesh;
+                if (viewport != null && !DistantVisibility.isBoxVisible(viewport,
+                        unit.ox + m.minX, unit.oy + m.minY, unit.oz + m.minZ,
+                        unit.ox + m.maxX, unit.oy + m.maxY, unit.oz + m.maxZ)) {
                     continue;
                 }
                 transform.set(viewProjection).translate(
