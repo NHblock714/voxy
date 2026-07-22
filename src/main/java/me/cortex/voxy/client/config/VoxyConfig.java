@@ -207,6 +207,14 @@ public class VoxyConfig {
 
     public void sanitize() {
         this.subDivisionSize = Math.clamp(this.subDivisionSize, MIN_SUBDIVISION_SIZE, MAX_SUBDIVISION_SIZE);
+        //The fog percentage is measured against the LOD radius. It was once measured against a
+        //sixteenth of it, so anyone who raised the slider to see past that is carrying a value that now
+        //means sixteen times too far - and no fog at all. Scale those down rather than clamping them to
+        //the new maximum, which would be a different setting than they chose.
+        if (this.fogDistancePercent > 200) {
+            this.fogDistancePercent = Math.max(5, Math.round(this.fogDistancePercent / 16.0f));
+        }
+        this.fogDistancePercent = Math.clamp(this.fogDistancePercent, 5, 200);
         this.skyFogDistance = Math.clamp(this.skyFogDistance, 0, 1024);
         this.lodBoundaryFadeLength = Math.clamp(this.lodBoundaryFadeLength, 8, 64);
         this.lodBoundaryInset = Math.clamp(this.lodBoundaryInset, 8, 32);

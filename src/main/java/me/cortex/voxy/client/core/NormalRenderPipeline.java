@@ -131,13 +131,12 @@ public class NormalRenderPipeline extends AbstractRenderPipeline {
             glUniform1i(9, 1);
         } else if (VoxyConfig.CONFIG.useEnvironmentalFog && VoxyConfig.CONFIG.fogIntensity > 0.0f) {
             float[] fogColor = RenderSystem.getShaderFogColor();
-            //Baseline for the percentage slider, not the LOD radius - that is 32*16*srd blocks
-            //(VoxyConfig.getFarEntityRenderDistanceBlocks, HierarchicalOcclusionTraverser), sixteen
-            //times this. 100% therefore closes the fog around the vanilla-ish 32*srd mark rather than
-            //at the far edge of the LOD, and the slider goes to 2000% to reach past the LOD radius.
-            //The slider's range is calibrated to this baseline, so the scale cannot move on its own -
-            //the range and default have to move with it.
-            float fogBaselineBlocks = 32f * VoxyConfig.CONFIG.sectionRenderDistance;
+            //100% closes the fog at the far edge of the LOD, which is what the slider reads as. The
+            //baseline used to be 32*srd - a sixteenth of the real radius - so the default setting fogged
+            //out everything past a sixteenth of what was drawn. That stayed invisible while there was
+            //little distant LOD to lose; it shows up as "the LOD disappears when fog is on" as soon as
+            //the far terrain is actually populated.
+            float fogBaselineBlocks = VoxyConfig.CONFIG.getFarEntityRenderDistanceBlocks();
             float far = fogBaselineBlocks * (VoxyConfig.CONFIG.fogDistancePercent / 100.0f);
             float near = far * 0.5f;
             if (far - near > 1) {

@@ -203,7 +203,7 @@ public class VoxyConfigMenu implements ConfigEntryPoint {
                                         "voxy:fog_distance",
                                         Component.translatable("voxy.config.general.fog_distance"),
                                         ()->CFG.fogDistancePercent, v->CFG.fogDistancePercent=v,
-                                        new Range(25, 2000, 5))
+                                        new Range(5, 200, 5))
                                         .setFormatter(v->Component.literal(v+"%"))
                                         .setImpact(OptionImpact.LOW)
                         )
