@@ -369,6 +369,10 @@ public class VoxyRenderSystem {
         //Cheap and idempotent; done here so the profiler can attribute work to the render thread
         //without a ThreadLocal on every instrumented call
         me.cortex.voxy.commonImpl.VoxyProfile.markRenderThread();
+        //The LOD pass itself. Without this the profile's render-thread total counts only the distant
+        //Create renderers hanging off the pipeline hook - the terrain path that dominates the frame is
+        //absent, so the total reads far lower than what voxy actually spends.
+        long tLod = me.cortex.voxy.commonImpl.VoxyProfile.begin();
         TimingStatistics.resetSamplers();
 
         TimingStatistics.all.start();
@@ -475,6 +479,7 @@ public class VoxyRenderSystem {
         }
 
         TimingStatistics.all.stop();
+        me.cortex.voxy.commonImpl.VoxyProfile.end("render/lodPipeline", tLod);
 
         //No-op unless a capture is armed (/voxy debug capture)
         me.cortex.voxy.client.FrameProfiler.onFrameEnd();
