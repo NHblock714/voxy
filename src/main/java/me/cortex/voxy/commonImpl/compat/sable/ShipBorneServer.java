@@ -14,7 +14,8 @@ import net.neoforged.fml.ModList;
 //Sable types stay confined to the private method: without sable this class costs one static boolean.
 public final class ShipBorneServer {
     private static final boolean SABLE_PRESENT = ModList.get() != null && ModList.get().isLoaded("sable");
-    private static boolean unavailable;
+    //Written from whichever tracking thread first hits a broken sable, read from all of them
+    private static volatile boolean unavailable;
 
     private ShipBorneServer() {}
 

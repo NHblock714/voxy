@@ -15,6 +15,11 @@ public class ModelBakerySubsystem {
     //Redo to just make it request the block faces with the async texture download stream which
     // basicly solves all the render stutter due to the baking
 
+    //Load-bearing for VSS, which cancels shutdown() at HEAD to run its own teardown - so the body here
+    //does not execute in a pack that has it, and anything added to it silently never runs. Release of
+    //bakery resources has to go in ModelFactory.free()/ModelStore.free(), which VSS still calls: the
+    //atlas alone is 12288x8192 RGBA8 with four mips, orphaned per world change if it is missed, and
+    //TrackedObject's cleaner only logs the leak rather than freeing it.
     private final ModelStore storage = new ModelStore();
     public final ModelFactory factory;
     private final Mapper mapper;

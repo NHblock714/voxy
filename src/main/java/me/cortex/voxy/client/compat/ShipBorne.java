@@ -14,7 +14,16 @@ import net.neoforged.fml.ModList;
 //runs, so a game without sable never loads them and pays a single static boolean.
 public final class ShipBorne {
     private static final boolean SABLE_PRESENT = ModList.get() != null && ModList.get().isLoaded("sable");
-    private static boolean unavailable;
+    //Two fuses, because the calls behind them fail independently and one of them failing must not take
+    //the other with it. The gate reaches only SubLevelContainer.inBounds; the self-heal reaches into
+    //sable's Flywheel compat, a far larger surface that a half-synced sub-level during world load can
+    //throw from on its own. Sharing one flag let that throw turn the gate off, and a gate answering
+    //false means every cull measures ship-borne content at its plot coordinates ~2e7 blocks out -
+    //kinetics culled away, embedded matrices zeroed, contraption snapshots baked out there. That is
+    //the exact failure this class exists to prevent.
+    //Volatile: written from a render thread that throws, read from every cull on the next frame.
+    private static volatile boolean gateUnavailable;
+    private static volatile boolean healUnavailable;
 
     private ShipBorne() {}
 
@@ -27,13 +36,13 @@ public final class ShipBorne {
     }
 
     public static boolean anyShipPresent() {
-        if (!SABLE_PRESENT || unavailable) {
+        if (!SABLE_PRESENT || gateUnavailable) {
             return false;
         }
         try {
             return me.cortex.voxy.client.compat.sable.SableShipContent.hasAnyShip();
         } catch (LinkageError | RuntimeException e) {
-            unavailable = true;
+            gateUnavailable = true;
             return false;
         }
     }
@@ -41,24 +50,27 @@ public final class ShipBorne {
     //Self-heal for sable's join-time-only Flywheel plot registration (see SableShipContent) - safe to
     //call every frame, no-ops once the state exists
     public static void ensureShipFlywheelState(net.minecraft.world.entity.Entity entity) {
-        if (!SABLE_PRESENT || unavailable) {
+        if (!SABLE_PRESENT || healUnavailable) {
             return;
         }
         try {
             me.cortex.voxy.client.compat.sable.SableShipContent.ensureFlywheelState(entity);
         } catch (LinkageError | RuntimeException e) {
-            unavailable = true;
+            //Only the self-heal goes; sable still registers its own plots at join time, so what is lost
+            //is the gap-filling for plots that were not known then - a cosmetic degradation next to
+            //losing the gate.
+            healUnavailable = true;
         }
     }
 
     private static boolean inSubLevel(int chunkX, int chunkZ) {
-        if (!SABLE_PRESENT || unavailable) {
+        if (!SABLE_PRESENT || gateUnavailable) {
             return false;
         }
         try {
             return me.cortex.voxy.client.compat.sable.SableShipContent.inSubLevel(chunkX, chunkZ);
         } catch (LinkageError | RuntimeException e) {
-            unavailable = true;
+            gateUnavailable = true;
             return false;
         }
     }

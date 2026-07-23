@@ -24,6 +24,13 @@ public class WorldEngine {
 
     private final TrackedObject thisTracker = TrackedObject.createTrackedObject(this);
 
+    //Load-bearing for VSS, which reaches this field by reflection (MethodHandles findGetter on this
+    //class, by this name, typed exactly SectionStorage) to reach the LOD store. Renaming it, changing
+    //its declared type, or moving SectionStorage to another package breaks that lookup - and VSS
+    //catches the failure and logs it at DEBUG, so the only symptom is that its presence index goes
+    //dead: every join re-downloads the full LOD set, and its verification retry loop spins at 1Hz
+    //forever. The same catch covers two Class.forName calls and the exact return type of
+    //WorldIdentifier.ofEngineNullable, so all four have to move together or not at all.
     public final SectionStorage storage;
     private final Mapper mapper;
     private final ActiveSectionTracker sectionTracker;

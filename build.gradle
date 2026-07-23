@@ -523,3 +523,67 @@ if (!isInGHA) {
         }*/
     }
 }
+
+//Every translation key the code asks for has to exist in every language file, and the files have to
+//agree on which keys they contain. Both halves have been broken before: an option added without its
+//lang entry shows a raw key, and a key present in one file but not another silently falls back to
+//English for that string only. Neither fails at runtime, so this checks at build time.
+tasks.register('checkLangKeys') {
+    def langDir = file('src/main/resources/assets/voxy/lang')
+    def javaDir = file('src/main/java')
+    inputs.dir langDir
+    inputs.dir javaDir
+    outputs.upToDateWhen { false }
+
+    doLast {
+        def slurper = new groovy.json.JsonSlurper()
+        def files = langDir.listFiles()?.findAll { it.name.endsWith('.json') } ?: []
+        if (files.isEmpty()) {
+            throw new GradleException("No language files under ${langDir}")
+        }
+
+        def keysByFile = [:]
+        files.each { f ->
+            def parsed
+            try {
+                parsed = slurper.parse(f, 'UTF-8')
+            } catch (Exception e) {
+                //A malformed file does not fail the game either - it falls back to English wholesale
+                throw new GradleException("${f.name} is not valid JSON: ${e.message}")
+            }
+            keysByFile[f.name] = parsed.keySet() as Set
+        }
+
+        //Only literal arguments are checked. A key built at runtime (a prefix plus an index) cannot be
+        //verified here, and reporting it as missing would train people to ignore this task.
+        def asked = [] as Set
+        javaDir.eachFileRecurse { f ->
+            if (!f.name.endsWith('.java')) return
+            f.getText('UTF-8').findAll(/translatable\(\s*"(voxy\.[^"]+)"/) { m, key ->
+                if (!key.endsWith('.')) asked << key
+            }
+        }
+
+        def problems = []
+        keysByFile.each { name, keys ->
+            def missing = (asked - keys).sort()
+            if (missing) {
+                problems << "${name} is missing ${missing.size()} key(s) the code requests: ${missing.take(10).join(', ')}"
+            }
+        }
+        def union = keysByFile.values().flatten() as Set
+        keysByFile.each { name, keys ->
+            def absent = (union - keys).sort()
+            if (absent) {
+                problems << "${name} lacks ${absent.size()} key(s) other language files have: ${absent.take(10).join(', ')}"
+            }
+        }
+
+        if (problems) {
+            throw new GradleException("Translation key check failed:\n  " + problems.join("\n  "))
+        }
+        println "Language files agree: ${asked.size()} requested keys across ${files.size()} files"
+    }
+}
+
+tasks.named('check') { dependsOn 'checkLangKeys' }
