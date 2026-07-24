@@ -60,9 +60,15 @@ public final class KineticCull {
     }
 
     //Flywheel visual path: the camera comes from the frame context.
-    public static boolean beyond(BlockPos pos, DynamicVisual.Context ctx) {
+    public static boolean beyond(BlockPos pos, DynamicVisual.Context ctx, net.minecraft.world.level.Level visualLevel) {
         var cfg = VoxyConfig.CONFIG;
         if (!cfg.isRenderingEnabled() || !cfg.distantKinetics) {
+            return false;
+        }
+        //A contraption visual is built against Create's virtual render world and reports a
+        //contraption-local position, so the distance from it to the camera means nothing - the
+        //structure carries its parts wherever it goes and Create draws them with it.
+        if (visualLevel != Minecraft.getInstance().level) {
             return false;
         }
         //Ship-borne machines render natively, uncut: a ship is one connected drivetrain, and any
@@ -99,49 +105,4 @@ public final class KineticCull {
         AzimuthBehaviourIndex.apply(visual, SHOW);
     }
 
-    //Provably-invisible moving parts: a kinetic block whose open faces are all covered by full opaque
-    //cubes can never show its rotating instance, yet it keeps submitting to the GPU forever - and the
-    //raycast culler (nowheel/EntityCulling) structurally cannot catch this, because its ray target is
-    //the 3x3x3 shell around the BE: the casing and the face-neighbours are part of the target, never
-    //occluders. Encased SHAFTS only expose their rod along the rotation axis, so two opaque axis ends
-    //suffice; anything else needs all six. Not gated on the voxy render state - an invisible instance
-    //is pure waste with or without LOD - only on its own config switch. Ship-borne positions are left
-    //alone like the distance cull.
-    //
-    //Cogwheels are excluded: their teeth stick out on the faces perpendicular to the axis (that is how
-    //they mesh), so the axis-end rule is wrong for them - an encased cog with both axis ends covered
-    //still shows its rim. The six-face rule would hold for a fully buried cog, but this cull is for
-    //shafts.
-    public static boolean enclosed(BlockPos pos) {
-        if (!VoxyConfig.CONFIG.kineticEnclosedCulling) {
-            return false;
-        }
-        var level = Minecraft.getInstance().level;
-        if (level == null || me.cortex.voxy.client.compat.ShipBorne.isShipBorne(pos)) {
-            return false;
-        }
-        var state = level.getBlockState(pos);
-        var block = state.getBlock();
-        if (block instanceof com.simibubi.create.content.kinetics.simpleRelays.ICogWheel) {
-            return false;
-        }
-        if (block instanceof com.simibubi.create.content.decoration.encasing.EncasedBlock
-                && block instanceof com.simibubi.create.content.kinetics.base.IRotate rotate) {
-            var axis = rotate.getRotationAxis(state);
-            return opaqueNeighbor(level, pos.relative(net.minecraft.core.Direction.get(
-                            net.minecraft.core.Direction.AxisDirection.POSITIVE, axis)))
-                    && opaqueNeighbor(level, pos.relative(net.minecraft.core.Direction.get(
-                            net.minecraft.core.Direction.AxisDirection.NEGATIVE, axis)));
-        }
-        for (net.minecraft.core.Direction direction : net.minecraft.core.Direction.values()) {
-            if (!opaqueNeighbor(level, pos.relative(direction))) {
-                return false;
-            }
-        }
-        return true;
-    }
-
-    private static boolean opaqueNeighbor(net.minecraft.world.level.Level level, BlockPos pos) {
-        return level.getBlockState(pos).isSolidRender(level, pos);
-    }
 }

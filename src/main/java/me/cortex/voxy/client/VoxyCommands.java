@@ -292,7 +292,6 @@ public class VoxyCommands {
         double reach = mc.options.getEffectiveRenderDistance() * 16.0;
         var sb = new StringBuilder("distant kinetics: rendering=").append(cfg.isRenderingEnabled())
                 .append(" distantKinetics=").append(cfg.distantKinetics)
-                .append(" enclosedCulling=").append(cfg.kineticEnclosedCulling)
                 .append(" reach=").append((int) reach)
                 .append(" kineticMax=").append((int) cfg.createRenderDistance(cfg.distantKineticMaxChunks))
                 .append(" lodMax=").append((int) cfg.createLodRadius())

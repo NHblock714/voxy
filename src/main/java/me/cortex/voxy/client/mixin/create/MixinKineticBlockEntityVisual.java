@@ -35,32 +35,26 @@ public abstract class MixinKineticBlockEntityVisual implements SimpleDynamicVisu
     //rarely change - re-evaluate every ~8 ticks, staggered by position so a base's visuals do not all
     //re-check on the same frame. Game time, not wall clock: a per-visual-per-frame currentTimeMillis
     //added up across a large base.
-    @Unique private boolean voxy$enclosed;
     @Unique private long voxy$nextCheckTick;
 
     @Override
     public void beginFrame(DynamicVisual.Context ctx) {
         BlockPos pos = ((AccessorAbstractBlockEntityVisual) this).voxy$getPos();
-        long tick = net.minecraft.client.Minecraft.getInstance().level.getGameTime();
-        boolean recheck = tick >= this.voxy$nextCheckTick;
-        if (recheck) {
-            this.voxy$nextCheckTick = tick + 8 + ((pos.getX() ^ pos.getZ()) & 7);
-            this.voxy$enclosed = KineticCull.enclosed(pos);
-        }
-        boolean beyond = KineticCull.beyond(pos, ctx);
-        if (beyond || this.voxy$enclosed) {
+        boolean beyond = KineticCull.beyond(pos, ctx, ((AccessorAbstractVisualLevel) this).voxy$getLevel());
+        if (beyond) {
             if (!this.voxy$culled) {
                 this.voxy$culled = true;
                 KineticCull.hide((BlockEntityVisual) this);
-                //Crossing out of the live path: freeze the moving part for the distant copy. An
-                //enclosed part is invisible and needs no copy.
-                if (beyond && !this.voxy$enclosed) {
-                    me.cortex.voxy.client.compat.create.KineticSnapshots.queueCapture(pos);
+                //Crossing out of the live path: freeze the moving part for the distant copy.
+                me.cortex.voxy.client.compat.create.KineticSnapshots.queueCapture(pos);
+            } else {
+                //Block updates rebuild instances visible again; re-hide on a throttle beat rather than
+                //walking every instance of every culled visual every frame.
+                long tick = net.minecraft.client.Minecraft.getInstance().level.getGameTime();
+                if (tick >= this.voxy$nextCheckTick) {
+                    this.voxy$nextCheckTick = tick + 8 + ((pos.getX() ^ pos.getZ()) & 7);
+                    KineticCull.hide((BlockEntityVisual) this);
                 }
-            } else if (recheck) {
-                //Block updates rebuild instances visible; re-hide on the throttle beat rather than
-                //walking every instance of every culled visual every frame
-                KineticCull.hide((BlockEntityVisual) this);
             }
         } else if (this.voxy$culled) {
             KineticCull.show((BlockEntityVisual) this);

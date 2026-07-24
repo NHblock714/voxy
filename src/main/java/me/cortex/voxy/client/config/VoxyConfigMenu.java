@@ -290,11 +290,6 @@ public class VoxyConfigMenu implements ConfigEntryPoint {
                                         Component.translatable("voxy.config.compat.distantKinetics"),
                                         ()->CFG.distantKinetics, v->CFG.distantKinetics=v)
                                         .setImpact(OptionImpact.LOW),
-                                new BoolOption(
-                                        "voxy:kinetic_enclosed_culling",
-                                        Component.translatable("voxy.config.compat.kineticEnclosedCulling"),
-                                        ()->CFG.kineticEnclosedCulling, v->CFG.kineticEnclosedCulling=v)
-                                        .setImpact(OptionImpact.LOW),
                                 //Beacons are not a create integration, but they share this page's hook
                                 //and distance formatter, and a player looking for "how far do distant
                                 //things draw" looks here

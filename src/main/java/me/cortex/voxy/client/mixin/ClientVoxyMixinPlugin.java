@@ -77,6 +77,7 @@ public class ClientVoxyMixinPlugin implements IMixinConfigPlugin {
             //MachineVisuals the ones that override it, the Renderer the backend-off BER; the accessor
             //feeds `pos`.
             mixins.add("create.AccessorAbstractBlockEntityVisual");
+            mixins.add("create.AccessorAbstractVisualLevel");
             mixins.add("create.MixinKineticBlockEntityVisual");
             mixins.add("create.MixinKineticMachineVisuals");
             mixins.add("create.MixinBnbKineticVisuals");

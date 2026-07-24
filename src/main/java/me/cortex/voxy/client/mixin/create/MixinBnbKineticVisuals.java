@@ -20,29 +20,25 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 }, remap = false)
 public abstract class MixinBnbKineticVisuals {
     @Unique private boolean voxy$culled;
-    @Unique private boolean voxy$enclosed;
     @Unique private long voxy$nextCheckTick;
 
     @Inject(method = "beginFrame(Ldev/engine_room/flywheel/api/visual/DynamicVisual$Context;)V",
             at = @At("HEAD"), cancellable = true, require = 0)
     private void voxy$cull(DynamicVisual.Context ctx, CallbackInfo ci) {
         BlockPos pos = ((AccessorAbstractBlockEntityVisual) this).voxy$getPos();
-        long tick = net.minecraft.client.Minecraft.getInstance().level.getGameTime();
-        boolean recheck = tick >= this.voxy$nextCheckTick;
-        if (recheck) {
-            this.voxy$nextCheckTick = tick + 8 + ((pos.getX() ^ pos.getZ()) & 7);
-            this.voxy$enclosed = KineticCull.enclosed(pos);
-        }
-        boolean beyond = KineticCull.beyond(pos, ctx);
-        if (beyond || this.voxy$enclosed) {
+        boolean beyond = KineticCull.beyond(pos, ctx, ((AccessorAbstractVisualLevel) this).voxy$getLevel());
+        if (beyond) {
             if (!this.voxy$culled) {
                 this.voxy$culled = true;
                 KineticCull.hide((BlockEntityVisual) this);
-                if (beyond && !this.voxy$enclosed) {
-                    me.cortex.voxy.client.compat.create.KineticSnapshots.queueCapture(pos);
+                me.cortex.voxy.client.compat.create.KineticSnapshots.queueCapture(pos);
+            } else {
+                //Re-hide on a throttle beat (block updates rebuild instances visible again)
+                long tick = net.minecraft.client.Minecraft.getInstance().level.getGameTime();
+                if (tick >= this.voxy$nextCheckTick) {
+                    this.voxy$nextCheckTick = tick + 8 + ((pos.getX() ^ pos.getZ()) & 7);
+                    KineticCull.hide((BlockEntityVisual) this);
                 }
-            } else if (recheck) {
-                KineticCull.hide((BlockEntityVisual) this);
             }
             ci.cancel();
         } else if (this.voxy$culled) {

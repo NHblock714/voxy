@@ -63,10 +63,6 @@ public class VoxyConfig {
     // Create: cull placed kinetic machine moving parts (rotating shafts/gears/machine animations)
     // beyond the render distance so they stop floating over the LOD. Off = Create draws them natively.
     public boolean distantKinetics = true;
-    // Create: hide kinetic moving parts that are provably invisible (all open faces covered by opaque
-    // blocks; encased blocks only need their two axis ends covered). Pure render savings, active even
-    // with voxy rendering off; complements the raycast culler, which cannot catch this case.
-    public boolean kineticEnclosedCulling = true;
     // Create distant-integration render caps, in CHUNKS. 0 = follow voxy's LOD radius. A lower value
     // renders that integration nearer, cutting GPU load; for trains it also shrinks the server
     // pose-stream window (less bandwidth) on the integrated server. Clamped to the LOD radius - there is

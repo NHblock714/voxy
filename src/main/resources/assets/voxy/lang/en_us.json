@@ -68,8 +68,6 @@
   "voxy.config.compat.distantBeaconDistance.tooltip": "Max render distance (chunks) for beacon beams. Follow LOD = use voxy's LOD radius",
   "voxy.config.compat.distantKinetics": "Cull distant kinetics",
   "voxy.config.compat.distantKinetics.tooltip": "Cull placed kinetic machine moving parts (rotating shafts/gears) beyond the render distance so they stop floating over the LOD. Off = Create renders them natively (may float)",
-  "voxy.config.compat.kineticEnclosedCulling": "Cull enclosed shafts",
-  "voxy.config.compat.kineticEnclosedCulling.tooltip": "Globally render-cull shafts that are enclosed with opaque blocks on both axis ends",
   "voxy.config.compat.distanceFollowLod": "Follow LOD",
   "voxy.config.compat.distanceChunks": "%s chunks",
   "voxy.config.compat.esSnowLod": "Seasonal snow LOD",
