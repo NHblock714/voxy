@@ -50,3 +50,7 @@ bool modelUsesFluidDatum(BlockModel model) {
 bool modelUsesBalancedLeafCutout(BlockModel model) {
     return ((model.flagsA)&32u) != 0;
 }
+
+bool modelIsLava(BlockModel model) {
+    return ((model.flagsA)&64u) != 0;
+}

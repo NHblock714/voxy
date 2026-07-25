@@ -78,6 +78,12 @@ bool useBalancedLeafCutout() {
     return ((interData.x >> 1u) & 1u) == 1u;
 }
 
+//Set by setupQuad on an LOD lava quad inside the circular boundary band: the vanilla lava under it owns
+//that pixel, so the LOD copy is dropped to stop the two overlapping and glowing.
+bool suppressLavaInBoundaryFade() {
+    return ((interData.x >> 7u) & 1u) == 1u;
+}
+
 vec2 varyBalancedLeafUV(vec2 localUV, vec2 tile, out uint transform) {
     uvec2 tilePos = uvec2(max(tile, vec2(0.0f)));
     uint hash = interData.w >> 16u;
@@ -148,6 +154,9 @@ vec4 computeColour(vec2 texturePos, vec4 colour) {
 
 
 void main() {
+    if (suppressLavaInBoundaryFade()) {
+        discard;
+    }
     //vec2 uv = vec2(0);
     //Tile is the tile we are in
     vec2 tile;

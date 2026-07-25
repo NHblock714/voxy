@@ -152,6 +152,14 @@ void setupQuad(out QuadData quad, const in Quad rawQuad, uvec2 sPos, bool genera
 
     if (generateAttributes) {
         quad.attributeData.x = makeQuadFlags(faceData, modelId, quadSize, model, face);
+        //Bit 7 (unused by the packed fragment flags) marks an LOD lava quad sitting inside the circular
+        //transition band, for quads.frag to discard. The vanilla lava under it owns that pixel there;
+        //outside the band the flag is not set and the LOD lava draws.
+        if (circularLodBoundaryEnabled > 0.5
+                && modelIsLava(model)
+                && length((quad.basePoint - cameraSubPos).xz) < lodBoundaryFadeEnd) {
+            quad.attributeData.x |= 1u << 7u;
+        }
         quad.attributeData.yzw = makeRemainingAttributes(model, rawQuad, lodLevel, face);
         if (modelUsesBalancedLeafCutout(model)) {
             // Bits 16..31 are otherwise unused. The fragment shader combines this

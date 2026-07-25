@@ -762,6 +762,10 @@ public class ModelFactory {
         modelFlags |= isShaded?8:0;//model has AO and shade
         modelFlags |= isFluid?16:0;//Allows coarse LOD fluid tops to use the dimension fluid datum
         modelFlags |= balancedLeaf ? 32 : 0;
+        //Lava, so the circular boundary fade can suppress the LOD copy inside the transition band: its
+        //vanilla surface is translucent and does not give the dithered overlap a depth owner, so the
+        //two would double up and glow. Only inside the band; outside it the LOD lava draws normally.
+        modelFlags |= (isFluid && blockState.getFluidState().is(net.minecraft.tags.FluidTags.LAVA)) ? 64 : 0;
 
         //modelFlags |= blockRenderLayer == RenderLayer.getSolid()?0:1;// should discard alpha
         MemoryUtil.memPutInt(uploadPtr, modelFlags); uploadPtr += 4;
