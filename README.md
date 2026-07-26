@@ -2,7 +2,7 @@
 
 Unofficial NeoForge 1.21.1 fork of [Voxy](https://github.com/MCRcortex/voxy) by MCRcortex,
 continuing the [neo-voxy](https://github.com/JohnSnow14284/neo-voxy) port lineage.
-Maintained by NHblock714.
+Maintained by NHblock714.QQ:1098491849
 
 ## Changes over neo-voxy
 
