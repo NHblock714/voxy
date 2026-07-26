@@ -269,113 +269,113 @@ public final class KineticSnapshots {
         var cfg = VoxyConfig.CONFIG;
         if (!cfg.isRenderingEnabled() || !cfg.distantKinetics) {
             if (!SECTIONS.isEmpty()) {
+                    clearAll();
+            }
+                return;
+            }
+            var levelDim = level.dimension().location();
+            if (!levelDim.equals(dim)) {
                 clearAll();
+                dim = levelDim;
             }
-            return;
+
+            BlockPos pos;
+            while ((pos = REMOVE_QUEUE.poll()) != null) {
+                Bucket bucket = SECTIONS.get(sectionKey(pos));
+                if (bucket != null && bucket.geoms.remove(pos) != null) {
+                    bucket.dirty = true;
+            }
+                BEARING_POSITIONS.remove(pos);
+            }
+
+
+            var cam = mc.gameRenderer.getMainCamera().getPosition();
+            double reach = mc.options.getEffectiveRenderDistance() * 16.0;
+            double reachSq = reach * reach;
+            int captured = 0;
+            while (captured < CAPTURES_PER_TICK && (pos = CAPTURE_QUEUE.poll()) != null) {
+                //Raced back inside the live path between the queue and this tick: the visual draws it
+                if (pos.distToCenterSqr(cam.x, cam.y, cam.z) < reachSq) {
+                    continue;
+            }
+                if (level.getBlockEntity(pos) instanceof KineticBlockEntity be) {
+                    capture(level, be);
+                    captured++;
+            }
+            }
+
+            sweep(mc, level, cam.x, cam.y, cam.z, reachSq);
+
+            int rebaked = 0;
+            for (Bucket bucket : SECTIONS.values()) {
+                if (!bucket.dirty || rebaked >= REBAKES_PER_TICK) {
+                    continue;
+            }
+                bucket.dirty = false;
+                rebake(bucket);
+                rebaked++;
+            }
+            //Distance-bound the snapshot store. Leave-behinds in unloaded chunks are kept frozen on
+            //purpose, but the sweep only visits LOADED chunks, so without this a long session across a
+            //machine-heavy world accumulates a snapshot (VAO+VBO+heap verts) for every kinetic BE ever
+            //passed, and the per-frame draw loop iterates all of them. The renderer only draws snapshots
+            //within the kinetic render distance; anything past it is pure waste. Evict buckets beyond that
+            //(plus 2 chunks of hysteresis) so the resident set is a spatial working set, not cumulative.
+            double maxDist = cfg.createRenderDistance(cfg.distantKineticMaxChunks) + 32.0;
+            double maxDistSq = maxDist * maxDist;
+            SECTIONS.entrySet().removeIf(entry -> {
+                long key = entry.getKey();
+                double scx = (BlockPos.getX(key) << 4) + 8;
+                double scy = (BlockPos.getY(key) << 4) + 8;
+                double scz = (BlockPos.getZ(key) << 4) + 8;
+                double dx = scx - cam.x, dy = scy - cam.y, dz = scz - cam.z;
+                if (dx * dx + dy * dy + dz * dz > maxDistSq) {
+                    Bucket bucket = entry.getValue();
+                    for (BlockPos snapPos : bucket.geoms.keySet()) {
+                        BEARING_POSITIONS.remove(snapPos);
+                    }
+                    bucket.close();
+                    me.cortex.voxy.commonImpl.PerfStats.kineticSnapshotEvicted.increment();
+                    return true;
+            }
+                return false;
+            });
+            enforceGpuBudget(cam.x, cam.y, cam.z);
+
+            //Prune sections emptied by removals
+            SECTIONS.values().removeIf(bucket -> {
+                if (bucket.geoms.isEmpty()) {
+                    bucket.close();
+                    return true;
+            }
+                return false;
+            });
+            sectionCount = SECTIONS.size();
         }
-        var levelDim = level.dimension().location();
-        if (!levelDim.equals(dim)) {
-            clearAll();
-            dim = levelDim;
-        }
 
-        BlockPos pos;
-        while ((pos = REMOVE_QUEUE.poll()) != null) {
-            Bucket bucket = SECTIONS.get(sectionKey(pos));
-            if (bucket != null && bucket.geoms.remove(pos) != null) {
-                bucket.dirty = true;
-            }
-            BEARING_POSITIONS.remove(pos);
-        }
+        //Rotating cursor over the loaded-chunk disk. The cull-transition capture only fires from a live
+        //visual's beginFrame - but the raycast culler (nowheel) DELETES occluded visuals outright, so a
+        //machine it culled near the view-distance boundary never crosses our transition and got no
+        //snapshot ("nothing in the transition band, snapshots only appear once the chunk unloads"). This
+        //sweep walks a slice of the loaded disk each tick and captures any kinetic BE that is beyond the
+        //reach and not yet snapshotted, visual or no visual. Full disk coverage in ~1s at 48 chunks/tick.
+        private static int sweepCursor;
+        private static final int SWEEP_CHUNKS_PER_TICK = 48;
 
-
-        var cam = mc.gameRenderer.getMainCamera().getPosition();
-        double reach = mc.options.getEffectiveRenderDistance() * 16.0;
-        double reachSq = reach * reach;
-        int captured = 0;
-        while (captured < CAPTURES_PER_TICK && (pos = CAPTURE_QUEUE.poll()) != null) {
-            //Raced back inside the live path between the queue and this tick: the visual draws it
-            if (pos.distToCenterSqr(cam.x, cam.y, cam.z) < reachSq) {
-                continue;
-            }
-            if (level.getBlockEntity(pos) instanceof KineticBlockEntity be) {
-                capture(level, be);
-                captured++;
-            }
-        }
-
-        sweep(mc, level, cam.x, cam.y, cam.z, reachSq);
-
-        int rebaked = 0;
-        for (Bucket bucket : SECTIONS.values()) {
-            if (!bucket.dirty || rebaked >= REBAKES_PER_TICK) {
-                continue;
-            }
-            bucket.dirty = false;
-            rebake(bucket);
-            rebaked++;
-        }
-        //Distance-bound the snapshot store. Leave-behinds in unloaded chunks are kept frozen on
-        //purpose, but the sweep only visits LOADED chunks, so without this a long session across a
-        //machine-heavy world accumulates a snapshot (VAO+VBO+heap verts) for every kinetic BE ever
-        //passed, and the per-frame draw loop iterates all of them. The renderer only draws snapshots
-        //within the kinetic render distance; anything past it is pure waste. Evict buckets beyond that
-        //(plus 2 chunks of hysteresis) so the resident set is a spatial working set, not cumulative.
-        double maxDist = cfg.createRenderDistance(cfg.distantKineticMaxChunks) + 32.0;
-        double maxDistSq = maxDist * maxDist;
-        SECTIONS.entrySet().removeIf(entry -> {
-            long key = entry.getKey();
-            double scx = (BlockPos.getX(key) << 4) + 8;
-            double scy = (BlockPos.getY(key) << 4) + 8;
-            double scz = (BlockPos.getZ(key) << 4) + 8;
-            double dx = scx - cam.x, dy = scy - cam.y, dz = scz - cam.z;
-            if (dx * dx + dy * dy + dz * dz > maxDistSq) {
-                Bucket bucket = entry.getValue();
-                for (BlockPos snapPos : bucket.geoms.keySet()) {
-                    BEARING_POSITIONS.remove(snapPos);
-                }
-                bucket.close();
-                me.cortex.voxy.commonImpl.PerfStats.kineticSnapshotEvicted.increment();
-                return true;
-            }
-            return false;
-        });
-        enforceGpuBudget(cam.x, cam.y, cam.z);
-
-        //Prune sections emptied by removals
-        SECTIONS.values().removeIf(bucket -> {
-            if (bucket.geoms.isEmpty()) {
-                bucket.close();
-                return true;
-            }
-            return false;
-        });
-        sectionCount = SECTIONS.size();
-    }
-
-    //Rotating cursor over the loaded-chunk disk. The cull-transition capture only fires from a live
-    //visual's beginFrame - but the raycast culler (nowheel) DELETES occluded visuals outright, so a
-    //machine it culled near the view-distance boundary never crosses our transition and got no
-    //snapshot ("nothing in the transition band, snapshots only appear once the chunk unloads"). This
-    //sweep walks a slice of the loaded disk each tick and captures any kinetic BE that is beyond the
-    //reach and not yet snapshotted, visual or no visual. Full disk coverage in ~1s at 48 chunks/tick.
-    private static int sweepCursor;
-    private static final int SWEEP_CHUNKS_PER_TICK = 48;
-
-    private static void sweep(Minecraft mc, ClientLevel level, double camX, double camY, double camZ, double reachSq) {
-        int radius = mc.options.getEffectiveRenderDistance() + 2;
-        int diameter = radius * 2 + 1;
-        int total = diameter * diameter;
-        int centerX = ((int) Math.floor(camX)) >> 4;
-        int centerZ = ((int) Math.floor(camZ)) >> 4;
-        //Hysteresis band: capture starts past the reach, reclaim only 16 blocks inside it, so a
-        //camera hovering on the boundary doesn't churn capture/remove/rebake every sweep pass
-        double innerReach = Math.max(0, Math.sqrt(reachSq) - 16.0);
-        double innerSq = innerReach * innerReach;
-        for (int i = 0; i < SWEEP_CHUNKS_PER_TICK; i++) {
-            int idx = Math.floorMod(sweepCursor++, total);
-            int cx = centerX + (idx % diameter) - radius;
-            int cz = centerZ + (idx / diameter) - radius;
+        private static void sweep(Minecraft mc, ClientLevel level, double camX, double camY, double camZ, double reachSq) {
+            int radius = mc.options.getEffectiveRenderDistance() + 2;
+            int diameter = radius * 2 + 1;
+            int total = diameter * diameter;
+            int centerX = ((int) Math.floor(camX)) >> 4;
+            int centerZ = ((int) Math.floor(camZ)) >> 4;
+            //Hysteresis band: capture starts past the reach, reclaim only 16 blocks inside it, so a
+            //camera hovering on the boundary doesn't churn capture/remove/rebake every sweep pass
+            double innerReach = Math.max(0, Math.sqrt(reachSq) - 16.0);
+            double innerSq = innerReach * innerReach;
+            for (int i = 0; i < SWEEP_CHUNKS_PER_TICK; i++) {
+                int idx = Math.floorMod(sweepCursor++, total);
+                int cx = centerX + (idx % diameter) - radius;
+                int cz = centerZ + (idx / diameter) - radius;
             var chunk = level.getChunk(cx, cz, net.minecraft.world.level.chunk.status.ChunkStatus.FULL, false);
             if (!(chunk instanceof net.minecraft.world.level.chunk.LevelChunk levelChunk)) {
                 continue;
@@ -383,30 +383,41 @@ public final class KineticSnapshots {
             //A loaded chunk is the authority on its own blocks: any snapshot here whose kinetic BE is
             //gone (machine broken or disassembled into something else) is a ghost - drop it. Unloaded
             //chunks are never touched, so leave-behinds stay frozen.
-            for (int sy = level.getMinSection(); sy < level.getMaxSection(); sy++) {
-                Bucket bucket = SECTIONS.get(BlockPos.asLong(cx, sy, cz));
-                if (bucket == null) {
-                    continue;
+            //
+            //Skipped while nothing is snapshotted at all: this is 24 lookups per chunk (the full build
+            //height) times 48 chunks a tick, and in a world with no frozen machines every one of them
+            //misses. That is the common case - snapshots only exist where the player has flown past
+            //running machinery and left it behind.
+            if (!SECTIONS.isEmpty()) {
+                for (int sy = level.getMinSection(); sy < level.getMaxSection(); sy++) {
+                    Bucket bucket = SECTIONS.get(BlockPos.asLong(cx, sy, cz));
+                    if (bucket == null) {
+                        continue;
+                    }
+                    bucket.geoms.keySet().removeIf(snapPos -> {
+                        if ((snapPos.getX() >> 4) != cx || (snapPos.getZ() >> 4) != cz) {
+                            return false;
+                        }
+                        if (level.getBlockEntity(snapPos) instanceof KineticBlockEntity) {
+                            return false;
+                        }
+                        bucket.dirty = true;
+                        BEARING_POSITIONS.remove(snapPos);
+                        return true;
+                    });
                 }
-                bucket.geoms.keySet().removeIf(snapPos -> {
-                    if ((snapPos.getX() >> 4) != cx || (snapPos.getZ() >> 4) != cz) {
-                        return false;
-                    }
-                    if (level.getBlockEntity(snapPos) instanceof KineticBlockEntity) {
-                        return false;
-                    }
-                    bucket.dirty = true;
-                    BEARING_POSITIONS.remove(snapPos);
-                    return true;
-                });
             }
+            //Ship membership is decided by chunk, so it is the same answer for every machine in this
+            //chunk - resolving it per block entity re-walks sable's plot lookup for each one.
+            boolean chunkIsShipBorne = me.cortex.voxy.client.compat.ShipBorne.isShipBorne(
+                    (double) (cx << 4), (double) (cz << 4));
             for (var be : levelChunk.getBlockEntities().values()) {
                 if (!(be instanceof KineticBlockEntity kbe)) {
                     continue;
                 }
                 BlockPos bePos = kbe.getBlockPos();
                 double distSq = bePos.distToCenterSqr(camX, camY, camZ);
-                if (distSq <= reachSq || me.cortex.voxy.client.compat.ShipBorne.isShipBorne(bePos)) {
+                if (distSq <= reachSq || chunkIsShipBorne) {
                     //Machines whose animation lives only in a BER have no visual, so nothing queues a
                     //remove when the player comes back inside - the frozen copy overlaps the live
                     //spinning render wherever the boundary section still draws (the turntable ghost).
