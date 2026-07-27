@@ -147,9 +147,12 @@ public class VoxyConfig {
 
     // EclipticSeasons compat: recolor LOD terrain with seasonal snow (master switch for the eclipticseasons mixins).
     public boolean eclipticSeasonsSnowLod = true;
-    // EclipticSeasons compat: re-import region LODs when the season changes.
+    // EclipticSeasons compat: re-decide snow over stored LOD when the season changes, so terrain too
+    // far away to be re-ingested still follows the season. Walks the section store on a background
+    // thread; cost scales with how much LOD has been explored.
     public boolean eclipticSeasonsLodAutoReload = false;
-    // EclipticSeasons compat: rebuild the LOD renderer when the season changes.
+    // EclipticSeasons compat: rebuild the LOD renderer when the season changes. Note this re-meshes the
+    // same stored voxels - snow is decided during ingest, so this changes nothing about snow on its own.
     public boolean eclipticSeasonsReloadOnSeasonChange = false;
 
     // Print the build, its maintainer and the fork's repository to chat on world join.

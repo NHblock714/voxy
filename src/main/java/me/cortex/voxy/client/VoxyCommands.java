@@ -91,6 +91,10 @@ public class VoxyCommands {
                         .executes(VoxyCommands::dumpKinetics))
                 .then(Commands.literal("ship")
                         .executes(VoxyCommands::dumpShipContraptions))
+                .then(Commands.literal("seasons")
+                        .executes(VoxyCommands::dumpSeasons)
+                        .then(Commands.literal("refresh")
+                                .executes(VoxyCommands::refreshSeasonalSnow)))
                 .then(Commands.literal("fog")
                         .executes(VoxyCommands::dumpFog))
                 .then(Commands.literal("perf")
@@ -307,6 +311,32 @@ public class VoxyCommands {
     //Splits "ship contraptions don't render" into its two possible worlds: exempt counters moving
     //while the structure stays invisible means we let it through and the problem is past us
     //(transform/depth); a renderer that is never even called clears our culls entirely.
+    //Seasonal snow lives in the stored voxels, not in the models, so nothing about it is visible from
+    //the usual model/render debug. These counters are how you tell a refresh ran from one that found
+    //nothing to change.
+    private static int dumpSeasons(CommandContext<CommandSourceStack> ctx) {
+        if (!net.neoforged.fml.ModList.get().isLoaded("eclipticseasons")) {
+            ctx.getSource().sendSuccess(() -> Component.literal("eclipticseasons not loaded"), false);
+            return 0;
+        }
+        var cfg = me.cortex.voxy.client.config.VoxyConfig.CONFIG;
+        String msg = "seasonal snow LOD: snowLod=" + cfg.eclipticSeasonsSnowLod
+                + " autoRefresh=" + cfg.eclipticSeasonsLodAutoReload
+                + "\n " + me.cortex.voxy.client.core.compat.eclipticseasons.SeasonalSnowRefresher.describe();
+        ctx.getSource().sendSuccess(() -> Component.literal(msg), false);
+        return 1;
+    }
+
+    private static int refreshSeasonalSnow(CommandContext<CommandSourceStack> ctx) {
+        if (!net.neoforged.fml.ModList.get().isLoaded("eclipticseasons")) {
+            ctx.getSource().sendSuccess(() -> Component.literal("eclipticseasons not loaded"), false);
+            return 0;
+        }
+        String msg = me.cortex.voxy.client.core.compat.eclipticseasons.SeasonalSnowRefresher.startManually();
+        ctx.getSource().sendSuccess(() -> Component.literal(msg), false);
+        return 1;
+    }
+
     private static int dumpShipContraptions(CommandContext<CommandSourceStack> ctx) {
         if (!net.neoforged.fml.ModList.get().isLoaded("create")) {
             ctx.getSource().sendSuccess(() -> Component.literal("create not loaded"), false);

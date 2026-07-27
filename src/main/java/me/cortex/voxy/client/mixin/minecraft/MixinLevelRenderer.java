@@ -51,6 +51,13 @@ public abstract class MixinLevelRenderer implements IGetVoxyRenderSystem {
 
     @Override
     public void voxy$shutdownRenderer() {
+        //The seasonal snow walk holds a reference on the world engine, which is what keeps the engine
+        //from being freed under it. Stop it when the world goes: rewriting LOD for a level we are
+        //leaving buys nothing, and the reference would hold the engine past its usefulness.
+        //Guarded so the class - which reaches into EclipticSeasons - is never resolved without it.
+        if (net.neoforged.fml.ModList.get().isLoaded("eclipticseasons")) {
+            me.cortex.voxy.client.core.compat.eclipticseasons.SeasonalSnowRefresher.cancelAndJoin();
+        }
         if (this.renderer != null) {
             this.renderer.shutdown();
             this.renderer = null;
