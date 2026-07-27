@@ -217,7 +217,7 @@ dependencies {
     compileOnly localJars("dev.ryanhcode.sable.sable-sable_rapier-1.21.1-2.0.3.jar")
 
     // EclipticSeasons (compileOnly): native snow-LOD compat, gated at runtime on "eclipticseasons".
-    compileOnly localJars("eclipticseasons-1.21.1-neoforge-0.13.8.4.1.jar")
+    compileOnly localJars("eclipticseasons-1.21.1-neoforge-0.14.1.1.jar")
 
     // bits_n_bobs + its azimuth framework, for the cogwheel-chain LOD snapshot (optional at runtime)
     compileOnly localJars("bits_n_bobs-2.1.11-beta.jar")
