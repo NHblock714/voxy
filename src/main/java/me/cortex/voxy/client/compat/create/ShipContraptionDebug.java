@@ -13,8 +13,23 @@ public final class ShipContraptionDebug {
     private ShipContraptionDebug() {}
 
     public static String dump() {
-        var sb = new StringBuilder("ship contraption debug: sableShipsPresent=").append(ShipBorne.anyShipPresent())
-                .append("\n flywheel depth wrap lastSkip=").append(me.cortex.voxy.client.compat.sable.VoxySableDepthShim.lastSkipReason);
+        var sb = new StringBuilder("ship contraption debug: sableShipsPresent=").append(ShipBorne.anyShipPresent());
+        //The depth shim is pure GPU fill - a handful of draw calls on the CPU side, so no frame-time
+        //profiler attributes it to us. These counters are the only way to see what it costs.
+        sb.append("\n depth shim lodFreeRadius=")
+                .append((int) me.cortex.voxy.client.compat.sable.SableScreenBounds.lodFreeRadiusBlocks())
+                .append(" skipped[near=").append(me.cortex.voxy.client.compat.sable.VoxySableDepthShim.nearPassesSkipped)
+                .append(" offscreen=").append(me.cortex.voxy.client.compat.sable.VoxySableDepthShim.offscreenPassesSkipped)
+                .append(" shadow=").append(me.cortex.voxy.client.compat.sable.VoxySableDepthShim.shadowPassesSkipped)
+                .append(']')
+                .append("\n  sectionLayer bracketed=").append(me.cortex.voxy.client.compat.sable.VoxySableDepthShim.bracketedPasses)
+                .append(" blitMpx=").append(me.cortex.voxy.client.compat.sable.VoxySableDepthShim.blitMegapixels)
+                .append(" lastRect=").append(me.cortex.voxy.client.compat.sable.VoxySableDepthShim.lastScissor)
+                .append(" lastSkip=").append(me.cortex.voxy.client.compat.sable.VoxySableDepthShim.lastSkipReason)
+                .append("\n  flywheel bracketed=").append(me.cortex.voxy.client.compat.sable.VoxySableDepthShim.bracketedInPlacePasses)
+                .append(" blitMpx=").append(me.cortex.voxy.client.compat.sable.VoxySableDepthShim.blitInPlaceMegapixels)
+                .append(" lastRect=").append(me.cortex.voxy.client.compat.sable.VoxySableDepthShim.lastInPlaceScissor)
+                .append(" lastSkip=").append(me.cortex.voxy.client.compat.sable.VoxySableDepthShim.lastInPlaceSkipReason);
         try {
             sb.append("\n sable flw state self-heal: calls=").append(me.cortex.voxy.client.compat.sable.SableShipContent.ensureCalls)
                     .append(" registered=").append(me.cortex.voxy.client.compat.sable.SableShipContent.ensureRegistered);

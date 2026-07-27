@@ -3,7 +3,9 @@ package me.cortex.voxy.client.mixin.sable;
 import dev.ryanhcode.sable.sublevel.ClientSubLevel;
 import dev.ryanhcode.sable.sublevel.render.dispatcher.VanillaSubLevelRenderDispatcher;
 import me.cortex.voxy.client.compat.ShipBorne;
+import me.cortex.voxy.client.compat.sable.SableScreenBounds;
 import me.cortex.voxy.client.compat.sable.VoxySableDepthShim;
+import me.cortex.voxy.client.core.util.IrisUtil;
 import net.minecraft.client.renderer.RenderType;
 import net.minecraft.client.renderer.ShaderInstance;
 import org.joml.Matrix4f;
@@ -32,15 +34,37 @@ public abstract class MixinSableDepthShim {
             float partialTicks,
             CallbackInfo ci
     ) {
-        //This fires once per chunk layer, ~5 times a frame, and the shim costs four fullscreen
-        //gl_FragDepth passes each time - which also defeat early-Z for the pass. With no sub-level
-        //present there is nothing whose depth could need merging, so skip it. Only ever reachable with
-        //a shaderpack loaded: that is the sole condition under which the depth texture is non-zero.
+        //This fires once per chunk layer, ~5 times a frame, and the shim costs four gl_FragDepth passes
+        //each time - which also defeat early-Z for the pass. With no sub-level present there is nothing
+        //whose depth could need merging, so skip it. Only ever reachable with a shaderpack loaded: that
+        //is the sole condition under which the depth texture is non-zero.
         this.voxy$shimActive = subLevels != null && subLevels.iterator().hasNext() && ShipBorne.anyShipPresent();
         if (!this.voxy$shimActive) {
             return;
         }
-        VoxySableDepthShim.begin(modelView, projection);
+
+        //The shadow pass re-runs this whole dispatch with the shadow map's matrices. Merging LOD depth
+        //captured from the camera into a shadow map is meaningless, and paying for it doubles the shim
+        //on any pack with shadows enabled.
+        if (IrisUtil.irisShadowActive()) {
+            this.voxy$shimActive = false;
+            VoxySableDepthShim.shadowPassesSkipped++;
+            return;
+        }
+
+        //Two reductions, in order of what they save: drop plots LOD can never get in front of, then
+        //bound the blits to where what is left actually draws
+        SableScreenBounds.Result bounds = SableScreenBounds.of(subLevels, cameraX, cameraY, cameraZ, modelView, projection);
+        if (bounds.skip() != SableScreenBounds.Skip.NONE) {
+            this.voxy$shimActive = false;
+            if (bounds.skip() == SableScreenBounds.Skip.ALL_NEAR) {
+                VoxySableDepthShim.nearPassesSkipped++;
+            } else {
+                VoxySableDepthShim.offscreenPassesSkipped++;
+            }
+            return;
+        }
+        VoxySableDepthShim.begin(modelView, projection, bounds.ndc());
     }
 
     @Inject(method = "renderSectionLayer", at = @At("RETURN"))

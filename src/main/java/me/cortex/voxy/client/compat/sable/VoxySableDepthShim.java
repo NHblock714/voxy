@@ -20,6 +20,8 @@ import static org.lwjgl.opengl.GL11C.GL_ALWAYS;
 import static org.lwjgl.opengl.GL11C.GL_LEQUAL;
 import static org.lwjgl.opengl.GL11C.GL_NEAREST;
 import static org.lwjgl.opengl.GL11C.GL_NONE;
+import static org.lwjgl.opengl.GL11C.GL_SCISSOR_BOX;
+import static org.lwjgl.opengl.GL11C.GL_SCISSOR_TEST;
 import static org.lwjgl.opengl.GL11C.GL_STENCIL_TEST;
 import static org.lwjgl.opengl.GL11C.GL_TEXTURE;
 import static org.lwjgl.opengl.GL11C.GL_TEXTURE_BINDING_2D;
@@ -34,6 +36,7 @@ import static org.lwjgl.opengl.GL11C.glEnable;
 import static org.lwjgl.opengl.GL11C.glGetInteger;
 import static org.lwjgl.opengl.GL11C.glGetIntegerv;
 import static org.lwjgl.opengl.GL11C.glIsEnabled;
+import static org.lwjgl.opengl.GL11C.glScissor;
 import static org.lwjgl.opengl.GL11C.glViewport;
 import static org.lwjgl.opengl.GL13C.GL_ACTIVE_TEXTURE;
 import static org.lwjgl.opengl.GL13C.GL_TEXTURE0;
@@ -94,8 +97,21 @@ public final class VoxySableDepthShim {
     private static State activeState;
     private static boolean loggedEnabled;
     private static boolean loggedUnsupportedFramebuffer;
-    //Diagnostics for /voxy debug ship: why the last begin bailed
+    //Diagnostics for /voxy debug ship: why the last begin bailed. Per path, because the two bail for
+    //different reasons and a shared field can only report whichever ran last.
     public static volatile String lastSkipReason = "never called";
+    public static volatile String lastInPlaceSkipReason = "never called";
+    //Diagnostics for /voxy debug ship: how much fill the shim is costing. Per path, because the
+    //section-layer one runs about five times a frame and the Flywheel one once.
+    public static volatile long bracketedPasses;
+    public static volatile long bracketedInPlacePasses;
+    public static volatile long shadowPassesSkipped;
+    public static volatile long nearPassesSkipped;
+    public static volatile long offscreenPassesSkipped;
+    public static volatile long blitMegapixels;
+    public static volatile long blitInPlaceMegapixels;
+    public static volatile String lastScissor = "none";
+    public static volatile String lastInPlaceScissor = "none";
 
     static {
         glSamplerParameteri(DEPTH_SAMPLER, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
@@ -107,8 +123,28 @@ public final class VoxySableDepthShim {
     }
 
     public static void begin(Matrix4f modelView, Matrix4f projection) {
+        begin(modelView, projection, SableScreenBounds.FULLSCREEN);
+    }
+
+    /**
+     * @param ndcBounds screen extent the bracketed pass can touch, {minX, minY, maxX, maxY} in NDC.
+     *                  Everything the shim does is confined to it - the blits and the pass itself.
+     */
+    //The merge pass and both write-back shaders compare depths assuming smaller-is-nearer. A reverse-Z
+    //projection (m22 near zero, some shader packs use it for far-plane precision) flips that, and
+    //merging under it would push LOD behind everything instead of in front. Detect and sit the pass
+    //out - no merge just means ships draw the way they do without the shim.
+    private static boolean isReverseZ(Matrix4f projection) {
+        return Math.abs(projection.m22()) < 0.1f;
+    }
+
+    public static void begin(Matrix4f modelView, Matrix4f projection, float[] ndcBounds) {
         if (activeState != null) {
             activeState.nesting++;
+            return;
+        }
+        if (isReverseZ(projection)) {
+            lastSkipReason = "reverse-Z projection";
             return;
         }
 
@@ -147,6 +183,12 @@ public final class VoxySableDepthShim {
             return;
         }
 
+        if (!state.setScissor(ndcBounds)) {
+            lastSkipReason = "pass covers no pixels";
+            offscreenPassesSkipped++;
+            return;
+        }
+
         COMBINED_DEPTH.resize(state.width, state.height);
         BEFORE_SABLE_DEPTH.resize(state.width, state.height);
 
@@ -156,11 +198,18 @@ public final class VoxySableDepthShim {
             return;
         }
         lastSkipReason = "ok";
+        bracketedPasses++;
+        //Four blits bracket the pass; report what they actually cover so a regression here is visible
+        blitMegapixels += (4L * state.scissorWidth * state.scissorHeight) / 1_000_000L;
+        lastScissor = state.scissorWidth + "x" + state.scissorHeight + " of " + state.width + "x" + state.height;
 
+        state.applyScissor();
         copyDepth(vanillaDepthTexture, COMBINED_DEPTH.framebuffer.id, state.width, state.height);
         mergeVoxyDepth(voxyDepthTexture, COMBINED_DEPTH.framebuffer.id, state.width, state.height, viewport, modelView, projection);
         copyDepth(COMBINED_DEPTH.getDepthTex().id, BEFORE_SABLE_DEPTH.framebuffer.id, state.width, state.height);
 
+        //Scissor stays armed through the bracketed pass: the bounds enclose every pixel it can draw, and
+        //leaving it on keeps the pass from depth-testing against the stale COMBINED region outside them
         state.restoreForSableRender(DRAW_FRAMEBUFFER.id);
         activeState = state;
 
@@ -179,6 +228,8 @@ public final class VoxySableDepthShim {
             return;
         }
 
+        //The bracketed pass is free to have touched the scissor itself, so re-arm rather than assume
+        state.applyScissor();
         copyChangedDepth(BEFORE_SABLE_DEPTH.getDepthTex().id, COMBINED_DEPTH.getDepthTex().id, state);
         state.restoreAll();
         activeState = null;
@@ -192,40 +243,44 @@ public final class VoxySableDepthShim {
     //temporarily merge the LOD depth INTO the target's own depth texture, let the pass render against
     //it, then restore every pixel the pass did not write. The pass can rebind framebuffers freely - the
     //depth texture it tests against is the one we edited.
-    public static void beginInPlace(Matrix4f modelView, Matrix4f projection) {
+    public static void beginInPlace(Matrix4f modelView, Matrix4f projection, float[] ndcBounds) {
         if (activeInPlaceState != null) {
             activeInPlaceState.nesting++;
+            return;
+        }
+        if (isReverseZ(projection)) {
+            lastInPlaceSkipReason = "reverse-Z projection";
             return;
         }
 
         VoxyRenderSystem renderer = IGetVoxyRenderSystem.getNullable();
         if (renderer == null) {
-            lastSkipReason = "no renderer";
+            lastInPlaceSkipReason = "no renderer";
             return;
         }
 
         int voxyDepthTexture = renderer.getSableOcclusionDepthTexture();
         if (voxyDepthTexture == 0) {
-            lastSkipReason = "no LOD depth texture";
+            lastInPlaceSkipReason = "no LOD depth texture";
             return;
         }
 
         Viewport<?> viewport = renderer.getViewport();
         if (viewport == null || viewport.width <= 0 || viewport.height <= 0) {
-            lastSkipReason = "no viewport";
+            lastInPlaceSkipReason = "no viewport";
             return;
         }
 
         State state = State.capture();
         if (state.drawFramebuffer == 0 || state.width <= 0 || state.height <= 0 || state.x != 0 || state.y != 0) {
-            lastSkipReason = "bad GL state: fb=" + state.drawFramebuffer + " viewport=" + state.x + ',' + state.y + ' ' + state.width + 'x' + state.height;
+            lastInPlaceSkipReason = "bad GL state: fb=" + state.drawFramebuffer + " viewport=" + state.x + ',' + state.y + ' ' + state.width + 'x' + state.height;
             return;
         }
 
         int depthType = glGetNamedFramebufferAttachmentParameteri(state.drawFramebuffer, GL_DEPTH_ATTACHMENT, GL_FRAMEBUFFER_ATTACHMENT_OBJECT_TYPE);
         int depthTexture = glGetNamedFramebufferAttachmentParameteri(state.drawFramebuffer, GL_DEPTH_ATTACHMENT, GL_FRAMEBUFFER_ATTACHMENT_OBJECT_NAME);
         if (depthType != GL_TEXTURE || depthTexture == 0) {
-            lastSkipReason = "depth attachment not a texture";
+            lastInPlaceSkipReason = "depth attachment not a texture";
             return;
         }
 
@@ -233,14 +288,28 @@ public final class VoxySableDepthShim {
         IN_PLACE_MERGED.resize(state.width, state.height);
         IN_PLACE_AFTER.resize(state.width, state.height);
 
+        if (!state.setScissor(ndcBounds)) {
+            lastInPlaceSkipReason = "pass covers no pixels";
+            offscreenPassesSkipped++;
+            return;
+        }
+
+        //Five blits across begin/end, bounded to the ships this wrap exists for
+        bracketedInPlacePasses++;
+        blitInPlaceMegapixels += (5L * state.scissorWidth * state.scissorHeight) / 1_000_000L;
+        lastInPlaceScissor = state.scissorWidth + "x" + state.scissorHeight + " of " + state.width + "x" + state.height;
+
+        state.applyScissor();
         copyDepth(depthTexture, IN_PLACE_BEFORE.framebuffer.id, state.width, state.height);
         mergeVoxyDepth(voxyDepthTexture, state.drawFramebuffer, state.width, state.height, viewport, modelView, projection);
         copyDepth(depthTexture, IN_PLACE_MERGED.framebuffer.id, state.width, state.height);
 
+        //restoreAll puts the caller's scissor back; the wrapped pass runs under it, which is correct -
+        //everything it draws outside the ships tests against depth this wrap never touched
         state.restoreAll();
         inPlaceDepthTexture = depthTexture;
         activeInPlaceState = state;
-        lastSkipReason = "ok";
+        lastInPlaceSkipReason = "ok";
 
         if (!loggedEnabled) {
             Logger.info("Enabled Sable/Voxy combined depth shim");
@@ -266,6 +335,10 @@ public final class VoxySableDepthShim {
         glActiveTexture(prevActive);
         int savedSampler2 = glGetIntegeri(GL_SAMPLER_BINDING, 2);
 
+        //Same rect begin used, and it has to be: the restore writes `before` wherever the pass did not
+        //draw, and outside that rect `before` is a stale snapshot no one refreshed. Scissored, those
+        //pixels are left exactly as the wrapped pass produced them - which is the no-shim result.
+        state.applyScissor();
         copyDepth(inPlaceDepthTexture, IN_PLACE_AFTER.framebuffer.id, state.width, state.height);
         restoreUnchangedDepth(state);
 
@@ -432,6 +505,14 @@ public final class VoxySableDepthShim {
         private final int[] colorMask;
         private final boolean depthTest;
         private final boolean stencilTest;
+        private final boolean scissorTest;
+        private final int[] scissorBox;
+
+        //Pixel rect the shim confines itself to, derived from the pass's own bounds
+        private int scissorX;
+        private int scissorY;
+        private int scissorWidth;
+        private int scissorHeight;
 
         private int nesting = 1;
 
@@ -452,8 +533,12 @@ public final class VoxySableDepthShim {
                 int depthMask,
                 int[] colorMask,
                 boolean depthTest,
-                boolean stencilTest
+                boolean stencilTest,
+                boolean scissorTest,
+                int[] scissorBox
         ) {
+            this.scissorTest = scissorTest;
+            this.scissorBox = scissorBox;
             this.drawFramebuffer = drawFramebuffer;
             this.readFramebuffer = readFramebuffer;
             this.x = x;
@@ -476,8 +561,10 @@ public final class VoxySableDepthShim {
         private static State capture() {
             int[] viewport = new int[4];
             int[] colorMask = new int[4];
+            int[] scissorBox = new int[4];
             glGetIntegerv(GL_VIEWPORT, viewport);
             glGetIntegerv(GL_COLOR_WRITEMASK, colorMask);
+            glGetIntegerv(GL_SCISSOR_BOX, scissorBox);
 
             int activeTexture = glGetInteger(GL_ACTIVE_TEXTURE);
             glActiveTexture(GL_TEXTURE0);
@@ -503,8 +590,34 @@ public final class VoxySableDepthShim {
                     glGetInteger(GL_DEPTH_WRITEMASK),
                     colorMask,
                     glIsEnabled(GL_DEPTH_TEST),
-                    glIsEnabled(GL_STENCIL_TEST)
+                    glIsEnabled(GL_STENCIL_TEST),
+                    glIsEnabled(GL_SCISSOR_TEST),
+                    scissorBox
             );
+        }
+
+        /** @return false when the bounds cover no pixels, meaning there is nothing to bracket */
+        private boolean setScissor(float[] ndcBounds) {
+            if (ndcBounds == null) {
+                return false;
+            }
+            int x0 = (int) Math.floor((ndcBounds[0] * 0.5f + 0.5f) * this.width);
+            int y0 = (int) Math.floor((ndcBounds[1] * 0.5f + 0.5f) * this.height);
+            int x1 = (int) Math.ceil((ndcBounds[2] * 0.5f + 0.5f) * this.width);
+            int y1 = (int) Math.ceil((ndcBounds[3] * 0.5f + 0.5f) * this.height);
+            //A pixel is covered as soon as the bounds touch it, and the projected extent is only as exact
+            //as the depth buffer's own sampling - a pixel of slack each way costs nothing and avoids
+            //shaving the edge off the very geometry the shim exists to depth-test
+            this.scissorX = Math.max(0, x0 - 1);
+            this.scissorY = Math.max(0, y0 - 1);
+            this.scissorWidth = Math.min(this.width, x1 + 1) - this.scissorX;
+            this.scissorHeight = Math.min(this.height, y1 + 1) - this.scissorY;
+            return this.scissorWidth > 0 && this.scissorHeight > 0;
+        }
+
+        private void applyScissor() {
+            glEnable(GL_SCISSOR_TEST);
+            glScissor(this.scissorX, this.scissorY, this.scissorWidth, this.scissorHeight);
         }
 
         private void restoreForSableRender(int shimFramebuffer) {
@@ -512,6 +625,8 @@ public final class VoxySableDepthShim {
             glBindFramebuffer(GL_DRAW_FRAMEBUFFER, shimFramebuffer);
             glBindFramebuffer(GL_READ_FRAMEBUFFER, this.readFramebuffer);
             glViewport(0, 0, this.width, this.height);
+            //restoreMutableState just put the caller's scissor back; the bracketed pass runs under ours
+            this.applyScissor();
         }
 
         private void restoreAll() {
@@ -539,6 +654,12 @@ public final class VoxySableDepthShim {
             } else {
                 glDisable(GL_STENCIL_TEST);
             }
+            if (this.scissorTest) {
+                glEnable(GL_SCISSOR_TEST);
+            } else {
+                glDisable(GL_SCISSOR_TEST);
+            }
+            glScissor(this.scissorBox[0], this.scissorBox[1], this.scissorBox[2], this.scissorBox[3]);
 
             glDepthFunc(this.depthFunc);
             glDepthMask(this.depthMask != GL_FALSE);

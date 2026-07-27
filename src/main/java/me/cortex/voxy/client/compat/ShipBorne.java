@@ -47,6 +47,21 @@ public final class ShipBorne {
         }
     }
 
+    public static me.cortex.voxy.client.compat.sable.SableScreenBounds.Result shipScreenBounds(
+            double cameraX, double cameraY, double cameraZ,
+            org.joml.Matrix4f modelView, org.joml.Matrix4f projection, double overhangBlocks) {
+        if (!SABLE_PRESENT || gateUnavailable) {
+            return me.cortex.voxy.client.compat.sable.SableScreenBounds.Result.allNear();
+        }
+        try {
+            return me.cortex.voxy.client.compat.sable.SableShipContent.shipScreenBounds(
+                    cameraX, cameraY, cameraZ, modelView, projection, overhangBlocks);
+        } catch (LinkageError | RuntimeException e) {
+            gateUnavailable = true;
+            return me.cortex.voxy.client.compat.sable.SableScreenBounds.Result.allNear();
+        }
+    }
+
     //Self-heal for sable's join-time-only Flywheel plot registration (see SableShipContent) - safe to
     //call every frame, no-ops once the state exists
     public static void ensureShipFlywheelState(net.minecraft.world.entity.Entity entity) {

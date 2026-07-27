@@ -45,6 +45,21 @@ public final class SableShipContent {
         return container != null && !container.getAllSubLevels().isEmpty();
     }
 
+    /**
+     * Screen extent of every ship in the level. A pass that exists only to let LOD occlude ship content
+     * needs no more than this - and nothing at all when the answer is a skip.
+     */
+    public static SableScreenBounds.Result shipScreenBounds(double cameraX, double cameraY, double cameraZ,
+                                                            org.joml.Matrix4f modelView, org.joml.Matrix4f projection,
+                                                            double overhangBlocks) {
+        ClientSubLevelContainer container = container();
+        if (container == null) {
+            return SableScreenBounds.Result.allNear();
+        }
+        return SableScreenBounds.of(container.getAllSubLevels(), cameraX, cameraY, cameraZ,
+                modelView, projection, overhangBlocks);
+    }
+
     //Diagnostics surfaced by /voxy debug ship
     public static volatile long ensureCalls;
     public static volatile long ensureRegistered;
