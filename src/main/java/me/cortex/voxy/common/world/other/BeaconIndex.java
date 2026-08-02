@@ -55,22 +55,76 @@ public final class BeaconIndex {
         }
     }
 
+    //Membership changes, delivered as world positions on the ingest worker that made them. The
+    //listener must not call back into this index and must not block - it runs inside the scan path.
+    public interface ChangeListener {
+        void onBeaconAdded(int x, int y, int z);
+
+        void onBeaconRemoved(int x, int y, int z);
+    }
+
+    private volatile ChangeListener listener;
+
+    public void setListener(ChangeListener listener) {
+        this.listener = listener;
+    }
+
     //Replace everything known about one section. Empty retires the entry rather than storing a zero count,
-    //so a world full of ordinary sections costs nothing.
+    //so a world full of ordinary sections costs nothing. Re-ingest hands every scanned section through
+    //here, so the unchanged case has to be free: no store write, no listener call.
     public void setSection(int sx, int sy, int sz, short[] packedLocals) {
         long key = BlockPos.asLong(sx, sy, sz);
         if (packedLocals == null || packedLocals.length == 0) {
             //Only touch the store if we had something here: the common case is a section that never held a
             //beacon and never will, and issuing a delete for each of those would swamp the write path.
-            if (this.sections.remove(key) != null && this.persistent) {
-                this.storage.deleteAux(TABLE, key);
+            short[] old = this.sections.remove(key);
+            if (old != null) {
+                if (this.persistent) {
+                    this.storage.deleteAux(TABLE, key);
+                }
+                this.fireDiff(sx, sy, sz, old, null);
             }
             return;
         }
-        this.sections.put(key, packedLocals);
+        short[] old = this.sections.put(key, packedLocals);
+        if (old != null && java.util.Arrays.equals(old, packedLocals)) {
+            return;
+        }
         if (this.persistent) {
             this.storage.putAux(TABLE, key, encode(packedLocals));
         }
+        this.fireDiff(sx, sy, sz, old, packedLocals);
+    }
+
+    private void fireDiff(int sx, int sy, int sz, short[] old, short[] now) {
+        ChangeListener listener = this.listener;
+        if (listener == null) {
+            return;
+        }
+        int ox = sx << 4, oy = sy << 4, oz = sz << 4;
+        if (old != null) {
+            for (short packed : old) {
+                if (now == null || !contains(now, packed)) {
+                    listener.onBeaconRemoved(ox + ((packed >> 8) & 0xF), oy + ((packed >> 4) & 0xF), oz + (packed & 0xF));
+                }
+            }
+        }
+        if (now != null) {
+            for (short packed : now) {
+                if (old == null || !contains(old, packed)) {
+                    listener.onBeaconAdded(ox + ((packed >> 8) & 0xF), oy + ((packed >> 4) & 0xF), oz + (packed & 0xF));
+                }
+            }
+        }
+    }
+
+    private static boolean contains(short[] locals, short packed) {
+        for (short local : locals) {
+            if (local == packed) {
+                return true;
+            }
+        }
+        return false;
     }
 
     //Absolute block positions of every known beacon.

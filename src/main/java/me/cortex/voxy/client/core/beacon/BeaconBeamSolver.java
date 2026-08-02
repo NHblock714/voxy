@@ -18,20 +18,29 @@ import java.util.List;
 //changes. Whatever the last ingest of those sections saw is what both of them show.
 public final class BeaconBeamSolver {
     //Vanilla stops at the build limit; the beam is drawn far past it but the scan has to end somewhere
-    private static final int MAX_SCAN_HEIGHT = 1024;
+    static final int MAX_SCAN_HEIGHT = 1024;
 
     private BeaconBeamSolver() {}
 
     //One run of constant colour. Heights are absolute world Y.
     public record Segment(int colorRgb, int yBottom, int yTop) {}
 
-    public static List<Segment> solve(WorldEngine engine, int bx, int by, int bz) {
+    //lookupFailed marks a beam solved against a mapper that did not know one of its ids yet - the
+    //ingest that wrote the voxel races the id registration. Such a verdict is provisional: caching it
+    //as final would freeze a wrong answer until the next voxel change, so the caller retries instead.
+    public record Result(List<Segment> segments, boolean lookupFailed) {
+        static final Result EMPTY = new Result(List.of(), false);
+        static final Result RETRY = new Result(List.of(), true);
+    }
+
+    public static Result solve(WorldEngine engine, int bx, int by, int bz, int maxBuildY) {
         //A beacon with no base emits nothing. The gate is in BeaconBlockEntity.getBeamSections, which
         //returns an empty list while levels == 0 - the segments are still computed and stored, they are
         //just never handed out, so neither the vanilla renderer nor Quark's replacement draws them.
         //tick() alone reads as though there were no such gate.
-        if (!hasBase(engine, bx, by, bz)) {
-            return List.of();
+        boolean[] lookupFailed = new boolean[1];
+        if (!hasBase(engine, bx, by, bz, lookupFailed)) {
+            return lookupFailed[0] ? Result.RETRY : Result.EMPTY;
         }
         var segments = new ArrayList<Segment>();
         int currentColor = 0xFFFFFF;
@@ -39,15 +48,18 @@ public final class BeaconBeamSolver {
         boolean anyColorSeen = false;
 
         var mapper = engine.getMapper();
-        //Not clamped to the build height: vanilla's own last beam segment runs to 1024, and sections
-        //above the world are the cheapest possible acquire - the backend misses, nothing is deserialised,
-        //and no voxel is read.
         int top = by + MAX_SCAN_HEIGHT;
+        //The walk stops at the build height: no block can exist above it, so nothing up there can stop
+        //or tint the beam - and while an above-world acquire never touches the backend, it does mint a
+        //uniform-air section that lands in the shared section LRU on release. Twenty-odd of those per
+        //beacon per rebuild was enough to cycle the whole LRU and evict live terrain. The last segment
+        //still runs to the visual top, exactly as vanilla's does.
+        int walkTop = Math.min(top, maxBuildY);
 
         //One acquire per section rather than per block: the column walks 16 blocks of a section before
         //it needs the next one, and acquire/release is the expensive part
         int y = by + 1;
-        while (y <= top) {
+        while (y <= walkTop) {
             int sectionY = y >> 5;
             var section = engine.acquireIfExists(0, bx >> 5, sectionY, bz >> 5);
             if (section == null) {
@@ -58,7 +70,7 @@ public final class BeaconBeamSolver {
             }
             try {
                 int lx = bx & 31, lz = bz & 31;
-                while (y <= top && (y >> 5) == sectionY) {
+                while (y <= walkTop && (y >> 5) == sectionY) {
                     long voxel = section.get(lx | (lz << 5) | ((y & 31) << 10));
                     if (voxel != 0 && !Mapper.isAir(voxel)) {
                         int blockId = Mapper.getBlockId(voxel);
@@ -67,13 +79,14 @@ public final class BeaconBeamSolver {
                             state = mapper.getBlockStateFromBlockId(blockId);
                         } catch (Exception e) {
                             state = null;
+                            lookupFailed[0] = true;
                         }
                         if (state != null && isRedirector(state)) {
                             //Quark's Beacon Redirection turns the beam at a corundum cluster, so it stops
                             //being a vertical column and this solver cannot describe it. Drawing the
                             //straight beam anyway would put a beam through terrain the real one turns
                             //away from - worse than drawing none until redirection is implemented.
-                            return List.of();
+                            return Result.EMPTY;
                         }
                         Integer tint = state == null ? null : tintOf(state);
                         if (tint != null) {
@@ -92,7 +105,7 @@ public final class BeaconBeamSolver {
                             //Vanilla clears checkingBeamSections here rather than keeping what it has,
                             //so an obstructed beacon shows no beam at all rather than one cut off at the
                             //ceiling. A beacon under a roof is the ordinary case.
-                            return List.of();
+                            return Result.EMPTY;
                         }
                     }
                     y++;
@@ -105,16 +118,16 @@ public final class BeaconBeamSolver {
         if (top > segmentBottom) {
             segments.add(new Segment(currentColor, segmentBottom, top));
         }
-        return segments;
+        return new Result(segments, lookupFailed[0]);
     }
 
     //Only the first pyramid layer, because only levels != 0 matters here - the higher layers change the
     //powers on offer, not whether there is a beam. Vanilla's updateBase walks 3x3 up to 9x9 for the same
     //first answer.
-    private static boolean hasBase(WorldEngine engine, int bx, int by, int bz) {
+    private static boolean hasBase(WorldEngine engine, int bx, int by, int bz, boolean[] lookupFailed) {
         for (int dx = -1; dx <= 1; dx++) {
             for (int dz = -1; dz <= 1; dz++) {
-                if (!isBaseBlock(engine, bx + dx, by - 1, bz + dz)) {
+                if (!isBaseBlock(engine, bx + dx, by - 1, bz + dz, lookupFailed)) {
                     return false;
                 }
             }
@@ -122,7 +135,7 @@ public final class BeaconBeamSolver {
         return true;
     }
 
-    private static boolean isBaseBlock(WorldEngine engine, int x, int y, int z) {
+    private static boolean isBaseBlock(WorldEngine engine, int x, int y, int z, boolean[] lookupFailed) {
         var section = engine.acquireIfExists(0, x >> 5, y >> 5, z >> 5);
         if (section == null) {
             //The layer under the beacon was never ingested, so there is nothing to justify a beam with
@@ -136,6 +149,7 @@ public final class BeaconBeamSolver {
             return engine.getMapper().getBlockStateFromBlockId(Mapper.getBlockId(voxel))
                     .is(net.minecraft.tags.BlockTags.BEACON_BASE_BLOCKS);
         } catch (Exception e) {
+            lookupFailed[0] = true;
             return false;
         } finally {
             section.release();

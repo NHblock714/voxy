@@ -39,9 +39,30 @@ public final class DistantBeaconRenderer implements LodPipelineHooks.Renderer {
     private static final float CORE_RADIUS = 0.2f;
 
     public static int lastFrameBeamsDrawn;
+    //Re-solves per frame. A solve is a bounded column walk, but the first sight of a beacon-heavy
+    //world queues them all at once - the budget turns that into a short ramp instead of one frame.
+    private static final int SOLVES_PER_FRAME = 4;
+    private static final long LOOKUP_RETRY_MS = 5000;
+
+    //Beacon pos -> its current verdict. A beam is re-solved only when its column's voxels changed,
+    //its index entry changed, or it crossed the LOD range - never on a timer. EMPTY is a cached
+    //verdict too: a beacon under a roof is the ordinary case, and re-proving it dark on a timer is
+    //the bulk of the work a change-driven solve avoids.
+    private final it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap<BeaconState> states =
+            new it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap<>();
+    private static final class BeaconState {
+        DistantMesh mesh;
+        double topY;
+        //Mapper did not know an id mid-solve; provisional, retried after a backoff
+        long retryAtMs;
+    }
 
     private final List<Built> built = new ArrayList<>();
-    private long builtForFrame = -1;
+    private boolean builtStale;
+    private long lastFilterMs = -1;
+    private me.cortex.voxy.common.world.WorldEngine boundEngine;
+    private final it.unimi.dsi.fastutil.longs.LongArrayList drainDirty = new it.unimi.dsi.fastutil.longs.LongArrayList();
+    private final it.unimi.dsi.fastutil.longs.LongArrayList drainRemoved = new it.unimi.dsi.fastutil.longs.LongArrayList();
 
     //topY is kept so the draw can frustum-test the beam: it is a tall thin column, and testing only its
     //base rejects it whenever the base is below the view while the visible part is not.
@@ -65,7 +86,31 @@ public final class DistantBeaconRenderer implements LodPipelineHooks.Renderer {
             return;
         }
 
-        this.rebuildIfStale(engine, viewport);
+        if (this.boundEngine != engine) {
+            //Engine changed under us (dimension switch, world reload): every cached verdict was solved
+            //against the old store, and the tracker's column map with it
+            this.discard();
+            BeaconBeamTracker.reset(this.boundEngine);
+            BeaconBeamTracker.bind(engine);
+            this.boundEngine = engine;
+            this.lastFilterMs = -1;
+        }
+
+        this.processChanges(engine, viewport, mc);
+        this.filterIfStale(viewport);
+        if (this.builtStale) {
+            this.builtStale = false;
+            this.built.clear();
+            for (var entry : this.states.long2ObjectEntrySet()) {
+                var state = entry.getValue();
+                if (state.mesh != null) {
+                    long pos = entry.getLongKey();
+                    this.built.add(new Built(state.mesh,
+                            BlockPos.getX(pos) + 0.5, BlockPos.getY(pos), BlockPos.getZ(pos) + 0.5, state.topY));
+                }
+            }
+            lastBuiltCount = this.built.size();
+        }
         if (this.built.isEmpty()) {
             lastFrameBeamsDrawn = 0;
             return;
@@ -130,51 +175,136 @@ public final class DistantBeaconRenderer implements LodPipelineHooks.Renderer {
         }
     }
 
-    //Solving walks the voxel store and baking uploads buffers, so it happens once per interval rather
-    //than per frame. A beam only changes when the sections around it are re-ingested.
-    private void rebuildIfStale(me.cortex.voxy.common.world.WorldEngine engine, Viewport<?> viewport) {
-        long now = System.currentTimeMillis();
-        if (this.builtForFrame != -1 && now - this.builtForFrame < 2000) {
+    //Solving walks the voxel store and baking uploads buffers, so neither may happen per frame or on a
+    //timer: a beam is a function of its column's voxels and its index entry, and the tracker watches
+    //both. What arrives here is only what actually changed, a budgeted few per frame.
+    private void processChanges(me.cortex.voxy.common.world.WorldEngine engine, Viewport<?> viewport, Minecraft mc) {
+        this.drainDirty.clear();
+        this.drainRemoved.clear();
+        BeaconBeamTracker.drain(this.drainDirty, this.drainRemoved);
+
+        for (int i = 0; i < this.drainRemoved.size(); i++) {
+            BeaconState state = this.states.remove(this.drainRemoved.getLong(i));
+            if (state != null) {
+                if (state.mesh != null) {
+                    state.mesh.free();
+                }
+                this.builtStale = true;
+            }
+        }
+        if (this.drainDirty.isEmpty()) {
             return;
         }
-        this.builtForFrame = now;
-        this.discard();
 
         double maxDist = VoxyConfig.CONFIG.createRenderDistance(VoxyConfig.CONFIG.distantBeaconMaxChunks);
         double maxDistSq = maxDist * maxDist;
-        var mc = Minecraft.getInstance();
-        int[] skipped = new int[3];
+        long now = System.currentTimeMillis();
+        int solved = 0;
         try {
-            engine.getBeaconIndex().forEach((bx, by, bz) -> {
+            for (int i = 0; i < this.drainDirty.size(); i++) {
+                long pos = this.drainDirty.getLong(i);
+                if (solved >= SOLVES_PER_FRAME) {
+                    //Budget spent: what is left stays queued and drains over the coming frames
+                    BeaconBeamTracker.queueDirty(pos);
+                    continue;
+                }
+                int bx = BlockPos.getX(pos), by = BlockPos.getY(pos), bz = BlockPos.getZ(pos);
                 double dx = (bx + 0.5) - viewport.cameraX;
                 double dz = (bz + 0.5) - viewport.cameraZ;
-                double horizontalSq = dx * dx + dz * dz;
-                if (horizontalSq > maxDistSq) {
-                    skipped[1]++;
-                    return;
-                }
-                var segments = BeaconBeamSolver.solve(engine, bx, by, bz);
-                if (segments.isEmpty()) {
-                    skipped[2]++;
-                    return;
-                }
-                var mesh = bake(segments, by);
-                if (mesh != null) {
-                    double topY = by;
-                    for (var seg : segments) {
-                        topY = Math.max(topY, seg.yTop());
+                if (dx * dx + dz * dz > maxDistSq) {
+                    //Out of range: drop whatever was held; the range filter re-queues it on approach
+                    BeaconState state = this.states.remove(pos);
+                    if (state != null && state.mesh != null) {
+                        state.mesh.free();
+                        this.builtStale = true;
                     }
-                    this.built.add(new Built(mesh, bx + 0.5, by, bz + 0.5, topY));
+                    continue;
                 }
-            });
+                solved++;
+                this.solveOne(engine, mc, pos, bx, by, bz, now);
+            }
         } catch (Throwable t) {
             Logger.error("Building distant beacon beams", t);
-            this.discard();
         }
-        lastVanillaOwned = skipped[0];
-        lastOutOfRange = skipped[1];
-        lastNoSegments = skipped[2];
-        lastBuiltCount = this.built.size();
+    }
+
+    private void solveOne(me.cortex.voxy.common.world.WorldEngine engine, Minecraft mc,
+                          long pos, int bx, int by, int bz, long now) {
+        var result = BeaconBeamSolver.solve(engine, bx, by, bz, mc.level == null ? by : mc.level.getMaxBuildHeight());
+        BeaconState state = this.states.get(pos);
+        if (state == null) {
+            state = new BeaconState();
+            this.states.put(pos, state);
+        }
+        if (state.mesh != null) {
+            state.mesh.free();
+            state.mesh = null;
+            this.builtStale = true;
+        }
+        if (result.lookupFailed()) {
+            //Solved against a mapper that had not registered an id yet - a wrong verdict cached now
+            //would stick until the next voxel change, so hold it provisional and retry
+            state.retryAtMs = now + LOOKUP_RETRY_MS;
+            return;
+        }
+        state.retryAtMs = 0;
+        if (result.segments().isEmpty()) {
+            return;
+        }
+        var mesh = bake(result.segments(), by);
+        if (mesh != null) {
+            double topY = by;
+            for (var seg : result.segments()) {
+                topY = Math.max(topY, seg.yTop());
+            }
+            state.mesh = mesh;
+            state.topY = topY;
+            this.builtStale = true;
+        }
+    }
+
+    //The only thing left on a timer, because distance is the one input with no event: membership of
+    //the LOD range as the camera moves. One distance check per index entry, no acquires, no GL.
+    private void filterIfStale(Viewport<?> viewport) {
+        long now = System.currentTimeMillis();
+        if (this.lastFilterMs != -1 && now - this.lastFilterMs < 2000) {
+            return;
+        }
+        this.lastFilterMs = now;
+
+        double maxDist = VoxyConfig.CONFIG.createRenderDistance(VoxyConfig.CONFIG.distantBeaconMaxChunks);
+        double maxDistSq = maxDist * maxDist;
+        int[] outOfRange = new int[1];
+        var engine = this.boundEngine;
+        if (engine == null) {
+            return;
+        }
+        engine.getBeaconIndex().forEach((bx, by, bz) -> {
+            long pos = BlockPos.asLong(bx, by, bz);
+            double dx = (bx + 0.5) - viewport.cameraX;
+            double dz = (bz + 0.5) - viewport.cameraZ;
+            boolean inRange = dx * dx + dz * dz <= maxDistSq;
+            BeaconState state = this.states.get(pos);
+            if (!inRange) {
+                outOfRange[0]++;
+                if (state != null) {
+                    this.states.remove(pos);
+                    if (state.mesh != null) {
+                        state.mesh.free();
+                        this.builtStale = true;
+                    }
+                }
+                return;
+            }
+            if (state == null) {
+                //Came into range without a voxel change - first sight, or returning after eviction
+                BeaconBeamTracker.queueDirty(pos);
+            } else if (state.retryAtMs != 0 && now >= state.retryAtMs) {
+                state.retryAtMs = 0;
+                BeaconBeamTracker.queueDirty(pos);
+            }
+        });
+        lastOutOfRange = outOfRange[0];
     }
 
     //Four sides of a square column per segment, textured along Y the way vanilla's beam is
@@ -206,16 +336,22 @@ public final class DistantBeaconRenderer implements LodPipelineHooks.Renderer {
     }
 
     private void discard() {
-        for (var beam : this.built) {
-            beam.mesh.free();
+        for (var state : this.states.values()) {
+            if (state.mesh != null) {
+                state.mesh.free();
+            }
         }
+        this.states.clear();
         this.built.clear();
+        this.builtStale = false;
     }
 
     @net.neoforged.bus.api.SubscribeEvent
     public void onLogout(net.neoforged.neoforge.client.event.ClientPlayerNetworkEvent.LoggingOut event) {
         this.discard();
-        this.builtForFrame = -1;
+        BeaconBeamTracker.reset(this.boundEngine);
+        this.boundEngine = null;
+        this.lastFilterMs = -1;
     }
 
     //Why a beacon is not drawn splits four ways and only one of them is a bug, so each rejection is

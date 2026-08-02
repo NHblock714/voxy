@@ -130,7 +130,12 @@ public class VoxyRenderSystem {
                 this.nodeCleaner = new NodeCleaner(this.nodeManager);
                 this.traversal = new HierarchicalOcclusionTraverser(this.nodeManager, this.nodeCleaner, this.renderGen);
 
-                world.setDirtyCallback(this.nodeManager::worldEvent);
+                //The callback is a single slot; the beacon tracker listens to the same signal, so both
+                //consumers share one registration rather than the second silently replacing the first
+                world.setDirtyCallback((s, flags, msk) -> {
+                    this.nodeManager.worldEvent(s, flags, msk);
+                    me.cortex.voxy.client.core.beacon.BeaconBeamTracker.onSectionDirty(s, flags);
+                });
 
                 Arrays.stream(world.getMapper().getBiomeEntries()).forEach(this.modelService::addBiome);
                 world.getMapper().setBiomeCallback(this.modelService::addBiome);
