@@ -200,6 +200,10 @@ public final class WorldSection {
 
 
     public static int RELEASE_HINT_POSSIBLE_REUSE = 1;
+    //The releaser is a bulk walk that will not come back for this section, and one pass releases more
+    //sections than the secondary LRU holds - admitting them would evict the mesh workers' entire
+    //working set several times over. Only honoured on the release that actually drops the last ref.
+    public static int RELEASE_HINT_DONT_CACHE = 2;
     //Unload but specify possible reuse hints
     public int release(int hints) {
         return release(true, hints);

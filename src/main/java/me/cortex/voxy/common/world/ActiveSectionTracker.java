@@ -68,6 +68,44 @@ public class ActiveSectionTracker {
         return this.acquire(WorldEngine.getWorldSectionId(lvl, x, y, z), nullOnEmpty);
     }
 
+    //Cache-only acquire: the loaded map, then the LRU, never the loader. The render thread may call
+    //this - the miss it returns is what a once-a-second poll can absorb, a synchronous storage read is
+    //not. A holder mid-load returns null rather than joining it: the spin-wait in acquire() parks the
+    //caller on another thread's I/O, which is the exact thing a cache-only path exists to avoid.
+    public WorldSection acquireIfCached(long key) {
+        int index = this.getCacheArrayIndex(key);
+        var cache = this.loadedSectionCache[index];
+        final var lock = this.locks[index];
+        long stamp = lock.readLock();
+        try {
+            VolatileHolder<WorldSection> holder = cache.get(key);
+            if (holder != null) {
+                WorldSection section = holder.obj;
+                if (section != null) {
+                    section.acquire();
+                    return section;
+                }
+                return null;
+            }
+        } finally {
+            lock.unlockRead(stamp);
+        }
+        boolean inLru;
+        long lruStamp = this.lruLock.readLock();
+        try {
+            inLru = this.lruSecondaryCache.containsKey(key);
+        } finally {
+            this.lruLock.unlockRead(lruStamp);
+        }
+        if (inLru) {
+            //Guaranteed cache-served through the one promotion path that keeps every invariant. The
+            //section can be evicted between the probe and this call - that rare loser pays one
+            //synchronous load, accepted over duplicating the promotion logic here.
+            return this.acquire(key, true);
+        }
+        return null;
+    }
+
     public WorldSection acquire(long key, boolean nullOnEmpty) {
         //TODO: add optional verification check to ensure this (or other critical systems) arnt being called on the render or server thread
         if (this.engine != null) this.engine.lastActiveTime = System.currentTimeMillis();
@@ -310,22 +348,30 @@ public class ActiveSectionTracker {
 
             WorldSection aa = null;
             if (sec != null) {
-                long stamp2 = this.lruLock.writeLock();
-                try {
+                if ((hints & WorldSection.RELEASE_HINT_DONT_CACHE) != 0) {
+                    //Freeing immediately is what LRU eviction would do to this section later, minus
+                    //evicting an entry something still wants. The array still returns to the reuse
+                    //pool, and the section never enters the LRU - so nothing else ever frees it twice.
                     lock.unlockWrite(stamp);
                     stamp = 0;
-                    WorldSection a = this.lruSecondaryCache.put(section.key, section);
-                    if (a != null) {
-                        throw new IllegalStateException("duplicate sections in cache is impossible");
+                    aa = sec;
+                } else {
+                    long stamp2 = this.lruLock.writeLock();
+                    try {
+                        lock.unlockWrite(stamp);
+                        stamp = 0;
+                        WorldSection a = this.lruSecondaryCache.put(section.key, section);
+                        if (a != null) {
+                            throw new IllegalStateException("duplicate sections in cache is impossible");
+                        }
+                        //If cache is bigger than its ment to be, remove the least recently used and free it
+                        if (this.lruSize < this.lruSecondaryCache.size()) {
+                            aa = this.lruSecondaryCache.removeFirst();
+                        }
+                    } finally {
+                        this.lruLock.unlockWrite(stamp2);
                     }
-                    //If cache is bigger than its ment to be, remove the least recently used and free it
-                    if (this.lruSize < this.lruSecondaryCache.size()) {
-                        aa = this.lruSecondaryCache.removeFirst();
-                    }
-                } finally {
-                    this.lruLock.unlockWrite(stamp2);
                 }
-
             } else {
                 lock.unlockWrite(stamp);
                 stamp = 0;

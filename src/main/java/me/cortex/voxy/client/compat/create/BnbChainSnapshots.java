@@ -66,11 +66,11 @@ public final class BnbChainSnapshots {
             float length = (float) from.distanceTo(to) + 0.05f;
 
             //One above the endpoint cogwheels - their own cells are solid voxels and read 0
-            int light1 = DistantLightSampler.sample(level,
+            int light1 = DistantLightSampler.samplePeek(level,
                     (int) Math.floor(origin.getX() + 0.5 + from.x),
                     (int) Math.floor(origin.getY() + 0.5 + from.y) + 1,
                     (int) Math.floor(origin.getZ() + 0.5 + from.z));
-            int light2 = DistantLightSampler.sample(level,
+            int light2 = DistantLightSampler.samplePeek(level,
                     (int) Math.floor(origin.getX() + 0.5 + to.x),
                     (int) Math.floor(origin.getY() + 0.5 + to.y) + 1,
                     (int) Math.floor(origin.getZ() + 0.5 + to.z));

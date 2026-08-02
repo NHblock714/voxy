@@ -207,7 +207,11 @@ public final class SeasonalSnowRefresher {
                         remipIntoParents(engine, mapper, section, section._rawOrNull());
                     }
                 } finally {
-                    section.release();
+                    //Each stored section passes through here exactly once, and a pass visits more of
+                    //them than the secondary LRU holds. Dirty sections detour through the save queue
+                    //and re-enter the cache from there - which is right, rewritten sections are the
+                    //ones that get re-meshed. The hint only ever drops the untouched majority.
+                    section.release(WorldSection.RELEASE_HINT_DONT_CACHE);
                 }
                 scanned++;
 
@@ -347,7 +351,9 @@ public final class SeasonalSnowRefresher {
             }
         } finally {
             if (above != null) {
-                above.release();
+                //Key order brings this section back as the primary a whole horizontal plane later -
+                //beyond LRU reach on any store large enough for the walk to matter
+                above.release(WorldSection.RELEASE_HINT_DONT_CACHE);
             }
         }
         return changed;

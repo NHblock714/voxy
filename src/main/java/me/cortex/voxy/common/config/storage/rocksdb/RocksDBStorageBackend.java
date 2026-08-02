@@ -268,8 +268,13 @@ public class RocksDBStorageBackend extends StorageBackend {
 
     @Override
     public void iteratePositions(int level, LongConsumer consumer) {
-        try (var stack = MemoryStack.stackPush()) {
-            try (var iter = this.db.newIterator(this.worldSections, this.sectionReadOps)) {
+        //Keys and values share data blocks in this table format, so listing keys streams every data
+        //block in the family through the block cache - each touched exactly once, never revisited by
+        //this scan. fillCache(false) keeps those one-shot blocks out of the cache; reads that hit a
+        //block already resident are still served from it.
+        try (var stack = MemoryStack.stackPush();
+             var scanOps = new ReadOptions().setFillCache(false)) {
+            try (var iter = this.db.newIterator(this.worldSections, scanOps)) {
                 ByteBuffer keyBuff = stack.calloc(8);
                 long keyBuffPtr = MemoryUtil.memAddress(keyBuff);
                 //TODO: this can be optimized if needed by useing a prefix-seek https://github.com/facebook/rocksdb/wiki/Prefix-Seek

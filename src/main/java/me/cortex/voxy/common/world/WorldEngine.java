@@ -75,6 +75,11 @@ public class WorldEngine {
         this.sectionTracker = new ActiveSectionTracker(6, storage::loadSection, cacheSize, this);
     }
 
+    //See ActiveSectionTracker.acquireIfCached - safe from the render thread, misses instead of loading
+    public WorldSection acquireIfCached(int lvl, int x, int y, int z) {
+        return this.sectionTracker.acquireIfCached(getWorldSectionId(lvl, x, y, z));
+    }
+
     public WorldSection acquireIfExists(int lvl, int x, int y, int z) {
         if (!this.isLive) throw new IllegalStateException("World is not live");
         return this.sectionTracker.acquire(lvl, x, y, z, true);
