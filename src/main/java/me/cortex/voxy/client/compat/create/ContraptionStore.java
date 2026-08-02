@@ -35,7 +35,9 @@ import java.util.UUID;
 //the vanilla data fixer on a rename, which is what makes it safe to keep outside the store that wrote it.
 public final class ContraptionStore {
     public static final String TABLE = "create_contraptions";
-    private static final byte FORMAT = 1;
+    //FORMAT 2 adds the entity type's tracking range after the position. Legacy records decode with 80,
+    //the smallest range - sound for any type, at the cost of a halved presence radius for the larger ones.
+    private static final byte FORMAT = 2;
     //A contraption is bounded by the +-127 local coordinate packing, so its block count cannot approach
     //this; the cap only stops a corrupt length from allocating wildly
     private static final int MAX_BLOCKS = 1 << 20;
@@ -43,7 +45,8 @@ public final class ContraptionStore {
     private ContraptionStore() {}
 
     public record Stored(UUID id, DistantContraptionManager.Source source,
-                         Matrix4f pose, double x, double y, double z, ResourceLocation dim) {}
+                         Matrix4f pose, double x, double y, double z, ResourceLocation dim,
+                         double trackingBlocks) {}
 
     //UUIDs do not fit a long key, so the two halves are mixed. A collision would show one contraption in
     //place of another, which is why the record carries its own id and the loader checks it.
@@ -107,6 +110,7 @@ public final class ContraptionStore {
         out.writeDouble(snap.x());
         out.writeDouble(snap.y());
         out.writeDouble(snap.z());
+        out.writeDouble(snap.trackingBlocks());
         out.writeUTF(snap.dim().toString());
         float[] pose = new float[16];
         snap.local().get(pose);
@@ -144,12 +148,13 @@ public final class ContraptionStore {
     }
 
     private static Stored decode(byte[] value) {
-        if (value == null || value.length < 2 || value[0] != FORMAT) {
+        if (value == null || value.length < 2 || value[0] < 1 || value[0] > FORMAT) {
             return null;
         }
         try (var in = new DataInputStream(new ByteArrayInputStream(value, 1, value.length - 1))) {
             var id = new UUID(in.readLong(), in.readLong());
             double x = in.readDouble(), y = in.readDouble(), z = in.readDouble();
+            double trackingBlocks = value[0] >= 2 ? in.readDouble() : 80.0;
             var dim = ResourceLocation.parse(in.readUTF());
             var pose = new Matrix4f();
             float[] raw = new float[16];
@@ -196,7 +201,8 @@ public final class ContraptionStore {
             //Copycat model data is not stored: it is read from block entity nbt that left with the
             //entity, so a reloaded snapshot shows the copycat's own model rather than what it was
             //wearing. Everything else about the shape is intact.
-            return new Stored(id, new DistantContraptionManager.Source(blocks, null), pose, x, y, z, dim);
+            return new Stored(id, new DistantContraptionManager.Source(blocks, null), pose, x, y, z, dim,
+                    trackingBlocks);
         } catch (Throwable t) {
             Logger.error("Decoding a stored contraption snapshot; dropping it", t);
             return null;

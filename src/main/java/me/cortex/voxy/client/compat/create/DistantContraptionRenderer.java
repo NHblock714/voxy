@@ -87,21 +87,42 @@ public final class DistantContraptionRenderer implements LodPipelineHooks.Render
         //distance; we take over exactly at that radius, holding the frozen snapshot.
         double reach = mc.options.getEffectiveRenderDistance() * 16.0;
         double reachSq = reach * reach;
+        //The same camera the live render's cull uses, not the viewport's copy: the yield below must be
+        //the exact complement of that cull's predicate.
+        var entityCam = mc.gameRenderer.getMainCamera().getPosition();
 
         boolean renderStateActive = false;
         int drawn = 0;
         var transform = new Matrix4f();
         try {
-            for (var snap : snapshots.values()) {
+            for (var snapEntry : snapshots.entrySet()) {
+                var snap = snapEntry.getValue();
                 if (snap.mesh() == null || !dimension.equals(snap.dim())) {
                     continue;
                 }
                 double dx = snap.x() - camX, dy = snap.y() - camY, dz = snap.z() - camZ;
                 double distSq = dx * dx + dy * dy + dz * dz;
-                //Yield to the live entity only when it actually exists client-side: entity tracking
-                //ends well inside the render distance, so yielding on distance alone left a ring
-                //(tracking range -> render distance) where neither side drew.
-                if ((distSq < reachSq && snap.live()) || distSq > maxDistSq) {
+                if (distSq > maxDistSq) {
+                    continue;
+                }
+                //When the live pipeline truly draws the entity this frame, ownership must be decided
+                //by the same predicate, sample source and camera as the live render's own cull
+                //(MixinContraptionEntityRenderer): entity inside the reach - live draws, snapshot
+                //yields; beyond - live is cancelled, snapshot holds. Any other sample straddles the
+                //boundary against it, and every crossing then doubles the structure inward and
+                //blanks it outward. Present-but-hidden (EntityCulling culled it and a visual culler
+                //dropped its Flywheel visual) falls through to the stand-in: inside the reach the
+                //manager refreshes anchor and pose every tick, so the copy is positionally honest
+                //even for a mover. The moved-suppression applies only to truly ABSENT entities -
+                //there the anchor is a stale mid-travel pose the real structure left when tracking
+                //cut off, and its disassembly packet went to clients that no longer include this
+                //one. Past the reach the leave-behind holds either way.
+                var live = DistantContraptionManager.trackedEntity(snapEntry.getKey(), snap);
+                if (live != null && !DistantContraptionManager.hiddenThisFrame(live)) {
+                    if (live.position().distanceToSqr(entityCam) <= reachSq) {
+                        continue;
+                    }
+                } else if (live == null && distSq < reachSq && snap.movedWhileSeen()) {
                     continue;
                 }
                 //Before any state setup, so a frame with every contraption behind the camera never binds
