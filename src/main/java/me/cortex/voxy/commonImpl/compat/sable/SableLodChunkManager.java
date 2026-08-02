@@ -28,42 +28,81 @@ import java.util.WeakHashMap;
 
 public final class SableLodChunkManager {
     private static final TicketType<ChunkPos> VOXY_SABLE_LOD_TICKET = TicketType.create("voxy_sable_lod", Comparator.comparingLong(ChunkPos::toLong));
-    private static final int TICKET_DISTANCE = 2;
+    //Two ticket tiers. Distance 2 resolves to level 31 - ENTITY_TICKING - which is what keeps a
+    //distant ship's parent-world contraption entity moving; it goes only on the anchor chunk holding
+    //that entity. Everything else the tickets exist for - getChunkNow succeeding for the light sync,
+    //the physics gate answering loaded - needs residency, not ticking, and distance 0 (level 33, FULL)
+    //provides exactly that. Footprint-wide distance 2 had every chunk under every in-range ship
+    //running random ticks and entity AI: crops growing and mobs pathing under scenery 4000 blocks out.
+    private static final int ANCHOR_TICKET_DISTANCE = 2;
+    private static final int FOOTPRINT_TICKET_DISTANCE = 0;
 
     private static final Map<ServerLevel, LongSet> activeChunkLoads = new WeakHashMap<>();
+
+    //What the last rebuild saw, folded to one hash. The desired chunk set is a pure function of the
+    //range, the player chunk positions, each sub-level's footprint box and anchor, and the holding
+    //index - so while none of those move, the rebuild would reproduce the tickets it already placed.
+    //The tickets themselves never expire (TicketType.create without timeout), so skipping is safe.
+    //A hash miss (collision, or state the hash cannot see, like a holding sub-level appearing inside
+    //an already-loaded holding chunk) is bounded by the forced rebuild: at most 2 seconds stale.
+    private static final class LevelSignature {
+        long stateHash;
+        long nextForcedRebuildTick;
+    }
+
+    private static final long FORCED_REBUILD_INTERVAL_TICKS = 40L;
+    private static final Map<ServerLevel, LevelSignature> SIGNATURES = new WeakHashMap<>();
 
     private static boolean sableUnavailable;
 
     private SableLodChunkManager() {
     }
 
-    public static void updateTickets(ServerLevel level, LongSet trackedChunks, LongSet trackedHoldingChunks) {
+    public static void updateTickets(ServerLevel level, LongSet trackedTickingChunks, LongSet trackedFullChunks, LongSet trackedHoldingChunks) {
         if (sableUnavailable) {
-            clearTickets(level, trackedChunks, trackedHoldingChunks);
+            clearTickets(level, trackedTickingChunks, trackedFullChunks, trackedHoldingChunks);
             return;
         }
 
         try {
             double horizontalRenderDistanceBlocks = SableContraptionRenderDistance.getRangeBlocks(level);
             if (horizontalRenderDistanceBlocks <= 0.0) {
-                clearTickets(level, trackedChunks, trackedHoldingChunks);
+                clearTickets(level, trackedTickingChunks, trackedFullChunks, trackedHoldingChunks);
                 return;
             }
 
             ServerSubLevelContainer container = SubLevelContainer.getContainer(level);
             if (container == null) {
-                clearTickets(level, trackedChunks, trackedHoldingChunks);
+                clearTickets(level, trackedTickingChunks, trackedFullChunks, trackedHoldingChunks);
                 return;
             }
 
             if (level.players().isEmpty()) {
-                clearTickets(level, trackedChunks, trackedHoldingChunks);
+                clearTickets(level, trackedTickingChunks, trackedFullChunks, trackedHoldingChunks);
                 return;
             }
 
-            LongSet desiredChunks = new LongOpenHashSet();
-            LongSet desiredHoldingChunks = new LongOpenHashSet();
             double maxHorizontalDistanceSquared = horizontalRenderDistanceBlocks * horizontalRenderDistanceBlocks;
+
+            LevelSignature signature = SIGNATURES.computeIfAbsent(level, ignored -> new LevelSignature());
+            long gameTime = level.getGameTime();
+            long stateHash = computeStateHash(level, container, horizontalRenderDistanceBlocks, maxHorizontalDistanceSquared);
+            if (stateHash == signature.stateHash && gameTime < signature.nextForcedRebuildTick) {
+                return;
+            }
+            signature.stateHash = stateHash;
+            signature.nextForcedRebuildTick = gameTime + FORCED_REBUILD_INTERVAL_TICKS;
+
+            LongSet desiredTicking = new LongOpenHashSet();
+            LongSet desiredFull = new LongOpenHashSet();
+            LongSet desiredHoldingChunks = new LongOpenHashSet();
+
+            //Vanilla only ticks entities and block entities within the simulation distance; between it
+            //and the view distance a player can WATCH machinery that vanilla leaves frozen. A ship
+            //within that band is scenery someone is looking at, so it keeps the full-footprint
+            //ticking; only ships past watching range pay the anchor-only tier.
+            double nearBlocks = Math.max(2, level.getServer().getPlayerList().getViewDistance()) * 16.0 + 32.0;
+            double nearSq = nearBlocks * nearBlocks;
 
             for (ServerSubLevel subLevel : container.getAllSubLevels()) {
                 if (subLevel.isRemoved()) {
@@ -75,31 +114,88 @@ public final class SableLodChunkManager {
                     continue;
                 }
 
-                addChunkBounds(level, bounds, desiredChunks, maxHorizontalDistanceSquared);
+                if (isWithinHorizontalDistance(level, bounds, nearSq)) {
+                    addChunkBounds(level, bounds, desiredTicking, maxHorizontalDistanceSquared);
+                    continue;
+                }
+                addChunkBounds(level, bounds, desiredFull, maxHorizontalDistanceSquared);
+                //The parent-world contraption entity lives at the logical pose; that one chunk keeps
+                //entity ticking so the ship can still move. Applied to parked ships too - an entity
+                //frozen at FULL can never initiate motion, so demoting by velocity would be a trap.
+                var anchor = subLevel.logicalPose().position();
+                desiredTicking.add(ChunkPos.asLong(Mth.floor(anchor.x()) >> 4, Mth.floor(anchor.z()) >> 4));
             }
+            desiredFull.removeAll(desiredTicking);
 
-            updateHoldingChunkLoads(level, container.getHoldingChunkMap(), desiredChunks, desiredHoldingChunks, trackedHoldingChunks, maxHorizontalDistanceSquared);
-            removeStaleTickets(level, trackedChunks, desiredChunks);
-            addMissingTickets(level, trackedChunks, desiredChunks);
-            activeChunkLoads.put(level, new LongOpenHashSet(desiredChunks));
+            updateHoldingChunkLoads(level, container.getHoldingChunkMap(), desiredFull, desiredHoldingChunks, trackedHoldingChunks, maxHorizontalDistanceSquared);
+            //Holding-derived footprint chunks may overlap a live anchor; the anchor tier wins
+            desiredFull.removeAll(desiredTicking);
+
+            //Adds before removes: a chunk migrating tiers (the ship moved a chunk) briefly holds both
+            //tickets rather than neither, and removeRegionTicket is always called with the distance
+            //its ticket was added at - ticket identity includes the level.
+            addMissingTickets(level, trackedTickingChunks, desiredTicking, ANCHOR_TICKET_DISTANCE);
+            addMissingTickets(level, trackedFullChunks, desiredFull, FOOTPRINT_TICKET_DISTANCE);
+            removeStaleTickets(level, trackedTickingChunks, desiredTicking, ANCHOR_TICKET_DISTANCE);
+            removeStaleTickets(level, trackedFullChunks, desiredFull, FOOTPRINT_TICKET_DISTANCE);
+
+            LongSet active = new LongOpenHashSet(desiredFull);
+            active.addAll(desiredTicking);
+            activeChunkLoads.put(level, active);
         } catch (NoClassDefFoundError e) {
             sableUnavailable = true;
-            clearTickets(level, trackedChunks, trackedHoldingChunks);
+            clearTickets(level, trackedTickingChunks, trackedFullChunks, trackedHoldingChunks);
         } catch (RuntimeException | LinkageError e) {
             Logger.error("Disabling Voxy Sable LOD compatibility after direct access failed", e);
             sableUnavailable = true;
-            clearTickets(level, trackedChunks, trackedHoldingChunks);
+            clearTickets(level, trackedTickingChunks, trackedFullChunks, trackedHoldingChunks);
         }
     }
 
-    public static void clearTickets(ServerLevel level, LongSet trackedChunks, LongSet trackedHoldingChunks) {
+    //Folds every input the desired sets depend on: range, player chunk positions, each live
+    //sub-level's identity, in-range verdict, chunk box and anchor chunk, and the holding index
+    //revision plus loaded-count. Order-sensitive mixing; iteration order changes force at worst one
+    //spurious rebuild, never a missed one beyond the forced cap.
+    private static long computeStateHash(ServerLevel level, ServerSubLevelContainer container,
+                                         double rangeBlocks, double maxHorizontalDistanceSquared) {
+        long h = Double.doubleToLongBits(rangeBlocks);
+        for (var player : level.players()) {
+            h = h * 0x9E3779B97F4A7C15L + ChunkPos.asLong(Mth.floor(player.getX()) >> 4, Mth.floor(player.getZ()) >> 4);
+        }
+        for (ServerSubLevel subLevel : container.getAllSubLevels()) {
+            if (subLevel.isRemoved()) {
+                continue;
+            }
+            var id = subLevel.getUniqueId();
+            h = h * 0x9E3779B97F4A7C15L + (id == null ? 0 : id.getLeastSignificantBits() ^ id.getMostSignificantBits());
+            BoundingBox3dc bounds = subLevel.boundingBox();
+            if (bounds == null || !isWithinHorizontalDistance(level, bounds, maxHorizontalDistanceSquared)) {
+                h = h * 31 + 1;
+                continue;
+            }
+            h = h * 31 + ChunkPos.asLong(Mth.floor(bounds.minX()) >> 4, Mth.floor(bounds.minZ()) >> 4);
+            h = h * 31 + ChunkPos.asLong(Mth.floor(bounds.maxX()) >> 4, Mth.floor(bounds.maxZ()) >> 4);
+            var anchor = subLevel.logicalPose().position();
+            h = h * 31 + ChunkPos.asLong(Mth.floor(anchor.x()) >> 4, Mth.floor(anchor.z()) >> 4);
+        }
+        h = h * 31 + SableHoldingChunkIndexSavedData.getOrLoad(level).revision();
+        var holdingMap = container.getHoldingChunkMap();
+        if (holdingMap != null) {
+            var loaded = ((SableSubLevelHoldingChunkMapAccessor) holdingMap).voxy$getLoadedHoldingChunks();
+            h = h * 31 + (loaded == null ? 0 : loaded.size());
+        }
+        return h;
+    }
+
+    public static void clearTickets(ServerLevel level, LongSet trackedTickingChunks, LongSet trackedFullChunks, LongSet trackedHoldingChunks) {
         activeChunkLoads.remove(level);
-        clearTickets(level, trackedChunks);
+        SIGNATURES.remove(level);
+        clearTicketSet(level, trackedTickingChunks, ANCHOR_TICKET_DISTANCE);
+        clearTicketSet(level, trackedFullChunks, FOOTPRINT_TICKET_DISTANCE);
         clearHoldingChunkLoads(level, trackedHoldingChunks);
     }
 
-    public static void clearTickets(ServerLevel level, LongSet trackedChunks) {
-        activeChunkLoads.remove(level);
+    private static void clearTicketSet(ServerLevel level, LongSet trackedChunks, int ticketDistance) {
         if (trackedChunks.isEmpty()) {
             return;
         }
@@ -108,9 +204,16 @@ public final class SableLodChunkManager {
         while (iterator.hasNext()) {
             long chunk = iterator.nextLong();
             ChunkPos chunkPos = new ChunkPos(chunk);
-            level.getChunkSource().removeRegionTicket(VOXY_SABLE_LOD_TICKET, chunkPos, TICKET_DISTANCE, chunkPos);
+            level.getChunkSource().removeRegionTicket(VOXY_SABLE_LOD_TICKET, chunkPos, ticketDistance, chunkPos);
             iterator.remove();
         }
+    }
+
+    //Membership in the ticketed footprint, for the light sync's dirty hook - the only chunks it ever
+    //sent are the ones this manager keeps loaded. Server thread, same as every other caller here.
+    public static boolean isActiveLodChunk(ServerLevel level, long chunkLong) {
+        LongSet activeChunks = activeChunkLoads.get(level);
+        return activeChunks != null && activeChunks.contains(chunkLong);
     }
 
     public static boolean shouldTreatChunkAsLoaded(ServerLevel level, int chunkX, int chunkZ) {
@@ -258,24 +361,24 @@ public final class SableLodChunkManager {
         }
     }
 
-    private static void addMissingTickets(ServerLevel level, LongSet trackedChunks, LongSet desiredChunks) {
+    private static void addMissingTickets(ServerLevel level, LongSet trackedChunks, LongSet desiredChunks, int ticketDistance) {
         LongIterator iterator = desiredChunks.iterator();
         while (iterator.hasNext()) {
             long chunk = iterator.nextLong();
             if (trackedChunks.add(chunk)) {
                 ChunkPos chunkPos = new ChunkPos(chunk);
-                level.getChunkSource().addRegionTicket(VOXY_SABLE_LOD_TICKET, chunkPos, TICKET_DISTANCE, chunkPos);
+                level.getChunkSource().addRegionTicket(VOXY_SABLE_LOD_TICKET, chunkPos, ticketDistance, chunkPos);
             }
         }
     }
 
-    private static void removeStaleTickets(ServerLevel level, LongSet trackedChunks, LongSet desiredChunks) {
+    private static void removeStaleTickets(ServerLevel level, LongSet trackedChunks, LongSet desiredChunks, int ticketDistance) {
         LongIterator iterator = trackedChunks.iterator();
         while (iterator.hasNext()) {
             long chunk = iterator.nextLong();
             if (!desiredChunks.contains(chunk)) {
                 ChunkPos chunkPos = new ChunkPos(chunk);
-                level.getChunkSource().removeRegionTicket(VOXY_SABLE_LOD_TICKET, chunkPos, TICKET_DISTANCE, chunkPos);
+                level.getChunkSource().removeRegionTicket(VOXY_SABLE_LOD_TICKET, chunkPos, ticketDistance, chunkPos);
                 iterator.remove();
             }
         }

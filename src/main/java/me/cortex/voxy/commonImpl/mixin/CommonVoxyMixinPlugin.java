@@ -45,6 +45,7 @@ public class CommonVoxyMixinPlugin implements IMixinConfigPlugin {
         List<String> mixins = new ArrayList<>();
         if (sableInstalled) {
             mixins.add("minecraft.MixinServerLevel");
+            mixins.add("minecraft.MixinChunkHolder");
             if (FMLLoader.getDist() == Dist.CLIENT) {
                 //References ClientLevel; attaching on a dedicated server crashes the mixin transformer once
                 //sable's ClientSubLevel class gets touched server side.

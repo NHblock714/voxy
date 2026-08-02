@@ -15,17 +15,20 @@ import java.util.function.BooleanSupplier;
 @Mixin(value = ServerLevel.class, priority = 1100)
 public abstract class MixinServerLevel {
     @Unique
-    private final LongSet voxy$sableTrackedChunks = new LongOpenHashSet();
+    private final LongSet voxy$sableTrackedTickingChunks = new LongOpenHashSet();
+    @Unique
+    private final LongSet voxy$sableTrackedFullChunks = new LongOpenHashSet();
     @Unique
     private final LongSet voxy$sableTrackedHoldingChunks = new LongOpenHashSet();
 
     @Inject(method = "tick(Ljava/util/function/BooleanSupplier;)V", at = @At("HEAD"))
     private void voxy$keepSableSublevelsLoaded(BooleanSupplier shouldKeepTicking, CallbackInfo ci) {
-        SableLodChunkManager.updateTickets((ServerLevel) (Object) this, this.voxy$sableTrackedChunks, this.voxy$sableTrackedHoldingChunks);
+        SableLodChunkManager.updateTickets((ServerLevel) (Object) this, this.voxy$sableTrackedTickingChunks, this.voxy$sableTrackedFullChunks, this.voxy$sableTrackedHoldingChunks);
     }
 
     @Inject(method = "close", at = @At("HEAD"))
     private void voxy$releaseSableTickets(CallbackInfo ci) {
-        SableLodChunkManager.clearTickets((ServerLevel) (Object) this, this.voxy$sableTrackedChunks, this.voxy$sableTrackedHoldingChunks);
+        SableLodChunkManager.clearTickets((ServerLevel) (Object) this, this.voxy$sableTrackedTickingChunks, this.voxy$sableTrackedFullChunks, this.voxy$sableTrackedHoldingChunks);
+        me.cortex.voxy.commonImpl.compat.sable.SableParentChunkLightSync.onLevelClosed((ServerLevel) (Object) this);
     }
 }

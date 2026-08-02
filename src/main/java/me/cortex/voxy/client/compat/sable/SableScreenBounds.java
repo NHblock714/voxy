@@ -109,13 +109,14 @@ public final class SableScreenBounds {
                 farthestSq = Math.max(farthestSq, dx * dx + dz * dz);
             }
 
-            //Every corner nearer than where LOD can start: nothing in front of this plot is LOD, so the
-            //merged depth would equal the vanilla depth over all of it
-            if (farthestSq < lodFreeRadiusSq) {
-                continue;
+            //Every corner nearer than where LOD can start means the merge cannot change this plot - but
+            //it still has to be inside the rect. The rect clips everything the bracketed pass draws,
+            //and the pass draws the whole list: a near ship left out of it is a near ship scissored
+            //away, vanishing whenever a farther ship's projection happens not to cover it.
+            if (farthestSq >= lodFreeRadiusSq) {
+                any = true;
             }
 
-            any = true;
             for (int i = 0; i < 8; i++) {
                 Vector3d corner = corners[i];
                 clip.set((float) (corner.x - cameraX), (float) (corner.y - cameraY), (float) (corner.z - cameraZ), 1.0f);

@@ -14,6 +14,13 @@ public final class SableHoldingChunkIndexSavedData extends SavedData {
     private static final String HOLDING_CHUNKS_KEY = "holding_chunks";
 
     private final LongSet holdingChunks = new LongOpenHashSet();
+    //Within-session change counter for the ticket manager's rebuild gate; not serialized - the
+    //comparison never crosses a session.
+    private int revision;
+
+    public int revision() {
+        return this.revision;
+    }
 
     private static SableHoldingChunkIndexSavedData load(CompoundTag tag, HolderLookup.Provider provider) {
         SableHoldingChunkIndexSavedData data = new SableHoldingChunkIndexSavedData();
@@ -33,6 +40,7 @@ public final class SableHoldingChunkIndexSavedData extends SavedData {
     public static void mark(ServerLevel level, ChunkPos chunkPos) {
         SableHoldingChunkIndexSavedData data = getOrLoad(level);
         if (data.holdingChunks.add(chunkPos.toLong())) {
+            data.revision++;
             data.setDirty();
         }
     }
@@ -40,6 +48,7 @@ public final class SableHoldingChunkIndexSavedData extends SavedData {
     public static void unmark(ServerLevel level, ChunkPos chunkPos) {
         SableHoldingChunkIndexSavedData data = getOrLoad(level);
         if (data.holdingChunks.remove(chunkPos.toLong())) {
+            data.revision++;
             data.setDirty();
         }
     }
