@@ -136,7 +136,7 @@ public final class DistantTrainRenderer implements LodPipelineHooks.Renderer {
 
                     //Real cached light at the carriage position (voxy voxel store), at most 1s stale
                     if (track.lightPacked < 0 || nowMs - track.lightSampledAtMs > 1000) {
-                        track.lightPacked = DistantLightSampler.sample(mc.level,
+                        track.lightPacked = DistantLightSampler.samplePeek(mc.level,
                                 (int) java.lang.Math.floor(px), (int) java.lang.Math.floor(py), (int) java.lang.Math.floor(pz));
                         track.lightSampledAtMs = nowMs;
                     }

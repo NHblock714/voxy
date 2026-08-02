@@ -224,10 +224,23 @@ public final class DistantTrackRenderer implements LodPipelineHooks.Renderer {
         this.bakedDimension = null;
         this.lastChecksum = 0;
         this.lastCheckMs = 0;
+        this.graphStates.clear();
+        this.lastVersion = 0;
+        this.backstopArmed = false;
     }
 
-    //Rebakes when the dimension changes or any graph's checksum does. getChecksum walks the graph,
-    //so this only runs on an interval.
+    //Per-graph checksums from the last check, and whether each graph reaches into the baked dimension.
+    //Relevance is only recomputed when that graph's checksum moved - the node scan is what checksums
+    //exist to avoid.
+    private final java.util.Map<java.util.UUID, long[]> graphStates = new java.util.HashMap<>();
+    private long lastVersion;
+    private long versionQuietSinceMs;
+    private boolean backstopArmed;
+    private static final long VERSION_QUIET_MS = 15000;
+
+    //Rebakes when the dimension changes, a graph with nodes in THIS dimension changes shape, or such a
+    //graph appears or disappears. getChecksum is cached by Create and only recomputed on node changes,
+    //so the interval check is a handful of field reads.
     private void maybeRebake(Minecraft mc) {
         var dimension = mc.level.dimension();
         boolean dimensionChanged = !dimension.equals(this.bakedDimension);
@@ -236,18 +249,65 @@ public final class DistantTrackRenderer implements LodPipelineHooks.Renderer {
             return;
         }
         this.lastCheckMs = now;
-        long checksum = CreateClient.RAILWAYS.version;
+
+        boolean relevantChanged = dimensionChanged;
         try {
+            var seen = new java.util.HashSet<java.util.UUID>();
             for (TrackGraph graph : CreateClient.RAILWAYS.trackNetworks.values()) {
-                checksum = checksum * 31 + graph.getChecksum();
+                long checksum = graph.getChecksum();
+                var id = graph.id;
+                seen.add(id);
+                long[] state = this.graphStates.get(id);
+                if (state == null || state[0] != checksum || dimensionChanged) {
+                    boolean relevant = false;
+                    for (TrackNodeLocation location : new ArrayList<>(graph.getNodes())) {
+                        if (dimension.equals(location.getDimension())) {
+                            relevant = true;
+                            break;
+                        }
+                    }
+                    boolean wasRelevant = state != null && state[1] != 0;
+                    if (relevant || wasRelevant) {
+                        relevantChanged = true;
+                    }
+                    this.graphStates.put(id, new long[]{checksum, relevant ? 1 : 0});
+                }
+            }
+            var removed = this.graphStates.keySet().iterator();
+            while (removed.hasNext()) {
+                var id = removed.next();
+                if (!seen.contains(id)) {
+                    if (this.graphStates.get(id)[1] != 0) {
+                        relevantChanged = true;
+                    }
+                    removed.remove();
+                }
             }
         } catch (Throwable e) {
             return; //graph mid-sync; retry next interval
         }
-        if (!dimensionChanged && checksum == this.lastChecksum) {
+
+        //version bumps on every sync packet the server sends, for every dimension - a signal placed in
+        //the nether must not rebake the overworld's network. It survives only as a quiet-period
+        //backstop for the rare edge change no graph checksum sees (an edge laid between two existing
+        //nodes): if version moved but nothing relevant did, one rebake fires after version has been
+        //quiet for a while.
+        long version = CreateClient.RAILWAYS.version;
+        if (version != this.lastVersion) {
+            this.lastVersion = version;
+            this.versionQuietSinceMs = now;
+            if (!relevantChanged) {
+                this.backstopArmed = true;
+            }
+        } else if (this.backstopArmed && now - this.versionQuietSinceMs >= VERSION_QUIET_MS) {
+            this.backstopArmed = false;
+            relevantChanged = true;
+        }
+
+        if (!relevantChanged) {
             return;
         }
-        this.lastChecksum = checksum;
+        this.backstopArmed = false;
         this.bakedDimension = dimension;
         try {
             this.rebake(mc, dimension);

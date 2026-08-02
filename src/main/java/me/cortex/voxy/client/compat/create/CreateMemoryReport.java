@@ -22,13 +22,17 @@ public final class CreateMemoryReport {
         var sb = new StringBuilder("distant Create memory:").append('\n');
 
         long kineticGpu = 0, kineticSource = 0, kineticGeneric = 0;
-        int buckets = 0, snaps = 0, withGeneric = 0;
+        int buckets = 0, snaps = 0, withGeneric = 0, hollowSnaps = 0;
         for (var bucket : KineticSnapshots.sections().values()) {
             buckets++;
             if (bucket.mesh != null) {
                 kineticGpu += bucket.mesh.gpuByteSize();
             }
             for (var snap : bucket.geoms.values()) {
+                if (snap.hollow()) {
+                    hollowSnaps++;
+                    continue;
+                }
                 snaps++;
                 long own = 48;
                 if (snap.generic() != null) {
@@ -76,7 +80,7 @@ public final class CreateMemoryReport {
             }
         }
 
-        sb.append(String.format("  kinetics    buckets=%d snaps=%d (generic=%d)%n", buckets, snaps, withGeneric));
+        sb.append(String.format("  kinetics    buckets=%d snaps=%d (generic=%d, skipMarkers=%d)%n", buckets, snaps, withGeneric, hollowSnaps));
         sb.append(String.format("              gpu=%s  source=%s  (of which generic %s)%n",
                 mib(kineticGpu), mib(kineticSource), mib(kineticGeneric)));
         sb.append(String.format("              source/gpu = %s%n", ratio(kineticSource, kineticGpu)));
