@@ -282,14 +282,13 @@ task validateMixinSignatures(type: Exec) {
     commandLine pythonExecutable, 'scripts/validate_mixin_targets.py'
     environment 'PYTHONIOENCODING', 'utf-8'
 
-    // Only run if script and MC sources exist
     onlyIf {
-        file('scripts/validate_mixin_targets.py').exists() &&
-        file('.reference/minecraft/1.21.1/decompiled').exists()
+        file('scripts/validate_mixin_targets.py').exists()
     }
 
-    // Ignore failures if sources not available or script has issues (optional validation)
-    ignoreExitValue = true
+    // A definite violation is a startup crash waiting for the tester; the script itself already
+    // treats unresolvable targets as skips, so a failure here is never "reference jars missing".
+    ignoreExitValue = false
 }
 
 // Validate mixin configurations after JAR creation

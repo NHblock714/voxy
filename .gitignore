@@ -27,3 +27,4 @@ bin/
 /BIG-ITEMS-PLAN.md
 /PRE-PUSH-AUDIT.md
 /UPSTREAM-MERGE-PLAN.md
+__pycache__/
