@@ -30,7 +30,17 @@ public final class KineticSnapshots {
     private KineticSnapshots() {}
 
     private static final int CAPTURES_PER_TICK = 64;
+    //Shared by the queue drain and the sweep: a capture is a full BER pass plus light sampling, and an
+    //unbounded batch of them (first sweep contact with a dense factory) is a frame hitch. The queue
+    //drains first; the sweep spends the remainder.
+    private static int captureBudget;
     private static final int REBAKES_PER_TICK = 4;
+    //Sections dirtied by a removal, serviced before the general dirty scan: a removal is usually a
+    //reveal (the live path taking the position back), and until the rebake lands the frozen copy
+    //draws under the live spinning machine - the general scan can be a backlog of sweep recaptures
+    //behind. Overflow stays queued ahead of the scan for the next tick.
+    private static final it.unimi.dsi.fastutil.longs.LongOpenHashSet PRIORITY_REBAKE =
+            new it.unimi.dsi.fastutil.longs.LongOpenHashSet();
 
     //One frozen machine part: what block, at what angle, in what light. Geometry is not stored -
     //rebake pulls the baked models and transforms them, the same way the track renderer bakes bezier
@@ -45,7 +55,19 @@ public final class KineticSnapshots {
                 net.minecraft.core.Direction.Axis axis, float angleRad, int sky, int block,
                 boolean bakeJson, net.minecraft.core.Direction shaftHalfFacing,
                 net.minecraft.core.Direction bearingFacing, float bearingTopAngleRad, boolean woodenTop,
-                float[][] chains, float[] bnbChain, float[] generic) {}
+                float[][] chains, float[] bnbChain, float[] generic, boolean gantryCarriage) {
+
+        //A snap with no geometry sources is a negative-capture record: this state at this position
+        //yields nothing to bake. Only the SKIP path stores these - a real capture always carries at
+        //least one source - so emptiness IS the marker, no extra field. rebake emits nothing for one
+        //(every emit branch is gated on the fields that are null here), so it costs a map entry and
+        //nothing downstream.
+        boolean hollow() {
+            return !this.bakeJson && this.shaftHalfFacing == null && this.bearingFacing == null
+                    && this.chains == null && this.bnbChain == null && this.generic == null
+                    && !this.gantryCarriage;
+        }
+    }
 
     private static final boolean BNB_LOADED = net.neoforged.fml.ModList.get().isLoaded("bits_n_bobs");
 
@@ -73,7 +95,8 @@ public final class KineticSnapshots {
         }
     }
 
-    private static final Map<Long, Bucket> SECTIONS = new HashMap<>();
+    private static final it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap<Bucket> SECTIONS =
+            new it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap<>();
     private static final Queue<BlockPos> CAPTURE_QUEUE = new ConcurrentLinkedQueue<>();
     private static final Queue<BlockPos> REMOVE_QUEUE = new ConcurrentLinkedQueue<>();
     private static ResourceLocation dim;
@@ -94,6 +117,14 @@ public final class KineticSnapshots {
             }
             RECENT_CAPTURES.addLast(line);
         }
+    }
+
+    private static int hollowIn(Bucket bucket) {
+        int n = 0;
+        for (Snap s : bucket.geoms.values()) {
+            if (s.hollow()) n++;
+        }
+        return n;
     }
 
     //Full state dump for /voxy debug kinetics: queues, sweep, every bucket near the camera, and the
@@ -118,8 +149,8 @@ public final class KineticSnapshots {
         }
         sb.append("\nbuckets within 96 blocks:");
         int shown = 0;
-        for (var entry : SECTIONS.entrySet()) {
-            long key = entry.getKey();
+        for (var entry : SECTIONS.long2ObjectEntrySet()) {
+            long key = entry.getLongKey();
             double ox = (BlockPos.getX(key) << 4) + 8, oy = (BlockPos.getY(key) << 4) + 8, oz = (BlockPos.getZ(key) << 4) + 8;
             double dx = ox - camX, dy = oy - camY, dz = oz - camZ;
             double dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
@@ -130,7 +161,8 @@ public final class KineticSnapshots {
             sb.append("\n  section(").append(BlockPos.getX(key) << 4).append(',')
                     .append(BlockPos.getY(key) << 4).append(',').append(BlockPos.getZ(key) << 4)
                     .append(") dist=").append((int) dist)
-                    .append(" entries=").append(bucket.geoms.size())
+                    .append(" entries=").append(bucket.geoms.size() - hollowIn(bucket))
+                    .append(hollowIn(bucket) > 0 ? "+" + hollowIn(bucket) + "skip" : "")
                     .append(" mesh=").append(bucket.mesh != null ? "yes" : "NULL")
                     .append(" dirty=").append(bucket.dirty);
             if (++shown >= 12) {
@@ -209,11 +241,11 @@ public final class KineticSnapshots {
             long furthestKey = 0;
             double furthestDistSq = -1;
             boolean found = false;
-            for (var entry : SECTIONS.entrySet()) {
+            for (var entry : SECTIONS.long2ObjectEntrySet()) {
                 if (entry.getValue().mesh == null) {
                     continue;
                 }
-                long key = entry.getKey();
+                long key = entry.getLongKey();
                 double dx = ((BlockPos.getX(key) << 4) + 8) - camX;
                 double dy = ((BlockPos.getY(key) << 4) + 8) - camY;
                 double dz = ((BlockPos.getZ(key) << 4) + 8) - camZ;
@@ -243,7 +275,7 @@ public final class KineticSnapshots {
         }
     }
 
-    public static Map<Long, Bucket> sections() {
+    public static it.unimi.dsi.fastutil.longs.Long2ObjectMap<Bucket> sections() {
         return SECTIONS;
     }
 
@@ -256,6 +288,8 @@ public final class KineticSnapshots {
         REMOVE_QUEUE.clear();
         BEARING_POSITIONS.clear();
         ANCHOR_RECAPTURED.clear();
+        PRIORITY_REBAKE.clear();
+        KineticCull.cachedReachSq = -1;
         sectionCount = 0;
         snapshotCount = 0;
     }
@@ -282,8 +316,10 @@ public final class KineticSnapshots {
             BlockPos pos;
             while ((pos = REMOVE_QUEUE.poll()) != null) {
                 Bucket bucket = SECTIONS.get(sectionKey(pos));
-                if (bucket != null && bucket.geoms.remove(pos) != null) {
+                Snap removed = bucket == null ? null : bucket.geoms.remove(pos);
+                if (removed != null && !removed.hollow()) {
                     bucket.dirty = true;
+                    PRIORITY_REBAKE.add(sectionKey(pos));
             }
                 BEARING_POSITIONS.remove(pos);
             }
@@ -292,21 +328,35 @@ public final class KineticSnapshots {
             var cam = mc.gameRenderer.getMainCamera().getPosition();
             double reach = mc.options.getEffectiveRenderDistance() * 16.0;
             double reachSq = reach * reach;
-            int captured = 0;
-            while (captured < CAPTURES_PER_TICK && (pos = CAPTURE_QUEUE.poll()) != null) {
+            KineticCull.cachedReachSq = reachSq;
+            captureBudget = CAPTURES_PER_TICK;
+            //The queue leaves the sweep a floor of the budget: a busy factory refills the queue every
+            //tick, and a sweep that never gets a slot parks its cursor on the same chunk forever (the
+            //mid-slice rewind) - ghost reclaim and recapture both stall behind it.
+            while (captureBudget > 16 && (pos = CAPTURE_QUEUE.poll()) != null) {
                 //Raced back inside the live path between the queue and this tick: the visual draws it
                 if (pos.distToCenterSqr(cam.x, cam.y, cam.z) < reachSq) {
                     continue;
             }
                 if (level.getBlockEntity(pos) instanceof KineticBlockEntity be) {
                     capture(level, be);
-                    captured++;
+                    captureBudget--;
             }
             }
 
             sweep(mc, level, cam.x, cam.y, cam.z, reachSq);
 
             int rebaked = 0;
+            var prio = PRIORITY_REBAKE.iterator();
+            while (prio.hasNext() && rebaked < REBAKES_PER_TICK) {
+                Bucket bucket = SECTIONS.get(prio.nextLong());
+                prio.remove();
+                if (bucket != null && bucket.dirty) {
+                    bucket.dirty = false;
+                    rebake(bucket);
+                    rebaked++;
+                }
+            }
             for (Bucket bucket : SECTIONS.values()) {
                 if (!bucket.dirty || rebaked >= REBAKES_PER_TICK) {
                     continue;
@@ -323,8 +373,8 @@ public final class KineticSnapshots {
             //(plus 2 chunks of hysteresis) so the resident set is a spatial working set, not cumulative.
             double maxDist = cfg.createRenderDistance(cfg.distantKineticMaxChunks) + 32.0;
             double maxDistSq = maxDist * maxDist;
-            SECTIONS.entrySet().removeIf(entry -> {
-                long key = entry.getKey();
+            SECTIONS.long2ObjectEntrySet().removeIf(entry -> {
+                long key = entry.getLongKey();
                 double scx = (BlockPos.getX(key) << 4) + 8;
                 double scy = (BlockPos.getY(key) << 4) + 8;
                 double scz = (BlockPos.getZ(key) << 4) + 8;
@@ -390,10 +440,12 @@ public final class KineticSnapshots {
             //running machinery and left it behind.
             if (!SECTIONS.isEmpty()) {
                 for (int sy = level.getMinSection(); sy < level.getMaxSection(); sy++) {
-                    Bucket bucket = SECTIONS.get(BlockPos.asLong(cx, sy, cz));
+                    long bucketKey = BlockPos.asLong(cx, sy, cz);
+                    Bucket bucket = SECTIONS.get(bucketKey);
                     if (bucket == null) {
                         continue;
                     }
+                    boolean wasDirty = bucket.dirty;
                     bucket.geoms.keySet().removeIf(snapPos -> {
                         if ((snapPos.getX() >> 4) != cx || (snapPos.getZ() >> 4) != cz) {
                             return false;
@@ -405,6 +457,10 @@ public final class KineticSnapshots {
                         BEARING_POSITIONS.remove(snapPos);
                         return true;
                     });
+                    //A ghost dropped here floats over loaded terrain until the rebake lands
+                    if (bucket.dirty && !wasDirty) {
+                        PRIORITY_REBAKE.add(bucketKey);
+                    }
                 }
             }
             //Ship membership is decided by chunk, so it is the same answer for every machine in this
@@ -426,20 +482,53 @@ public final class KineticSnapshots {
                     //no-op for them.)
                     if (distSq <= innerSq) {
                         Bucket bucket = SECTIONS.get(sectionKey(bePos));
-                        if (bucket != null && bucket.geoms.remove(bePos) != null) {
-                            bucket.dirty = true;
+                        Snap removed = bucket == null ? null : bucket.geoms.remove(bePos);
+                        if (removed != null) {
+                            if (!removed.hollow()) {
+                                bucket.dirty = true;
+                                PRIORITY_REBAKE.add(sectionKey(bePos));
+                            }
                             BEARING_POSITIONS.remove(bePos);
                         }
                     }
                     continue;
                 }
-                Bucket bucket = SECTIONS.get(sectionKey(bePos));
-                if (bucket != null && bucket.geoms.containsKey(bePos)) {
+                if (hasCurrentSnap(bePos, kbe.getBlockState())) {
                     continue;
                 }
+                if (captureBudget <= 0) {
+                    //Budget spent mid-slice: re-run this chunk next tick instead of waiting out a full
+                    //pass. Already-captured positions dedup on re-entry, so the redo is cheap.
+                    sweepCursor--;
+                    return;
+                }
                 capture(level, kbe);
+                captureBudget--;
             }
         }
+    }
+
+    //Does the distant pipeline actually draw geometry for this position - a hollow record or an
+    //unbaked bucket draws nothing, and standing the live render down against one of those leaves a
+    //hole instead of a hand-over.
+    static boolean drawsSnapAt(BlockPos pos) {
+        Bucket bucket = SECTIONS.get(sectionKey(pos));
+        if (bucket == null || bucket.mesh == null) {
+            return false;
+        }
+        Snap snap = bucket.geoms.get(pos);
+        return snap != null && !snap.hollow();
+    }
+
+    //Present-and-current test for the dedup sites: a snap (hollow or real) for the same interned
+    //BlockState needs no recapture; a state change at the position invalidates either kind.
+    private static boolean hasCurrentSnap(BlockPos pos, net.minecraft.world.level.block.state.BlockState state) {
+        Bucket bucket = SECTIONS.get(sectionKey(pos));
+        if (bucket == null) {
+            return false;
+        }
+        Snap prior = bucket.geoms.get(pos);
+        return prior != null && prior.state() == state;
     }
 
     //Horizontal path: the chunk is unloading and its BEs are about to vanish - capture immediately.
@@ -453,9 +542,16 @@ public final class KineticSnapshots {
             return; //leaving the dimension entirely - clearAll handles it
         }
         for (var be : chunk.getBlockEntities().values()) {
-            if (be instanceof KineticBlockEntity kbe) {
-                capture(level, kbe);
+            if (!(be instanceof KineticBlockEntity kbe)) {
+                continue;
             }
+            //The sweep has usually been here already - an unloading chunk lives at the disk edge. Only
+            //the never-captured residue pays a capture, so the burst is a handful of machines, not the
+            //chunk. Cannot defer past the event: the block entities are gone after it.
+            if (hasCurrentSnap(kbe.getBlockPos(), kbe.getBlockState())) {
+                continue;
+            }
+            capture(level, kbe);
         }
     }
 
@@ -498,7 +594,7 @@ public final class KineticSnapshots {
                     double pitch = Math.toDegrees(net.minecraft.util.Mth.atan2(diff.y,
                             diff.multiply(1.0, 0.0, 1.0).length()));
                     var startOff = stats.start().subtract(center);
-                    int farLight = DistantLightSampler.sample(level,
+                    int farLight = DistantLightSampler.samplePeek(level,
                             pos.getX() + rel.getX(), pos.getY() + rel.getY() + 1, pos.getZ() + rel.getZ());
                     list.add(new float[]{(float) startOff.x, (float) startOff.y, (float) startOff.z,
                             (float) yaw, (float) pitch, stats.chainLength(),
@@ -520,9 +616,9 @@ public final class KineticSnapshots {
             //Sample above the block, not inside it: the machine itself is a solid voxel and reads 0
             //(pitch-black moving parts whenever the voxel store already has the chunk - the same trap
             //the track renderer hit). Fall back to the block's own cell if the space above reads dark.
-            int light = DistantLightSampler.sample(level, pos.getX(), pos.getY() + 1, pos.getZ());
+            int light = DistantLightSampler.samplePeek(level, pos.getX(), pos.getY() + 1, pos.getZ());
             if (DistantLightSampler.sky(light) == 0 && DistantLightSampler.block(light) == 0) {
-                light = DistantLightSampler.sample(level, pos.getX(), pos.getY(), pos.getZ());
+                light = DistantLightSampler.samplePeek(level, pos.getX(), pos.getY(), pos.getZ());
             }
             int skyLight = DistantLightSampler.sky(light), blockLight = DistantLightSampler.block(light);
 
@@ -566,8 +662,25 @@ public final class KineticSnapshots {
             boolean bakeJson = generic == null && !chunkVisible(model, state)
                     && !(model.getQuads(null, null, net.minecraft.util.RandomSource.create(42)).isEmpty()
                     && model.getQuads(null, net.minecraft.core.Direction.UP, net.minecraft.util.RandomSource.create(42)).isEmpty());
+            //The carriage's body json is chunk-visible, so a failed generic capture would fall to the
+            //SKIP verdict and the pinion + inner shaft would simply not exist at LOD range. Those two
+            //parts are reproducible from state and position alone (bakeGantryCarriage), so the record
+            //stays real instead.
+            boolean gantryCarriage = generic == null
+                    && be instanceof com.simibubi.create.content.contraptions.gantry.GantryCarriageBlockEntity;
             if (generic == null && !bakeJson && shaftHalfFacing == null && bearingFacing == null
-                    && chains == null && bnbChain == null) {
+                    && chains == null && bnbChain == null && !gantryCarriage) {
+                //Nothing to bake for this state - record that verdict so the sweep's dedup holds and
+                //the classification (renderer probe, chunkVisible, light sampling) runs once, not once
+                //per sweep pass. The bucket lifecycle - ghost reclaim, distance and GPU eviction,
+                //dimension clear - covers the record without a parallel structure. The stored state is
+                //the retry key: a different block at this position re-evaluates.
+                Bucket bucket = SECTIONS.computeIfAbsent(sectionKey(pos), k -> new Bucket());
+                Snap prior = bucket.geoms.put(pos.immutable(),
+                        new Snap(state, null, 0.0f, 0, 0, false, null, null, 0.0f, false, null, null, null, false));
+                if (prior != null && !prior.hollow()) {
+                    bucket.dirty = true; //the old state had geometry; rebuild the mesh without it
+                }
                 logCapture(pos.toShortString() + " SKIP " + state.getBlock().getDescriptionId()
                         + " (chunk-visible or empty json, no partials)");
                 return;
@@ -577,11 +690,22 @@ public final class KineticSnapshots {
                 axis = KineticBlockEntityRenderer.getRotationAxisOf(be);
             } catch (Throwable ignored) {
             }
-            float angle = axis != null ? KineticBlockEntityRenderer.getAngleForBe(be, pos, axis) : 0.0f;
+            //Phase at render time zero, not at the capture tick. Neighbouring shafts of one drivetrain
+            //are captured on different ticks (the sweep spreads work, the budget splits chunks), and a
+            //per-capture time term gives each segment its own frozen moment - a connected line reads as
+            //broken. The offset term alone is the drivetrain's pose at one shared instant, so every
+            //segment agrees; the cost is a small phase snap where a moving part crosses the LOD
+            //boundary, invisible at that distance next to adjacent segments disagreeing. The bearing
+            //top disc keeps its freeze-tick angle (bearingTopAngleRad) - that one must match the
+            //contraption pose frozen with it.
+            float angle = axis != null
+                    ? KineticBlockEntityRenderer.getRotationOffsetForPosition(be, pos, axis) % 360.0f / 180.0f * (float) Math.PI
+                    : 0.0f;
             Bucket bucket = SECTIONS.computeIfAbsent(sectionKey(pos), k -> new Bucket());
             bucket.geoms.put(pos.immutable(), new Snap(state, axis, angle,
                     skyLight, blockLight,
-                    bakeJson, shaftHalfFacing, bearingFacing, bearingTopAngle, woodenTop, chains, bnbChain, generic));
+                    bakeJson, shaftHalfFacing, bearingFacing, bearingTopAngle, woodenTop, chains, bnbChain, generic,
+                    gantryCarriage));
             bucket.dirty = true;
             if (bearingFacing != null) {
                 BEARING_POSITIONS.add(pos.immutable());
@@ -599,7 +723,7 @@ public final class KineticSnapshots {
         }
     }
 
-    private static void rotateAboutAxis(org.joml.Matrix4f transform, net.minecraft.core.Direction.Axis axis, float angleRad) {
+    static void rotateAboutAxis(org.joml.Matrix4f transform, net.minecraft.core.Direction.Axis axis, float angleRad) {
         if (axis == null || angleRad == 0.0f) {
             return;
         }
@@ -607,6 +731,58 @@ public final class KineticSnapshots {
                 axis == net.minecraft.core.Direction.Axis.X ? 1 : 0,
                 axis == net.minecraft.core.Direction.Axis.Y ? 1 : 0,
                 axis == net.minecraft.core.Direction.Axis.Z ? 1 : 0);
+    }
+
+    //Gantry carriage moving parts (inner shaft + pinion), computed from state and position alone so
+    //the frozen contraption bake - where the entity and its block entities are long gone - and the
+    //placed-block fallback share one implementation. Angles are the offset-only t=0 convention every
+    //frozen drivetrain part uses. Matrix order is GantryCarriageRenderer.renderSafe's SuperByteBuffer
+    //call order (first call outermost); the pinion's visual position, axis flip and 9/16 pivot are
+    //that renderer's own.
+    static void bakeGantryCarriage(DistantMeshBuilder builder, org.joml.Matrix4f transform,
+                                   net.minecraft.world.level.block.state.BlockState state,
+                                   BlockPos parityPos, float lx, float ly, float lz, int sky, int block) {
+        var rotationAxis = ((com.simibubi.create.content.kinetics.base.IRotate) state.getBlock())
+                .getRotationAxis(state);
+        var shaper = Minecraft.getInstance().getModelManager().getBlockModelShaper();
+
+        var shaftModel = shaper.getBlockModel(KineticBlockEntityRenderer.shaft(rotationAxis));
+        float shaftAngle = rad(com.simibubi.create.content.kinetics.base.KineticBlockEntityVisual
+                .rotationOffset(state, rotationAxis, parityPos) % 360.0f);
+        transform.identity().translate(lx, ly, lz).translate(0.5f, 0.5f, 0.5f);
+        rotateAboutAxis(transform, rotationAxis, shaftAngle);
+        transform.translate(-0.5f, -0.5f, -0.5f);
+        builder.transformedModel(shaftModel, transform, sky, block);
+
+        var facing = state.getValue(com.simibubi.create.content.contraptions.gantry.GantryCarriageBlock.FACING);
+        boolean alongFirst = state.getValue(com.simibubi.create.content.kinetics.base.DirectionalAxisKineticBlock.AXIS_ALONG_FIRST_COORDINATE);
+        var visualPos = facing.getAxisDirection() == net.minecraft.core.Direction.AxisDirection.POSITIVE
+                ? parityPos : parityPos.relative(facing.getOpposite());
+        float angleDeg = com.simibubi.create.content.kinetics.base.KineticBlockEntityVisual
+                .rotationOffset(state, rotationAxis, visualPos) % 360.0f;
+        //The axis that is neither the rotation axis nor the facing axis decides the spin sign
+        var gantryAxis = net.minecraft.core.Direction.Axis.Z;
+        for (var candidate : net.minecraft.core.Direction.Axis.values()) {
+            if (candidate != rotationAxis && candidate != facing.getAxis()) {
+                gantryAxis = candidate;
+                break;
+            }
+        }
+        if ((gantryAxis == net.minecraft.core.Direction.Axis.X && facing == net.minecraft.core.Direction.UP)
+                || (gantryAxis == net.minecraft.core.Direction.Axis.Y
+                && (facing == net.minecraft.core.Direction.NORTH || facing == net.minecraft.core.Direction.EAST))) {
+            angleDeg = -angleDeg;
+        }
+        transform.identity().translate(lx, ly, lz).translate(0.5f, 0.5f, 0.5f)
+                .rotateY(rad(horizontalAngle(facing)))
+                .rotateX(rad(facing == net.minecraft.core.Direction.UP ? 0.0f
+                        : facing == net.minecraft.core.Direction.DOWN ? 180.0f : 90.0f))
+                .rotateY(rad((alongFirst ^ (facing.getAxis() == net.minecraft.core.Direction.Axis.X)) ? 0.0f : 90.0f))
+                .translate(0.0f, -9.0f / 16.0f, 0.0f)
+                .rotateX(rad(-angleDeg))
+                .translate(0.0f, 9.0f / 16.0f, 0.0f)
+                .translate(-0.5f, -0.5f, -0.5f);
+        builder.transformedModel(com.simibubi.create.AllPartialModels.GANTRY_COGS.get(), transform, sky, block);
     }
 
     //Shaft half at the machine's frozen kinetic angle: rotateToFace(facing) alignment as
@@ -793,6 +969,10 @@ public final class KineticSnapshots {
                     transform.translate(-0.5f, -0.5f, -0.5f);
                     builder.transformedModel(model, transform, snap.sky(), snap.block());
                 }
+                if (snap.gantryCarriage()) {
+                    bakeGantryCarriage(builder, transform, snap.state(), pos, lx, ly, lz,
+                            snap.sky(), snap.block());
+                }
                 if (snap.shaftHalfFacing() != null) {
                     bakeShaftHalf(builder, transform, snap, lx, ly, lz);
                 }
@@ -816,7 +996,11 @@ public final class KineticSnapshots {
         }
         int count = 0;
         for (Bucket b : SECTIONS.values()) {
-            count += b.geoms.size();
+            for (Snap s2 : b.geoms.values()) {
+                if (!s2.hollow()) {
+                    count++;
+                }
+            }
         }
         snapshotCount = count;
     }

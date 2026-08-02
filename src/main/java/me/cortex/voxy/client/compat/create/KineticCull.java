@@ -47,7 +47,16 @@ public final class KineticCull {
     //Cut exactly at the effective render distance (already min of client/server, spherical), where the
     //vanilla block mesh hands over to the LOD copy. No margin - the moving part should vanish precisely
     //as its static body becomes LOD.
+    //Frame-constant; refreshed by KineticSnapshots.tick, read from Flywheel's plan workers - a volatile
+    //read is the whole per-visual cost. Negative until the first refresh (and after clearAll), which
+    //falls back to the live computation so those frames cull identically.
+    static volatile double cachedReachSq = -1;
+
     private static double reachSq() {
+        double cached = cachedReachSq;
+        if (cached >= 0) {
+            return cached;
+        }
         double reach = Minecraft.getInstance().options.getEffectiveRenderDistance() * 16.0;
         return reach * reach;
     }
@@ -92,7 +101,30 @@ public final class KineticCull {
             return false;
         }
         Vec3 cam = mc.gameRenderer.getMainCamera().getPosition();
-        return beyond(pos, cam.x, cam.y, cam.z);
+        double dx = pos.getX() + 0.5 - cam.x;
+        double dy = pos.getY() + 0.5 - cam.y;
+        double dz = pos.getZ() + 0.5 - cam.z;
+        double distSq = dx * dx + dy * dy + dz * dz;
+        if (distSq > reachSq()) {
+            return true;
+        }
+        //The sweep reclaims a snapshot only 16 blocks inside the reach (hysteresis against boundary
+        //churn) while the distant renderer draws any section whose centre is past reach-14, so a BER
+        //machine in the outer band can have its live spin and its frozen copy on screen at once (the
+        //turntable ghost). Ownership is settled draw-side, with no capture or rebake involved:
+        //exactly where the frozen copy will draw, the live render stands down. The section-centre
+        //test mirrors DistantKineticRenderer's gate - without it the hand-off leaves a sliver where
+        //neither side draws.
+        double reach = Math.sqrt(reachSq());
+        double inner = Math.max(0, reach - 16.0);
+        if (distSq <= inner * inner) {
+            return false;
+        }
+        double cx = (pos.getX() & ~15) + 8 - cam.x;
+        double cy = (pos.getY() & ~15) + 8 - cam.y;
+        double cz = (pos.getZ() & ~15) + 8 - cam.z;
+        double gate = Math.max(0, reach - 14.0);
+        return cx * cx + cy * cy + cz * cz >= gate * gate && KineticSnapshots.drawsSnapAt(pos);
     }
 
     public static void hide(BlockEntityVisual visual) {

@@ -70,18 +70,27 @@ public final class DistantMeshBuilder {
     public void blockModel(BlockState state, BakedModel model, float ox, float oy, float oz,
                            int skyLight, int blockLight, Predicate<Direction> faceHidden, int tintRgb,
                            net.neoforged.neoforge.client.model.data.ModelData modelData) {
-        for (Direction direction : Direction.values()) {
-            if (faceHidden != null && faceHidden.test(direction)) {
-                continue;
+        //Query per declared chunk layer, as the chunk mesher does. A model that hides its json from
+        //the chunk layers (Create's rotating shafts and cogs - the BER spins that json, the chunk
+        //never draws it) contributes nothing here either; the null-renderType query returned those
+        //quads and baked them at kinetic angle zero, a copy that can only disagree with the frozen
+        //and live angles around it. A model that ignores the layer argument declares one layer and is
+        //queried once, so nothing doubles.
+        this.random.setSeed(42);
+        for (var layer : model.getRenderTypes(state, this.random, modelData)) {
+            for (Direction direction : Direction.values()) {
+                if (faceHidden != null && faceHidden.test(direction)) {
+                    continue;
+                }
+                this.random.setSeed(42);
+                for (BakedQuad quad : model.getQuads(state, direction, this.random, modelData, layer)) {
+                    this.quad(null, quad, ox, oy, oz, skyLight, blockLight, quad.isTinted() ? tintRgb : 0xFFFFFF);
+                }
             }
             this.random.setSeed(42);
-            for (BakedQuad quad : model.getQuads(state, direction, this.random, modelData, null)) {
+            for (BakedQuad quad : model.getQuads(state, null, this.random, modelData, layer)) {
                 this.quad(null, quad, ox, oy, oz, skyLight, blockLight, quad.isTinted() ? tintRgb : 0xFFFFFF);
             }
-        }
-        this.random.setSeed(42);
-        for (BakedQuad quad : model.getQuads(state, null, this.random, modelData, null)) {
-            this.quad(null, quad, ox, oy, oz, skyLight, blockLight, quad.isTinted() ? tintRgb : 0xFFFFFF);
         }
     }
 
