@@ -26,9 +26,12 @@ versionRange="[1.21.1]"
 ordering="NONE"
 side="BOTH"
 
+# Architectural dependency, not an enhancement: the LOD draw is dispatched only from sodium's chunk
+# renderer hooks, chunk auto-ingest rides its RenderSectionManager, and the bakery uses its colour
+# pipeline. Declared required so absence fails on the load screen instead of an NCDFE at world join.
 [[dependencies.voxy]]
 modId="sodium"
-type="optional"
+type="required"
 versionRange="[0.6.13,)"
 ordering="AFTER"
 side="CLIENT"
