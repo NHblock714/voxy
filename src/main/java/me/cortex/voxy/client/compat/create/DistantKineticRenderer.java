@@ -34,6 +34,7 @@ public final class DistantKineticRenderer implements LodPipelineHooks.Renderer {
     public void onClientTick(net.neoforged.neoforge.client.event.ClientTickEvent.Post event) {
         long t = me.cortex.voxy.commonImpl.VoxyProfile.begin();
         KineticSnapshots.tick(Minecraft.getInstance());
+        SectionReingestQueue.tick(Minecraft.getInstance());
         me.cortex.voxy.commonImpl.VoxyProfile.end("tick/kineticSnapshots", t);
     }
 
@@ -50,6 +51,7 @@ public final class DistantKineticRenderer implements LodPipelineHooks.Renderer {
     @net.neoforged.bus.api.SubscribeEvent
     public void onLogout(net.neoforged.neoforge.client.event.ClientPlayerNetworkEvent.LoggingOut event) {
         KineticSnapshots.clearAll();
+        SectionReingestQueue.clear();
     }
 
     @Override
@@ -88,12 +90,12 @@ public final class DistantKineticRenderer implements LodPipelineHooks.Renderer {
         int drawn = 0;
         var transform = new Matrix4f();
         try {
-            for (var entry : sections.entrySet()) {
+            for (var entry : sections.long2ObjectEntrySet()) {
                 var bucket = entry.getValue();
                 if (bucket.mesh == null) {
                     continue;
                 }
-                long key = entry.getKey();
+                long key = entry.getLongKey();
                 double ox = (BlockPos.getX(key) << 4), oy = (BlockPos.getY(key) << 4), oz = (BlockPos.getZ(key) << 4);
                 double dx = ox + 8 - camX, dy = oy + 8 - camY, dz = oz + 8 - camZ;
                 double distSq = dx * dx + dy * dy + dz * dz;

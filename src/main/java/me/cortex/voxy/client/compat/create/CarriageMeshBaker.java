@@ -18,6 +18,13 @@ import java.util.Map;
 public final class CarriageMeshBaker {
     private CarriageMeshBaker() {}
 
+    //Create types appear only in the kinetic-partial branch of the bake. The train shape payload
+    //handler registers unconditionally, so a Create-less client must still bake the static geometry;
+    //without this gate every kinetic block throws a swallowed NoClassDefFoundError per block instead
+    //of skipping cleanly.
+    private static final boolean CREATE_LOADED =
+            net.neoforged.fml.ModList.get() != null && net.neoforged.fml.ModList.get().isLoaded("create");
+
     //The shape grid dressed up as a level slice: connected-texture model wrappers (casings, glass,
     //framed blocks) resolve their ModelData by querying neighbouring block states, and biome colour
     //resolvers ask for a tint - answered from the grid and from the real level at the camera (the
@@ -113,6 +120,7 @@ public final class CarriageMeshBaker {
         var builder = new DistantMeshBuilder();
         var cursor = new BlockPos.MutableBlockPos();
         var slice = new GridSlice(grid);
+        var kineticTransform = new org.joml.Matrix4f();
         for (var entry : grid.entrySet()) {
             var state = entry.getValue();
             if (state.getRenderShape() != RenderShape.MODEL) {
@@ -120,9 +128,6 @@ public final class CarriageMeshBaker {
             }
             var pos = entry.getKey();
             try {
-                //Tint via the block colour registry with no level context: biome-dependent resolvers
-                //(grass, foliage) fall back to their default colours, which beats the untinted grey
-                //that made grass tops on moving structures colourless. -1 means no resolver: white.
                 //Tint through the grid slice: biome resolvers answer with the camera-position biome
                 //colour (grass on a snowy-plains train is pale, not default green); -1 = no resolver.
                 int tint = Minecraft.getInstance().getBlockColors().getColor(state, slice, pos, 0);
@@ -149,6 +154,31 @@ public final class CarriageMeshBaker {
                             var neighbor = grid.get(cursor.setWithOffset(pos, direction));
                             return neighbor != null && neighbor.canOcclude();
                         }, tint == -1 ? 0xFFFFFF : tint, modelData);
+                //Kinetic moving parts: Create swaps shaft/cog baked models for a wrapper that answers
+                //the per-layer chunk path with nothing (the BER/visual owns them live), so the
+                //emission above produced zero quads for them. The vanilla 3-arg getQuads is the one
+                //query the wrapper does not override - bake the real rotating json through it, at the
+                //offset-only t=0 angle every frozen drivetrain part shares, evaluated at the
+                //contraption-LOCAL position (which is exactly the position Create's own on-contraption
+                //block entities use). The chunk-visibility gate keeps statics out: a json the emission
+                //above already drew must not appear twice, spun.
+                if (CREATE_LOADED && state.getBlock() instanceof com.simibubi.create.content.kinetics.base.IRotate rotate) {
+                    if (state.getBlock() instanceof com.simibubi.create.content.contraptions.gantry.GantryCarriageBlock) {
+                        KineticSnapshots.bakeGantryCarriage(builder, kineticTransform, state, pos,
+                                pos.getX(), pos.getY(), pos.getZ(), 15, 0);
+                    } else if (!KineticSnapshots.chunkVisible(model, state)) {
+                        var axis = rotate.getRotationAxis(state);
+                        float angleRad = (float) Math.toRadians(
+                                com.simibubi.create.content.kinetics.base.KineticBlockEntityVisual
+                                        .rotationOffset(state, axis, pos) % 360.0f);
+                        kineticTransform.identity()
+                                .translate(pos.getX(), pos.getY(), pos.getZ())
+                                .translate(0.5f, 0.5f, 0.5f);
+                        KineticSnapshots.rotateAboutAxis(kineticTransform, axis, angleRad);
+                        kineticTransform.translate(-0.5f, -0.5f, -0.5f);
+                        builder.transformedModel(model, kineticTransform, 15, 0);
+                    }
+                }
             } catch (Throwable ignored) {
                 //A single broken third party model must not sink the whole carriage
             }
