@@ -429,7 +429,7 @@ public class IrisVoxyRenderPipelineData {
     }
 
     private record TextureWSampler(String name, IntSupplier texture, int sampler) { }
-    public record ImageSet(String layout, IntConsumer bindingFunction) {
+    public record ImageSet(String layout, IntConsumer bindingFunction, int samplerCount) {
 
     }
     private static ImageSet createImageSet(IrisRenderingPipeline ipipe, IrisShaderPatch patch) {
@@ -540,7 +540,7 @@ public class IrisVoxyRenderPipelineData {
                 }//TODO: might need to bind sampler 0
             }
         };
-        return new ImageSet(builder.toString(), bindingFunction);
+        return new ImageSet(builder.toString(), bindingFunction, samplers.length);
     }
 
     public record SSBOSet(String layout, IntConsumer bindingFunction){}

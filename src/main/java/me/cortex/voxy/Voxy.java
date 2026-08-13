@@ -40,10 +40,11 @@ public class Voxy {
             //Server-side train sampling (works on the integrated server too). The sampler class is
             //the only place that touches Create classes, so it must stay behind this gate.
             NeoForge.EVENT_BUS.register(me.cortex.voxy.commonImpl.compat.create.CreateTrainSampler.INSTANCE);
-            //Dedicated-server uniform ceiling for distant-train streaming (voxy-server.toml). Loads on
-            //dedicated and integrated servers alike; pushes its values into the sampler's control point.
-            me.cortex.voxy.commonImpl.compat.create.CreateServerConfig.register(container, modEventBus);
         }
+        //Server admin config (voxy-server.toml): distant-train ceiling + far-player broadcast
+        //controls. Outside the Create gate - the far-player keys apply on any server, and the
+        //config class itself touches no Create classes (the train keys just sit unused without it).
+        me.cortex.voxy.commonImpl.compat.create.CreateServerConfig.register(container, modEventBus);
 
         // Only register client config on client side
         if (FMLLoader.getDist() == Dist.CLIENT) {
@@ -112,7 +113,15 @@ public class Voxy {
     }
 
     private static void registerPayloads(net.neoforged.neoforge.network.event.RegisterPayloadHandlersEvent event) {
-        var registrar = event.registrar("1").optional();
+        //Same-version lockstep, both directions: this fork's client and server halves co-evolve
+        //(train protocol, section formats, VSS interplay), and a version skew produces subtle
+        //wrongness rather than clean errors. A non-optional channel versioned with the MOD version
+        //makes the handshake refuse the connection outright - the vanilla mod-mismatch screen names
+        //voxy and both versions - covering a server without voxy and a server on any other build.
+        String modVersion = net.neoforged.fml.ModList.get().getModContainerById("voxy")
+                .map(c -> c.getModInfo().getVersion().toString())
+                .orElse("unknown");
+        var registrar = event.registrar(modVersion);
         registrar.playToClient(
                 me.cortex.voxy.commonImpl.compat.create.DistantTrainProtocol.CarriageShapePayload.TYPE,
                 me.cortex.voxy.commonImpl.compat.create.DistantTrainProtocol.CarriageShapePayload.CODEC,

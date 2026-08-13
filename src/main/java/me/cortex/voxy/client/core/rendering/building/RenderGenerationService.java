@@ -3,6 +3,7 @@ package me.cortex.voxy.client.core.rendering.building;
 import it.unimi.dsi.fastutil.ints.IntOpenHashSet;
 import it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap;
 import me.cortex.voxy.client.core.model.IdNotYetComputedException;
+import me.cortex.voxy.common.Logger;
 import me.cortex.voxy.client.core.model.ModelBakerySubsystem;
 import me.cortex.voxy.common.thread.Service;
 import me.cortex.voxy.common.thread.ServiceManager;
@@ -151,6 +152,14 @@ public class RenderGenerationService {
         }
 
 
+        BuiltSection mesh = null;
+        //Everything below can throw - the task-map consistency ISE, generateMesh outside the
+        //IdNotYetComputed protocol (unsynchronised mapper reads), the model-request path inside
+        //the handler. A section ref that never releases keeps isWorldUsed() true forever and
+        //world exit then spins in awaitWorldQuiescence - so the release lives in a finally keyed
+        //off the same shouldFreeSection bookkeeping the happy path maintains.
+        try {
+
         {//Remove the task from the map, this is done before we check for null sections as well the task map needs to be correct
             long stamp = this.taskMapLock.writeLock();
             var rtask = this.taskMap.remove(task.position);
@@ -168,8 +177,6 @@ public class RenderGenerationService {
             return;
         }
         section.assertNotFree();
-        BuiltSection mesh = null;
-
 
         try {
             mesh = factory.generateMesh(section);
@@ -268,11 +275,13 @@ public class RenderGenerationService {
             }
         }
 
-        if (shouldFreeSection) {
-            if (task != null && task.section != null) {
-                this.holdingSectionCount.decrementAndGet();
+        } finally {
+            if (section != null && shouldFreeSection) {
+                if (task != null && task.section != null) {
+                    this.holdingSectionCount.decrementAndGet();
+                }
+                section.release();
             }
-            section.release();
         }
 
         if (mesh != null) {//If the mesh is null it means it didnt finish, so dont submit
@@ -318,18 +327,25 @@ public class RenderGenerationService {
             int i = this.service.drain();
             if (i == 0) break;
             {
+                //A throw mid-drain (queue/permit drift, a release assertion) must neither leak the
+                //write stamp nor abandon the remaining releases - every un-released task section
+                //keeps isWorldUsed() true and world exit hangs. Desyncs are logged, not thrown:
+                //this is teardown, finishing the cleanup beats preserving the invariant signal.
                 long stamp = this.taskMapLock.writeLock();
-                for (int j = 0; j < i; j++) {
-                    var task = this.taskQueue.remove();
-                    if (task.section != null) {
-                        task.section.release();
-                        this.holdingSectionCount.decrementAndGet();
+                try {
+                    for (int j = 0; j < i; j++) {
+                        var task = this.taskQueue.remove();
+                        if (task.section != null) {
+                            task.section.release();
+                            this.holdingSectionCount.decrementAndGet();
+                        }
+                        if (this.taskMap.remove(task.position) != task) {
+                            Logger.error("Task map desync while draining render generation queue");
+                        }
                     }
-                    if (this.taskMap.remove(task.position) != task) {
-                        throw new IllegalStateException();
-                    }
+                } finally {
+                    this.taskMapLock.unlockWrite(stamp);
                 }
-                this.taskMapLock.unlockWrite(stamp);
                 this.taskQueueCount.addAndGet(-i);
             }
         }
@@ -347,13 +363,16 @@ public class RenderGenerationService {
             }
 
             long stamp = this.taskMapLock.writeLock();
-            if (this.taskMap.remove(task.position) != task) {
-                throw new IllegalStateException();
+            try {
+                if (this.taskMap.remove(task.position) != task) {
+                    Logger.error("Task map desync in render generation shutdown cleanup");
+                }
+            } finally {
+                this.taskMapLock.unlockWrite(stamp);
             }
-            this.taskMapLock.unlockWrite(stamp);
         }
         if (this.taskQueueCount.get() != 0) {
-            throw new IllegalStateException();
+            Logger.error("Render generation task count desync after shutdown: " + this.taskQueueCount.get());
         }
     }
 

@@ -11,18 +11,26 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
 //Registers every azimuth behaviour visual with the cull's behaviour index the moment it is built, so
 //the distance/enclosure cull running on the PARENT visual also hides the behaviour's instances (chain
-//straps and friends) - they have no frame callback of their own to hook. The walker lambda closes over
-//the behaviour's own collectCrumblingInstances; @Pseudo so a pack without azimuth skips silently.
+//straps and friends) - they have no frame callback of their own to hook. The visual registers ITSELF
+//as the walker, never a bound method reference: a lambda closing over `this` reaches parentVisual,
+//which is the index's weak key, and a strong value-to-key edge would make the entry immortal.
+//@Pseudo so a pack without azimuth skips silently.
 @Pseudo
 @Mixin(targets = "com.cake.azimuth.behaviour.extensions.RenderedBehaviourExtension$BehaviourVisual", remap = false)
-public abstract class MixinAzimuthBehaviourVisual {
+public abstract class MixinAzimuthBehaviourVisual
+        implements me.cortex.voxy.client.compat.create.AzimuthBehaviourIndex.Walker {
     @Shadow(remap = false) @Final protected AbstractBlockEntityVisual<?> parentVisual;
 
     @Shadow(remap = false)
     public abstract void collectCrumblingInstances(java.util.function.Consumer<dev.engine_room.flywheel.api.instance.Instance> consumer);
 
+    @Override
+    public void voxy$walkInstances(java.util.function.Consumer<dev.engine_room.flywheel.api.instance.Instance> action) {
+        this.collectCrumblingInstances(action);
+    }
+
     @Inject(method = "<init>", at = @At("TAIL"), require = 0)
     private void voxy$register(CallbackInfo ci) {
-        me.cortex.voxy.client.compat.create.AzimuthBehaviourIndex.register(this.parentVisual, this::collectCrumblingInstances);
+        me.cortex.voxy.client.compat.create.AzimuthBehaviourIndex.register(this.parentVisual, this);
     }
 }

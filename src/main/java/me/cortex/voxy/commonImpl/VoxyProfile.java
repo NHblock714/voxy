@@ -132,15 +132,21 @@ public final class VoxyProfile {
         var gpuRows = new ArrayList<Map.Entry<String, Entry>>(GPU.entrySet());
         gpuRows.sort((a, b) -> Long.compare(b.getValue().nanos.sum(), a.getValue().nanos.sum()));
         double gpuTotalPerFrame = 0;
+        int frames = Math.max(gpuSamples, 1);
         sb.append(String.format("  GPU passes over %,d sampled frames:%n", gpuSamples));
         for (var row : gpuRows) {
             var e = row.getValue();
             long calls = e.calls.sum();
-            double perFrame = calls == 0 ? 0 : (e.nanos.sum() / 1.0e6) / calls;
+            //ms/frame amortises over every sampled frame, ms/call over the frames the pass actually
+            //ran - they diverge whenever a pass is skipped some frames (the command-list hold skips
+            //OT/CG/TS/TP on held frames), and only the amortised number sums to real frame cost
+            double perFrame = (e.nanos.sum() / 1.0e6) / frames;
+            double perCall = calls == 0 ? 0 : (e.nanos.sum() / 1.0e6) / calls;
             gpuTotalPerFrame += perFrame;
-            sb.append(String.format("  %-28s %19.3f ms/frame%n", row.getKey(), perFrame));
+            sb.append(String.format("  %-16s %,9d calls %9.3f ms/call %9.3f ms/frame%n",
+                    row.getKey(), calls, perCall, perFrame));
         }
-        sb.append(String.format("  %-28s %19.3f ms/frame%n", "== gpu total", gpuTotalPerFrame));
+        sb.append(String.format("  %-16s %41.3f ms/frame%n", "== gpu total", gpuTotalPerFrame));
         sb.append("  16.7 ms/frame is the whole 60fps budget, spent inside voxy alone.");
         return sb.toString();
     }

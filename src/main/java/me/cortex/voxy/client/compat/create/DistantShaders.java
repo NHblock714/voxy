@@ -106,6 +106,18 @@ public final class DistantShaders {
         }
     }
 
+    //Pipeline free hook: without it the dead pipeline - and through its final fields the dead
+    //system's whole node/geometry heap - stays pinned until the next forPipeline call, which
+    //without Create's warmup is the first beacon draw, possibly never.
+    public static void onPipelineFreed(me.cortex.voxy.client.core.AbstractRenderPipeline pipeline) {
+        if (patchedOwner == pipeline) {
+            freePatched();
+            patchedOwner = null;
+            patchAvailable = false;
+            patchFailed = false;
+        }
+    }
+
     private static Shader vertexLight() {
         if (vertexLight == null) {
             vertexLight = Shader.make()

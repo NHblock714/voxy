@@ -82,6 +82,9 @@ public class VoxyRenderSystem {
     private final RenderProperties properties;
 
     private final int[] savedBufferBindings = new int[10];
+    //How many texture units the post-pass cleanup clears: vanilla and iris both live inside the
+    //first twelve; iris' own tracking array is cleared to the same count by the pipeline override
+    private static final int CLEARED_TEXTURE_BINDING_COUNT = 12;
     private final int[] viewportDimensions = new int[4];
     private final Matrix4f projectionScratch = new Matrix4f();
     private final Matrix4f modifiedProjectionScratch = new Matrix4f();
@@ -111,6 +114,18 @@ public class VoxyRenderSystem {
             this.savedBufferBindings[i] = glGetIntegeri(GL_SHADER_STORAGE_BUFFER_BINDING, i);
         }
 
+        //Mirrors of the blank-final fields, for the failure path: the catch cannot read finals the
+        //ctor might not have assigned yet
+        ModelBakerySubsystem modelServiceL = null;
+        RenderGenerationService renderGenL = null;
+        me.cortex.voxy.client.core.gl.GlBuffer geomBufferL = null;
+        BasicSectionGeometryData geometryDataL = null;
+        AsyncNodeManager nodeManagerL = null;
+        NodeCleaner nodeCleanerL = null;
+        HierarchicalOcclusionTraverser traversalL = null;
+        AbstractRenderPipeline pipelineL = null;
+        ViewportSelector<?> viewportSelectorL = null;
+        ChunkBoundRenderer chunkBoundRendererL = null;
         try {
             //wait for opengl to be finished, this should hopefully ensure all memory allocations are free
             glFinish();
@@ -121,14 +136,15 @@ public class VoxyRenderSystem {
             this.properties = RenderProperties.getRenderProperties();
             var backendFactory = getRenderBackendFactory();
             {
-                this.modelService = new ModelBakerySubsystem(world.getMapper());
-                this.renderGen = new RenderGenerationService(world, this.modelService, sm, IUsesMeshlets.class.isAssignableFrom(backendFactory.clz()));
+                this.modelService = modelServiceL = new ModelBakerySubsystem(world.getMapper());
+                this.renderGen = renderGenL = new RenderGenerationService(world, this.modelService, sm, IUsesMeshlets.class.isAssignableFrom(backendFactory.clz()));
 
-                this.geometryData = new BasicSectionGeometryData(1<<20, RenderResourceReuse.getOrCreateGeometryBuffer());
+                geomBufferL = RenderResourceReuse.getOrCreateGeometryBuffer();
+                this.geometryData = geometryDataL = new BasicSectionGeometryData(1<<20, geomBufferL);
 
-                this.nodeManager = new AsyncNodeManager(1 << 21, this.geometryData, this.renderGen);
-                this.nodeCleaner = new NodeCleaner(this.nodeManager);
-                this.traversal = new HierarchicalOcclusionTraverser(this.nodeManager, this.nodeCleaner, this.renderGen);
+                this.nodeManager = nodeManagerL = new AsyncNodeManager(1 << 21, this.geometryData, this.renderGen);
+                this.nodeCleaner = nodeCleanerL = new NodeCleaner(this.nodeManager);
+                this.traversal = traversalL = new HierarchicalOcclusionTraverser(this.nodeManager, this.nodeCleaner, this.renderGen);
 
                 //The callback is a single slot; the beacon tracker listens to the same signal, so both
                 //consumers share one registration rather than the second silently replacing the first
@@ -143,7 +159,7 @@ public class VoxyRenderSystem {
                 this.nodeManager.start();
             }
 
-            this.pipeline = RenderPipelineFactory.createPipeline(this.properties, this.nodeManager, this.nodeCleaner, this.traversal, this::frexStillHasWork);
+            this.pipeline = pipelineL = RenderPipelineFactory.createPipeline(this.properties, this.nodeManager, this.nodeCleaner, this.traversal, this::frexStillHasWork);
             this.pipeline.setupExtraModelBakeryData(this.modelService);//Configure the model service
 
             //Late stage traversal compile for shaders with taa
@@ -156,7 +172,7 @@ public class VoxyRenderSystem {
 
             var sectionRenderer = backendFactory.create(this.pipeline, this.modelService.getStore(), this.geometryData);
             this.pipeline.setSectionRenderer(sectionRenderer);
-            this.viewportSelector = new ViewportSelector<>(sectionRenderer::createViewport);
+            this.viewportSelector = viewportSelectorL = new ViewportSelector<>(sectionRenderer::createViewport);
 
             {
                 int minSec = Minecraft.getInstance().level.getMinSection() >> 5;
@@ -177,11 +193,36 @@ public class VoxyRenderSystem {
                 this.setRenderDistance(VoxyConfig.CONFIG.sectionRenderDistance);
             }
 
-            this.chunkBoundRenderer = new ChunkBoundRenderer(this.pipeline);
+            this.chunkBoundRenderer = chunkBoundRendererL = new ChunkBoundRenderer(this.pipeline);
 
             Logger.info("Voxy render system created with " + this.geometryData.getMaxCapacity() + " geometry capacity, using pipeline '" + this.pipeline.getClass().getSimpleName() + "' with renderer '" + sectionRenderer.getClass().getSimpleName() + "'");
         } catch (RuntimeException e) {
-            world.releaseRef();//If something goes wrong, we must release the world first
+            //A failed creation has already taken the two cache-held giants (geometry buffer up to
+            //4GiB, ~537MiB atlas) and started two worker threads - and the iris-disable fallback in
+            //MixinLevelRenderer re-creates the system immediately after, so anything not returned
+            //here is allocated twice over. Each step fused separately: cleanup must never mask the
+            //original failure.
+            try {
+                world.setDirtyCallback(null);
+                world.getMapper().setBiomeCallback(null);
+            } catch (Throwable ignored) {
+            }
+            if (nodeManagerL != null) try { nodeManagerL.stop(); } catch (Throwable t) { Logger.error("ctor cleanup: nodeManager", t); }
+            if (modelServiceL != null) try { modelServiceL.shutdown(); } catch (Throwable t) { Logger.error("ctor cleanup: modelService", t); }
+            if (renderGenL != null) try { renderGenL.shutdown(); } catch (Throwable t) { Logger.error("ctor cleanup: renderGen", t); }
+            if (traversalL != null) try { traversalL.free(); } catch (Throwable t) { Logger.error("ctor cleanup: traversal", t); }
+            if (nodeCleanerL != null) try { nodeCleanerL.free(); } catch (Throwable t) { Logger.error("ctor cleanup: nodeCleaner", t); }
+            if (geometryDataL != null) {
+                try { geometryDataL.free(); } catch (Throwable t) { Logger.error("ctor cleanup: geometryData", t); }
+                try { RenderResourceReuse.giveBackGeometryBuffer(geometryDataL.getGeometryBuffer()); } catch (Throwable ignored) {}
+            } else if (geomBufferL != null) {
+                RenderResourceReuse.giveBackGeometryBuffer(geomBufferL);
+            }
+            if (pipelineL != null) try { pipelineL.free(); } catch (Throwable t) { Logger.error("ctor cleanup: pipeline", t); }
+            if (viewportSelectorL != null) try { viewportSelectorL.free(); } catch (Throwable t) { Logger.error("ctor cleanup: viewports", t); }
+            if (chunkBoundRendererL != null) try { chunkBoundRendererL.free(); } catch (Throwable t) { Logger.error("ctor cleanup: chunkBound", t); }
+            //Released LAST so the engine idle-closer cannot race the cleanup above
+            world.releaseRef();
             throw e;
         }
 
@@ -189,11 +230,7 @@ public class VoxyRenderSystem {
             glBindBufferBase(GL_SHADER_STORAGE_BUFFER, i, this.savedBufferBindings[i]);
         }
 
-        for (int i = 0; i < 12; i++) {
-            GlStateManager._activeTexture(GlConst.GL_TEXTURE0+i);
-            GlStateManager._bindTexture(0);
-            glBindSampler(i, 0);
-        }
+        this.pipeline.clearTextureAndSamplerBindings(CLEARED_TEXTURE_BINDING_COUNT);
     }
 
 
@@ -419,11 +456,16 @@ public class VoxyRenderSystem {
             this.chunkBoundRenderer.render(viewport);
         } else {
             viewport.depthBoundingBuffer.clear(this.properties.inverseClearDepth());
+            //The clear wipes content the reuse-keys can't see changing
+            viewport.invalidateChunkMask();
         }
         TimingStatistics.E.stop();
 
 
         GPUTiming.INSTANCE.marker();
+        //Before the pipeline uploads and draws this frame's geometry: sections built off-thread can
+        //carry blend-palette indices whose colours are still only queued
+        this.modelService.drainBlendPalette();
         // Run the LOD pipeline.
         this.pipeline.runPipeline(viewport, boundFB, this.viewportDimensions[2], this.viewportDimensions[3]);
         GPUTiming.INSTANCE.marker();
@@ -440,6 +482,15 @@ public class VoxyRenderSystem {
             UploadStream.INSTANCE.tick();
 
             this.renderDistanceTracker.setProcessRate(this.getTopLevelNodeProcessRate());
+            //Hot-follow the config field every frame (the tracker early-exits when unchanged, one
+            //int compare): only two call sites push a distance change into the live ring - the ctor
+            //and the GUI slider - so a change written by any other path (NeoForge Mods->Config
+            //Reloading, commands, another mod) leaves the ring at the old radius until renderer
+            //recreation. Following the field here makes every write converge within a frame.
+            this.setRenderDistance(VoxyConfig.CONFIG.sectionRenderDistance);
+            //Same hot-follow treatment for the array pool budget (the setter early-exits when
+            //unchanged; WorldSection is common code and cannot read client config itself)
+            me.cortex.voxy.common.world.WorldSection.setArrayPoolCapMiB(VoxyConfig.CONFIG.sectionArrayPoolMiB);
             while (this.renderDistanceTracker.setCenterAndProcess(viewport.cameraX, viewport.cameraZ)
                     && VoxyClient.isFrexActive()) {
             }
@@ -467,14 +518,10 @@ public class VoxyRenderSystem {
 
             GlStateManager._glBindVertexArray(0);//Clear binding
 
-            GlStateManager._activeTexture(GlConst.GL_TEXTURE1);
-            for (int i = 0; i < 12; i++) {
-                GlStateManager._activeTexture(GlConst.GL_TEXTURE0+i);
-                GlStateManager._bindTexture(0);
-                glBindSampler(i, 0);
-            }
-
-            IrisUtil.clearIrisSamplers();
+            //One pass over the units, iris' own tracking array included via the pipeline override -
+            //the separate 16-unit bindSamplerToUnit loop this replaces existed only because clearing
+            //GL state alone leaves iris' cached bindings stale
+            this.pipeline.clearTextureAndSamplerBindings(CLEARED_TEXTURE_BINDING_COUNT);
 
             // Restore the shader-storage bindings captured before the LOD pass.
         for (int i = 0; i < this.savedBufferBindings.length; i++) {
@@ -602,7 +649,10 @@ public class VoxyRenderSystem {
     public void addDebugInfo(List<String> debug) {
         debug.add("Buf/Tex [#/Mb]: [" + GlBuffer.getCount() + "/" + (GlBuffer.getTotalSize()/1_000_000) + "],[" + GlTexture.getCount() + "/" + (GlTexture.getEstimatedTotalSize()/1_000_000)+"]");
         //Sodium-visible sections drive the hole-punch mask's fill cost (see the "CB" GPU marker)
-        debug.add("Mask sections (sodium visible): " + this.chunkBoundRenderer.getLastRenderedSectionCount());
+        debug.add("Mask sections (sodium visible): " + this.chunkBoundRenderer.getLastRenderedSectionCount()
+                + (VoxyConfig.CONFIG.experimentalChunkMaskReuse
+                        ? " | maskReuse: " + this.chunkBoundRenderer.describeReuseState()
+                        : ""));
         {
             this.modelService.addDebugData(debug);
             this.renderGen.addDebugData(debug);
@@ -620,43 +670,76 @@ public class VoxyRenderSystem {
         PrintfDebugUtil.addToOut(debug);
     }
 
+    //Fuse: log-and-continue per component. One throw must not skip the frees behind it - the
+    //geometry buffer and atlas in particular return to the reuse cache here, and a skipped return
+    //means the next system allocates a second full-size copy.
+    private static void shutdownStep(String what, Runnable step) {
+        try {
+            step.run();
+        } catch (Throwable t) {
+            Logger.error("Error shutting down renderer component: " + what, t);
+        }
+    }
+
+    public void addMemoryDebug(StringBuilder sb) {
+        sb.append(String.format("  geometry store      %,d MiB committed / %,d MiB used%n",
+                ((BasicSectionGeometryData) this.geometryData).getCommittedBytes() >> 20,
+                this.nodeManager.getUsedGeometryCapacity() >> 20));
+        sb.append(String.format("  gl objects          buf %,d (%,d MiB), tex %,d (%,d MiB)%n",
+                GlBuffer.getCount(), GlBuffer.getTotalSize() >> 20,
+                GlTexture.getCount(), GlTexture.getEstimatedTotalSize() >> 20));
+        int[] q = this.nodeManager.queueDepths();
+        sb.append(String.format("  node queues         req %,d, rem %,d, geom %,d, child %,d%n",
+                q[0], q[1], q[2], q[3]));
+        sb.append(String.format("  upload/download     %,d+%,d MiB rings, %,d/%,d KiB in flight%n",
+                UploadStream.INSTANCE.getRingCapacityBytes() >> 20,
+                DownloadStream.INSTANCE.getRingCapacityBytes() >> 20,
+                UploadStream.INSTANCE.getRingUsedBytes() >> 10,
+                DownloadStream.INSTANCE.getRingUsedBytes() >> 10));
+    }
+
     public void shutdown() {
         Logger.info("Flushing download stream");
-        DownloadStream.INSTANCE.flushWaitClear();
+        //Through the fuse like everything else: a throw here (context reset tripping a fence
+        //check) runs ahead of every shutdownStep and would skip the geometry-buffer return, the
+        //atlas release and the bakery join in one stroke
+        shutdownStep("download stream flush", DownloadStream.INSTANCE::flushWaitClear);
         Logger.info("Shutting down rendering");
-        try {
-            //Cleanup callbacks
+        shutdownStep("callbacks", () -> {
             this.worldIn.setDirtyCallback(null);
             this.worldIn.getMapper().setBiomeCallback(null);
             this.worldIn.getMapper().setStateCallback(null);
-
-            this.nodeManager.stop();
-
-            this.modelService.shutdown();
-            this.renderGen.shutdown();
-            this.traversal.free();
-            this.nodeCleaner.free();
-            this.geometryData.free();
-            if (((BasicSectionGeometryData)this.geometryData).isExternalGeometryBuffer) {
-                RenderResourceReuse.giveBackGeometryBuffer(((BasicSectionGeometryData)this.geometryData).getGeometryBuffer());
+        });
+        shutdownStep("node manager", this.nodeManager::stop);
+        shutdownStep("model service", this.modelService::shutdown);
+        shutdownStep("render generation", this.renderGen::shutdown);
+        shutdownStep("traversal", this.traversal::free);
+        shutdownStep("node cleaner", this.nodeCleaner::free);
+        shutdownStep("geometry store", () -> {
+            try {
+                this.geometryData.free();
+            } finally {
+                //Return the buffer even if the decommit threw: re-commit over live pages is
+                //idempotent (ARB_sparse_buffer); an orphaned multi-GiB buffer object is gone until
+                //full instance shutdown.
+                if (((BasicSectionGeometryData)this.geometryData).isExternalGeometryBuffer) {
+                    RenderResourceReuse.giveBackGeometryBuffer(((BasicSectionGeometryData)this.geometryData).getGeometryBuffer());
+                }
             }
-
-            this.chunkBoundRenderer.free();
-
-            this.viewportSelector.free();
-        } catch (Exception e) {Logger.error("Error shutting down renderer components", e);}
+        });
+        shutdownStep("chunk bound renderer", this.chunkBoundRenderer::free);
+        shutdownStep("viewports", this.viewportSelector::free);
         Logger.info("Shutting down render pipeline");
-        try {
-            this.pipeline.free();
-        } catch (Exception e) {
-            Logger.error("Error releasing render pipeline", e);
-        }
+        shutdownStep("pipeline", this.pipeline::free);
 
         Logger.info("Flushing download stream");
-        DownloadStream.INSTANCE.flushWaitClear();
-
-        //Release hold on the world
-        this.worldIn.releaseRef();
+        try {
+            shutdownStep("download stream final flush", DownloadStream.INSTANCE::flushWaitClear);
+        } finally {
+            //The world ref release is the one step that must never be skipped: a held ref keeps
+            //the engine (and its RocksDB) open for the rest of the process
+            this.worldIn.releaseRef();
+        }
         Logger.info("Render shutdown completed");
     }
 

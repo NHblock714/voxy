@@ -148,6 +148,10 @@ public final class SableParentChunkLightSync {
 
                     if (gameTime >= state.nextRefreshTick) {
                         refreshDirty(level, player, state, dirty);
+                        //A voyaging ship drags its footprint across the world and the sent-sets keep
+                        //every chunk it ever covered; chunks outside the current rectangle can only
+                        //matter again by re-entering it, which the first-send path covers anyway.
+                        pruneOutsideFootprint(state, subLevel.boundingBox(), subLevel.logicalPose().position());
                         state.lastRefreshGameTime = gameTime;
                         state.nextRefreshTick = gameTime + REFRESH_INTERVAL_TICKS;
                     }
@@ -174,6 +178,34 @@ public final class SableParentChunkLightSync {
     //Walk the footprint every tick, but send only transitions: a chunk new to the footprint (ship
     //moved), newly outside the tracking view (player walked away, the client forgot it), or newly
     //outside the storage ring. Steady state sends nothing and costs the containment tests alone.
+    private static void pruneOutsideFootprint(TrackingState state, BoundingBox3dc bounds, Vector3dc position) {
+        int minChunkX;
+        int maxChunkX;
+        int minChunkZ;
+        int maxChunkZ;
+        if (bounds == null) {
+            int chunkX = Mth.floor(position.x()) >> 4;
+            int chunkZ = Mth.floor(position.z()) >> 4;
+            minChunkX = chunkX - PARENT_CHUNK_PADDING;
+            maxChunkX = chunkX + PARENT_CHUNK_PADDING;
+            minChunkZ = chunkZ - PARENT_CHUNK_PADDING;
+            maxChunkZ = chunkZ + PARENT_CHUNK_PADDING;
+        } else {
+            minChunkX = (Mth.floor(bounds.minX()) >> 4) - PARENT_CHUNK_PADDING;
+            maxChunkX = (Mth.floor(bounds.maxX()) >> 4) + PARENT_CHUNK_PADDING;
+            minChunkZ = (Mth.floor(bounds.minZ()) >> 4) - PARENT_CHUNK_PADDING;
+            maxChunkZ = (Mth.floor(bounds.maxZ()) >> 4) + PARENT_CHUNK_PADDING;
+        }
+        final int fMinX = minChunkX, fMaxX = maxChunkX, fMinZ = minChunkZ, fMaxZ = maxChunkZ;
+        it.unimi.dsi.fastutil.longs.LongPredicate outside = chunkLong -> {
+            int cx = ChunkPos.getX(chunkLong);
+            int cz = ChunkPos.getZ(chunkLong);
+            return cx < fMinX || cx > fMaxX || cz < fMinZ || cz > fMaxZ;
+        };
+        state.fullSent.removeIf(outside);
+        state.lightSent.removeIf(outside);
+    }
+
     private static void syncFootprint(ServerLevel level, ServerPlayer player, TrackingState state,
                                       BoundingBox3dc bounds, Vector3dc position) {
         ChunkTrackingView trackingView = player.getChunkTrackingView();

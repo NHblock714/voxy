@@ -20,11 +20,41 @@ public final class PerfStats {
     //--- create client ---
     //Kinetic leave-behind snapshots dropped by the distance bound (each freed a VAO/VBO + heap verts)
     public static final LongAdder kineticSnapshotEvicted = new LongAdder();
+    //Sweep captures cut short by the per-tick wall-clock budget (work deferred, not lost)
+    public static final LongAdder kineticDeadlineCut = new LongAdder();
+    //Ingest jobs replaced in place by a newer job for the same section (the pileup dedup)
+    public static final LongAdder ingestSuperseded = new LongAdder();
+    //Arrival vs drain. A sustained gap between them is the signature of a producer (pregen) feeding
+    //faster than the store can absorb - equal counts mean ingest is not the bottleneck at all
+    public static final LongAdder ingestEnqueued = new LongAdder();
+    public static final LongAdder ingestProcessed = new LongAdder();
+    //Saves that bypassed the soft cap because the caller holds a lock and cannot block. Bounded by
+    //the distinct-live-dirty-section count (a section can only be in the queue once), but the count
+    //is what decides whether that path is worth hardening
+    public static final LongAdder saveEnqueuedNonBlocking = new LongAdder();
+    //Store writes that failed and re-queued their sections. A climbing count with flat progress is
+    //a full disk or a dying store, which reads to a player as "memory filled and never came down"
+    public static final LongAdder saveCommitFailed = new LongAdder();
+    public static final LongAdder saveDroppedAfterRetries = new LongAdder();
+    //Baked train shapes closed by the orphan/budget sweep (each freed a VAO/VBO)
+    public static final LongAdder trainShapeSweepClosed = new LongAdder();
+    //Oldest pending ingest dropped by the hard fuse under a storage stall
+    public static final LongAdder ingestOverflowDropped = new LongAdder();
+    //Same-block state flips whose recapture the sweep deferred inside the cooldown window
+    public static final LongAdder kineticStateRecaptureDeferred = new LongAdder();
     public static final LongAdder contraptionSnapshotEvicted = new LongAdder();
     //Per-tick 64KB re-bakes avoided for contraptions that resolved to no drawable mesh
     public static final LongAdder contraptionRebakeSkipped = new LongAdder();
     //Traversal "request already in flight" warns suppressed after the first few
     public static final LongAdder nodeWarnSuppressed = new LongAdder();
+    //--- distant beacons ---
+    //Solves aborted at a section not in the section cache - each abort keeps a synchronous RocksDB
+    //column walk (up to ~24 loads) off the render thread; the beam keeps its previous shape until
+    //the background warm lands and re-queues it
+    public static final LongAdder beaconSolveDeferred = new LongAdder();
+    //Sections the background warmer read on behalf of those solves (repeats and already-cached keys
+    //included: the job re-touches the whole column so the retry cannot miss)
+    public static final LongAdder beaconSolveCacheMiss = new LongAdder();
 
     //--- distant train server ---
     //Carriage pose reuse across players in a dimension: a hit skipped a buildBogeyPoses + trig
@@ -54,6 +84,13 @@ public final class PerfStats {
     //means geometry is missing from those sections - see the guard in RenderDataFactory.
     public static final LongAdder quadBucketOverflow = new LongAdder();
 
+    //Section array pool health: misses allocate 256KiB each, overflows discard to GC - both
+    //nonzero together means the pool cap sits below the churn amplitude
+    public static final LongAdder sectionArrayPoolMiss = new LongAdder();
+    public static final LongAdder sectionArrayPoolOverflow = new LongAdder();
+    //Sections dumped wholesale from a tracker's LRU (dimension hop) - the step-change source
+    public static final LongAdder trackerCacheDumped = new LongAdder();
+
     //--- section saving ---
     //Batched section writes: sections/commits is the headline (>1 means batching is working at all)
     public static final LongAdder saveBatchCommits = new LongAdder();
@@ -73,10 +110,21 @@ public final class PerfStats {
         sb.append(ratio("copycat material cache", copycatKeyHit, copycatKeyMiss)).append('\n');
         sb.append(ratio("train pose reuse", trainPoseCacheHit, trainPoseCacheMiss)).append('\n');
         sb.append(String.format("  %-22s %,d", "kinetic snapshots evicted", kineticSnapshotEvicted.sum())).append('\n');
+        sb.append(String.format("  %-22s %,d", "kinetic deadline cuts", kineticDeadlineCut.sum())).append('\n');
+        sb.append(String.format("  %-22s %,d", "ingest jobs superseded", ingestSuperseded.sum())).append('\n');
+        sb.append(String.format("  %-22s %,d", "ingest overflow drops", ingestOverflowDropped.sum())).append('\n');
+        sb.append(String.format("  %-22s %,d in / %,d out", "ingest arrival/drain",
+                ingestEnqueued.sum(), ingestProcessed.sum())).append('\n');
+        sb.append(String.format("  %-22s %,d nonblocking, %,d failed, %,d dropped", "save enqueue",
+                saveEnqueuedNonBlocking.sum(), saveCommitFailed.sum(), saveDroppedAfterRetries.sum())).append('\n');
+        sb.append(String.format("  %-22s %,d", "train shapes swept", trainShapeSweepClosed.sum())).append('\n');
+        sb.append(String.format("  %-22s %,d", "kinetic recaptures deferred", kineticStateRecaptureDeferred.sum())).append('\n');
         sb.append(String.format("  %-22s %,d", "contraption snaps evicted", contraptionSnapshotEvicted.sum())).append('\n');
         sb.append(String.format("  %-22s %,d", "contraption rebakes skipped", contraptionRebakeSkipped.sum())).append('\n');
         sb.append(String.format("  %-22s %,d", "train shapes deferred", trainShapeBuildDeferred.sum())).append('\n');
         sb.append(String.format("  %-22s %,d", "node warns suppressed", nodeWarnSuppressed.sum())).append('\n');
+        sb.append(String.format("  %-22s %,d (warmed %,d sections)", "beacon solves deferred",
+                beaconSolveDeferred.sum(), beaconSolveCacheMiss.sum())).append('\n');
         long commits = saveBatchCommits.sum();
         long batched = saveBatchSections.sum();
         sb.append(String.format("  %-22s %,d sections in %,d commits (avg %.1f/commit)",
@@ -93,17 +141,47 @@ public final class PerfStats {
         sb.append(String.format("  %-22s %,d", "uniform writes skipped", sectionUniformWriteSkipped.sum())).append('\n');
         sb.append(String.format("  %-22s from server=%,d from this client=%,d",
                 "section ingest source", sectionIngestedChunkless.sum(), sectionIngestedWithChunk.sum())).append('\n');
+        sb.append(String.format("  %-22s miss=%,d overflow=%,d dumped=%,d", "array pool",
+                sectionArrayPoolMiss.sum(), sectionArrayPoolOverflow.sum(), trackerCacheDumped.sum())).append('\n');
         sb.append(String.format("  %-22s %,d", "quad bucket overflows", quadBucketOverflow.sum()));
         return sb.toString();
+    }
+
+    //Curated window-delta view for the full report: lifetime sums are unreadable across a 30s
+    //capture window, a delta names what actually moved
+    public static java.util.LinkedHashMap<String, Long> snapshotForDelta() {
+        var m = new java.util.LinkedHashMap<String, Long>();
+        m.put("ingest enqueued", ingestEnqueued.sum());
+        m.put("ingest processed", ingestProcessed.sum());
+        m.put("ingest superseded", ingestSuperseded.sum());
+        m.put("ingest overflow-dropped", ingestOverflowDropped.sum());
+        m.put("save enqueued nonblocking", saveEnqueuedNonBlocking.sum());
+        m.put("save batch commits", saveBatchCommits.sum());
+        m.put("save batch sections", saveBatchSections.sum());
+        m.put("save commit failures", saveCommitFailed.sum());
+        m.put("sections uniform-kept", sectionUniformKept.sum());
+        m.put("sections materialized", sectionMaterialized.sum());
+        m.put("ingest from server (chunkless)", sectionIngestedChunkless.sum());
+        m.put("ingest from client chunks", sectionIngestedWithChunk.sum());
+        m.put("quad bucket overflows", quadBucketOverflow.sum());
+        m.put("kinetic deadline cuts", kineticDeadlineCut.sum());
+        m.put("train shapes swept", trainShapeSweepClosed.sum());
+        m.put("array pool misses", sectionArrayPoolMiss.sum());
+        m.put("array pool overflows", sectionArrayPoolOverflow.sum());
+        m.put("tracker cache dumped", trackerCacheDumped.sum());
+        return m;
     }
 
     public static void reset() {
         for (LongAdder a : new LongAdder[]{biomeCacheHit, biomeCacheMiss, copycatKeyHit, copycatKeyMiss,
                 kineticSnapshotEvicted, contraptionSnapshotEvicted, contraptionRebakeSkipped, nodeWarnSuppressed,
+                beaconSolveDeferred, beaconSolveCacheMiss,
+                ingestEnqueued, ingestProcessed, saveEnqueuedNonBlocking, saveCommitFailed, saveDroppedAfterRetries,
                 trainPoseCacheHit, trainPoseCacheMiss, trainShapeBuildDeferred,
                 saveBatchCommits, saveBatchSections,
                 sectionUniformKept, sectionMaterialized, sectionMaterializeContended, neighborFaceUniformFill, sectionUniformWriteSkipped,
-                sectionIngestedChunkless, sectionIngestedWithChunk, quadBucketOverflow}) {
+                sectionIngestedChunkless, sectionIngestedWithChunk, quadBucketOverflow,
+                sectionArrayPoolMiss, sectionArrayPoolOverflow, trackerCacheDumped}) {
             a.reset();
         }
     }

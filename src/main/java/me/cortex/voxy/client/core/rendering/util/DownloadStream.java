@@ -27,6 +27,14 @@ public class DownloadStream {
     }
 
     private final AllocationArena allocationArena = new AllocationArena();
+
+    public long getRingCapacityBytes() {
+        return this.allocationArena.getLimit();
+    }
+
+    public long getRingUsedBytes() {
+        return this.allocationArena.getSize();
+    }
     private final GlPersistentMappedBuffer downloadBuffer;
 
     private final Deque<DownloadFrame> frames = new ArrayDeque<>();
@@ -169,7 +177,15 @@ public class DownloadStream {
         this.tick();
         var fence = new GlFence();
         glFinish();
+        //Deadline: after a context reset / TDR the fence may never signal, and an unbounded wait
+        //here pins the render thread forever. glFinish already forced completion of anything
+        //completable - past the deadline the fence is dead, not late.
+        long deadline = System.nanoTime() + 5_000_000_000L;
         while (!fence.signaled()) {
+            if (System.nanoTime() >= deadline) {
+                me.cortex.voxy.common.Logger.error("Download stream fence never signaled (dead context?), abandoning wait");
+                break;
+            }
             glFinish();
             Thread.onSpinWait();
         }

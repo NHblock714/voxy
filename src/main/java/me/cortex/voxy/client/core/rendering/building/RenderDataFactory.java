@@ -231,6 +231,143 @@ public class RenderDataFactory {
         return quadData;
     }
 
+    private final int[] blendBiomeScratch = new int[15 * 15];
+
+    //Vanilla's biome blending averages each block's tint over a (2r+1)^2 box - no gradient, just
+    //neighbouring blocks stepping by a fraction of the difference. The LOD equivalent runs once per
+    //rebuilt section over the raw voxel data, before faces are generated, and swaps the packed
+    //biome bits for a blend-palette index on exactly the voxels whose window is mixed. The window
+    //stays in voxel space at every level: one voxel = 2^N blocks, so each ring shows the same
+    //apparent transition width, and any radius >= 1 swallows the one-parent-voxel border wander
+    //the mip's winner-takes-all child selection produces. A window that is all one biome leaves
+    //the voxel untouched - open single-biome ocean pays a scan and changes nothing.
+    private void applyBiomeBlend(long[] raw, int neighborMsk, boolean neighborsLoaded) {
+        int radius = me.cortex.voxy.client.config.VoxyConfig.CONFIG.biomeBlendRadius;
+        if (radius <= 0) {
+            return;
+        }
+        radius = Math.min(radius, 7);
+        boolean waterOnly = !"water_grass".equals(me.cortex.voxy.client.config.VoxyConfig.CONFIG.biomeBlendScope);
+        if (waterOnly) {
+            //prepareSectionData filled the fluid masks before this pass runs: a section with no
+            //fluid anywhere skips the 32768-voxel walk entirely, which otherwise costs a
+            //~30-70us floor on every rebuild of every dry section
+            boolean anyFluid = false;
+            for (int m : this.fluidMasks) {
+                if (m != 0) {
+                    anyFluid = true;
+                    break;
+                }
+            }
+            if (!anyFluid) {
+                return;
+            }
+        }
+        var palette = this.modelMan.blendPalette();
+        var snap = palette.snapshot();
+        if (snap.rowBaseByModelId().length == 0) {
+            return;
+        }
+        int window = radius * 2 + 1;
+        int count = window * window;
+        var scratch = this.blendBiomeScratch;
+
+        for (int i = 0; i < 32 * 32 * 32; i++) {
+            long metadata = this.sectionData[i * 2 + 1];
+            if (metadata == 0) {
+                continue;
+            }
+            //The packer zeroed the biome bits of non-biome-coloured models; a palette index written
+            //there would be misread.
+            if (!ModelQueries.isBiomeColoured(metadata)) {
+                continue;
+            }
+            //A waterlogged block emits from ONE entry twice - its own quads with its own model row,
+            //the fluid quads with the water row - and the entry holds a single colour field, so a
+            //water blend written here would paint the block's own faces (seagrass, kelp) water
+            //coloured. Those voxels keep the hard edge; pure fluid, which is nearly all of a
+            //border, blends.
+            if (!ModelQueries.isFluid(metadata)) {
+                if (waterOnly || ModelQueries.containsFluid(metadata)) {
+                    continue;
+                }
+            }
+            int x = i & 31, z = (i >> 5) & 31, y = i >> 10;
+            int centerBiome = (int) ((raw[i] >>> 47) & 0x1FF);
+
+            //Phase 1: biome window on the same Y layer. One-deep neighbour layers come from the
+            //face slices the cull pass already pulled; anything deeper, diagonal, or unloaded
+            //clamps to the centre - the band narrows near data edges, it never hardens.
+            boolean mixed = false;
+            int s = 0;
+            for (int dz = -radius; dz <= radius; dz++) {
+                int nz = z + dz;
+                for (int dx = -radius; dx <= radius; dx++) {
+                    int nx = x + dx;
+                    int biome = centerBiome;
+                    if (nx >= 0 && nx < 32 && nz >= 0 && nz < 32) {
+                        long sample = raw[nx | (nz << 5) | (y << 10)];
+                        if (!Mapper.isAir(sample)) {
+                            biome = (int) ((sample >>> 47) & 0x1FF);
+                        }
+                    } else if (neighborsLoaded) {
+                        long sample = 0;
+                        if (nx == -1 && nz >= 0 && nz < 32 && (neighborMsk & 1) != 0) {
+                            sample = this.neighboringFaces[nz | (y << 5)];
+                        } else if (nx == 32 && nz >= 0 && nz < 32 && (neighborMsk & 2) != 0) {
+                            sample = this.neighboringFaces[(nz | (y << 5)) + 32 * 32];
+                        } else if (nz == -1 && nx >= 0 && nx < 32 && (neighborMsk & 16) != 0) {
+                            sample = this.neighboringFaces[(nx | (y << 5)) + 32 * 32 * 4];
+                        } else if (nz == 32 && nx >= 0 && nx < 32 && (neighborMsk & 32) != 0) {
+                            sample = this.neighboringFaces[(nx | (y << 5)) + 32 * 32 * 5];
+                        }
+                        //Slot 0 = neighbour cleared/absent, and biome id 0 is a legal biome - only a
+                        //real block sample may contribute
+                        if (sample != 0 && !Mapper.isAir(sample)) {
+                            biome = (int) ((sample >>> 47) & 0x1FF);
+                        }
+                    }
+                    scratch[s++] = biome;
+                    mixed |= biome != centerBiome;
+                }
+            }
+            if (!mixed) {
+                continue;
+            }
+
+            //Phase 2: colour average through the row this voxel's quads read. The mirror shows
+            //exactly what the GPU displays; an unmirrored row (or a biome the bakery has not
+            //registered yet) keeps the hard edge rather than guessing.
+            int rowModel = (int) ((this.sectionData[i * 2] >>> 26) & 0xFFFF);
+            int r = 0, g = 0, b = 0;
+            boolean abort = false;
+            for (int j = 0; j < count; j++) {
+                int colour = snap.colourOf(rowModel, scratch[j]);
+                if (colour == -1) {
+                    abort = true;
+                    break;
+                }
+                r += colour & 0xFF;
+                g += (colour >>> 8) & 0xFF;
+                b += (colour >>> 16) & 0xFF;
+            }
+            if (abort) {
+                continue;
+            }
+            int blended = (r / count) | ((g / count) << 8) | ((b / count) << 16);
+            int idx = palette.indexFor(blended);
+            if (idx < 0) {
+                continue;
+            }
+            long data = this.sectionData[i * 2];
+            data &= ~((0x1FFL << 46) | (0xFL << 42));
+            data |= ((long) (idx & 0x1FF)) << 46;
+            data |= ((long) ((idx >>> 9) & 0xF)) << 42;
+            data |= 1L << 63;
+            this.sectionData[i * 2] = data;
+        }
+    }
+
     private int prepareSectionData(final long[] rawSectionData) {
         final var sectionData = this.sectionData;
         final var rawModelIds = this.modelMan._unsafeRawAccess();
@@ -338,13 +475,16 @@ public class RenderDataFactory {
                 this.clearNeighborFaceSlice(0);
             } else {
                 //Note this is not thread safe! (but eh, fk it)
-                if (!this.fillSliceIfUniform(sec, 0)) {
-                    var raw = sec.materialize();
-                    for (int i = 0; i < 32*32; i++) {
-                        this.neighboringFaces[i] = raw[(i<<5)+31];//pull the +x faces from the section
+                try {
+                    if (!this.fillSliceIfUniform(sec, 0)) {
+                        var raw = sec.materialize();
+                        for (int i = 0; i < 32*32; i++) {
+                            this.neighboringFaces[i] = raw[(i<<5)+31];//pull the +x faces from the section
+                        }
                     }
+                } finally {
+                    sec.release(WorldSection.RELEASE_HINT_POSSIBLE_REUSE);
                 }
-                sec.release(WorldSection.RELEASE_HINT_POSSIBLE_REUSE);
             }
         }
         if ((msk&2)!=0) {//+x
@@ -353,13 +493,16 @@ public class RenderDataFactory {
                 this.clearNeighborFaceSlice(1);
             } else {
                 //Note this is not thread safe! (but eh, fk it)
-                if (!this.fillSliceIfUniform(sec, 1)) {
-                    var raw = sec.materialize();
-                    for (int i = 0; i < 32*32; i++) {
-                        this.neighboringFaces[i+32*32] = raw[(i<<5)];//pull the -x faces from the section
+                try {
+                    if (!this.fillSliceIfUniform(sec, 1)) {
+                        var raw = sec.materialize();
+                        for (int i = 0; i < 32*32; i++) {
+                            this.neighboringFaces[i+32*32] = raw[(i<<5)];//pull the -x faces from the section
+                        }
                     }
+                } finally {
+                    sec.release(WorldSection.RELEASE_HINT_POSSIBLE_REUSE);
                 }
-                sec.release(WorldSection.RELEASE_HINT_POSSIBLE_REUSE);
             }
         }
 
@@ -369,13 +512,16 @@ public class RenderDataFactory {
                 this.clearNeighborFaceSlice(2);
             } else {
                 //Note this is not thread safe! (but eh, fk it)
-                if (!this.fillSliceIfUniform(sec, 2)) {
-                    var raw = sec.materialize();
-                    for (int i = 0; i < 32*32; i++) {
-                        this.neighboringFaces[i+32*32*2] = raw[i|(0x1F<<10)];//pull the +y faces from the section
+                try {
+                    if (!this.fillSliceIfUniform(sec, 2)) {
+                        var raw = sec.materialize();
+                        for (int i = 0; i < 32*32; i++) {
+                            this.neighboringFaces[i+32*32*2] = raw[i|(0x1F<<10)];//pull the +y faces from the section
+                        }
                     }
+                } finally {
+                    sec.release(WorldSection.RELEASE_HINT_POSSIBLE_REUSE);
                 }
-                sec.release(WorldSection.RELEASE_HINT_POSSIBLE_REUSE);
             }
         }
         if ((msk&8)!=0) {//+y
@@ -390,13 +536,16 @@ public class RenderDataFactory {
                 }
             } else {
                 //Note this is not thread safe! (but eh, fk it)
-                if (!this.fillSliceIfUniform(sec, 3)) {
-                    var raw = sec.materialize();
-                    for (int i = 0; i < 32*32; i++) {
-                        this.neighboringFaces[i+32*32*3] = raw[i];//pull the -y faces from the section
+                try {
+                    if (!this.fillSliceIfUniform(sec, 3)) {
+                        var raw = sec.materialize();
+                        for (int i = 0; i < 32*32; i++) {
+                            this.neighboringFaces[i+32*32*3] = raw[i];//pull the -y faces from the section
+                        }
                     }
+                } finally {
+                    sec.release(WorldSection.RELEASE_HINT_POSSIBLE_REUSE);
                 }
-                sec.release(WorldSection.RELEASE_HINT_POSSIBLE_REUSE);
             }
         }
 
@@ -406,13 +555,16 @@ public class RenderDataFactory {
                 this.clearNeighborFaceSlice(4);
             } else {
                 //Note this is not thread safe! (but eh, fk it)
-                if (!this.fillSliceIfUniform(sec, 4)) {
-                    var raw = sec.materialize();
-                    for (int i = 0; i < 32*32; i++) {
-                        this.neighboringFaces[i+32*32*4] = raw[Integer.expand(i,0b11111_00000_11111)|(0x1F<<5)];//pull the +z faces from the section
+                try {
+                    if (!this.fillSliceIfUniform(sec, 4)) {
+                        var raw = sec.materialize();
+                        for (int i = 0; i < 32*32; i++) {
+                            this.neighboringFaces[i+32*32*4] = raw[Integer.expand(i,0b11111_00000_11111)|(0x1F<<5)];//pull the +z faces from the section
+                        }
                     }
+                } finally {
+                    sec.release(WorldSection.RELEASE_HINT_POSSIBLE_REUSE);
                 }
-                sec.release(WorldSection.RELEASE_HINT_POSSIBLE_REUSE);
             }
         }
         if ((msk&32)!=0) {//+z
@@ -421,13 +573,16 @@ public class RenderDataFactory {
                 this.clearNeighborFaceSlice(5);
             } else {
                 //Note this is not thread safe! (but eh, fk it)
-                if (!this.fillSliceIfUniform(sec, 5)) {
-                    var raw = sec.materialize();
-                    for (int i = 0; i < 32*32; i++) {
-                        this.neighboringFaces[i+32*32*5] = raw[Integer.expand(i,0b11111_00000_11111)];//pull the -z faces from the section
+                try {
+                    if (!this.fillSliceIfUniform(sec, 5)) {
+                        var raw = sec.materialize();
+                        for (int i = 0; i < 32*32; i++) {
+                            this.neighboringFaces[i+32*32*5] = raw[Integer.expand(i,0b11111_00000_11111)];//pull the -z faces from the section
+                        }
                     }
+                } finally {
+                    sec.release(WorldSection.RELEASE_HINT_POSSIBLE_REUSE);
                 }
-                sec.release(WorldSection.RELEASE_HINT_POSSIBLE_REUSE);
             }
         }
     }
@@ -1842,7 +1997,8 @@ public class RenderDataFactory {
         Arrays.fill(this.fluidMasks, 0);
 
         //Prepare everything
-        int neighborMskAndFlags = this.prepareSectionData(section.materialize());
+        long[] rawSection = section.materialize();
+        int neighborMskAndFlags = this.prepareSectionData(rawSection);
         if ((neighborMskAndFlags&(1<<31))!=0) {//We failed to get everything so throw exception
             throw new IdNotYetComputedException(neighborMskAndFlags&((1<<20)-1), true);
         }
@@ -1853,6 +2009,9 @@ public class RenderDataFactory {
         }
 
         try {
+            //Inside the try so a model lookup that is not ready yet retires through the same
+            //re-queue path the face generators use, with the neighbour data attached
+            this.applyBiomeBlend(rawSection, neighborMsk, CHECK_NEIGHBOR_FACE_OCCLUSION);
             this.generateYZFaces();
             this.generateXFaces();
             this.generateFluidFaces();

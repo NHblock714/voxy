@@ -27,6 +27,11 @@ public abstract class Viewport <A extends Viewport<A>> {
     public int width;
     public int height;
     public int frameId;
+    //frameId of the most recent command-list build. Feeds the SceneUniform slot the visibility
+    //raster compares stamps against: with the command-list hold, frameId keeps counting on held
+    //frames while the stamps in visibilityData stay at the build that wrote them, so "visible last
+    //frame" means "visible at the previous build" - frameId-1 would never match after a hold.
+    public int prevBuildFrameId;
     public Matrix4f vanillaProjection = new Matrix4f();
     public Matrix4f projection = new Matrix4f();
     public Matrix4f modelView = new Matrix4f();
@@ -39,6 +44,20 @@ public abstract class Viewport <A extends Viewport<A>> {
     public final Matrix4f MVP = new Matrix4f();
     public final Vector3i section = new Vector3i();
     public final Vector3f innerTranslation = new Vector3f();
+
+    //Chunk-mask reuse state (experimentalChunkMaskReuse): the exact inputs the depth bounding
+    //buffer's current content was rasterised with. The content is reusable only while every input
+    //still matches AND nothing cleared or resized the buffer since - every such writer must call
+    //invalidateChunkMask(), because the inputs alone cannot see the content being wiped.
+    public final Matrix4f chunkMaskMVP = new Matrix4f();
+    public double chunkMaskCamX, chunkMaskCamY, chunkMaskCamZ;
+    public float chunkMaskRenderDistance;
+    public int chunkMaskContentGen;
+    public boolean chunkMaskValid;
+
+    public void invalidateChunkMask() {
+        this.chunkMaskValid = false;
+    }
 
     private final RenderProperties properties;
 
@@ -112,6 +131,7 @@ public abstract class Viewport <A extends Viewport<A>> {
 
         if (this.depthBoundingBuffer.resize(this.width, this.height)) {
             this.depthBoundingBuffer.clear(this.properties.inverseClearDepth());
+            this.invalidateChunkMask();
         }
 
         return (A) this;

@@ -51,9 +51,24 @@ public class NormalRenderPipeline extends AbstractRenderPipeline {
 
     protected NormalRenderPipeline(RenderProperties properties, AsyncNodeManager nodeManager, NodeCleaner nodeCleaner, HierarchicalOcclusionTraverser traversal, BooleanSupplier frexSupplier) {
         super(properties, nodeManager, nodeCleaner, traversal, frexSupplier, false);
-        this.finalBlit = new FullscreenBlit(properties, "voxy:post/blit_texture_depth_cutout.frag",
-                builder -> builder.define("USE_ENV_FOG").define("EMIT_COLOUR"));
-        this.ssao = SSAO.createSSAO(properties, VoxyConfig.CONFIG.getSSAOMode());
+        //Same staged teardown as the iris pipeline's ctor: a shader compile failure below must not
+        //orphan what this ctor and super already allocated - the leaked programs surface later as
+        //"was not freed" chat lines that misattribute the real failure
+        FullscreenBlit finalBlitL = null;
+        SSAO ssaoL = null;
+        try {
+            finalBlitL = new FullscreenBlit(properties, "voxy:post/blit_texture_depth_cutout.frag",
+                    builder -> builder.define("USE_ENV_FOG").define("EMIT_COLOUR"));
+            ssaoL = SSAO.createSSAO(properties, VoxyConfig.CONFIG.getSSAOMode());
+        } catch (RuntimeException | Error e) {
+            if (ssaoL != null) ssaoL.free();
+            if (finalBlitL != null) finalBlitL.delete();
+            this.fbSSAO.free();
+            this.freeConstructorAllocated();
+            throw e;
+        }
+        this.finalBlit = finalBlitL;
+        this.ssao = ssaoL;
     }
 
     @Override

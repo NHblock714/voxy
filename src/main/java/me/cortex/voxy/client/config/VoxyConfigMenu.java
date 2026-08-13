@@ -212,6 +212,16 @@ public class VoxyConfigMenu implements ConfigEntryPoint {
                         //which only exist on the non-shader blit. The circular handover is decided in the
                         //shared depth/stencil setup and applies to both pipelines.
                         new Group(
+                                //LOD shading is the shader pack's job, so this is greyed out without one -
+                                //and it only does anything for packs that ship voxy_*_lite.glsl. The iris
+                                //reload is what re-runs the patch that picks between the two programs.
+                                new BoolOption(
+                                        "voxy:lod_lite_shading",
+                                        Component.translatable("voxy.config.general.lodLiteShading"),
+                                        ()->CFG.lodLiteShading, v->CFG.lodLiteShading=v)
+                                        .setImpact(OptionImpact.HIGH)
+                                        .setEnablerInherit(s->IrisUtil.irisShaderPackEnabled(), ConfigState.UPDATE_ON_REBUILD)
+                                        .setPostChangeFlags(RENDER_RELOAD, "voxy:iris_reload"),
                                 new BoolOption(
                                         "voxy:lod_boundary_fade",
                                         Component.translatable("voxy.config.general.lodBoundaryFade"),

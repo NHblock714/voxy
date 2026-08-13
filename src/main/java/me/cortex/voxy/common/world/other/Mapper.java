@@ -135,8 +135,10 @@ public class Mapper {
                 sentries.add(sentry);
                 if (sentry.state.isAir()) {
                     //Keep the numeric mapping slot so old voxel data remains valid, but do not
-                    //replace a removed mod block with an unrelated random registry entry.
-                    forceResave[0] = true;
+                    //replace a removed mod block with an unrelated random registry entry. No
+                    //resave is triggered: an air slot has nothing worth persisting, and flagging
+                    //it means a full mapping-table rewrite (plus WAL flush) on every world join
+                    //for the life of the store.
                     Logger.warn("Stored block-state mapping " + id + " is unavailable and will render as air");
                     continue;
                 }
@@ -370,6 +372,11 @@ public class Mapper {
             if (entry.state.isAir() && entry.id == 0) {
                 continue;
             }
+            //An unresolved placeholder must not reach the store: a resave triggered by any OTHER
+            //entry's successful upgrade would otherwise overwrite this record with air for good
+            if (entry.unresolved) {
+                continue;
+            }
             if (this.blockId2stateEntry.indexOf(entry) != entry.id) {
                 throw new IllegalStateException("State Id NOT THE SAME, very critically bad. arr:" + this.blockId2stateEntry.indexOf(entry) + " entry: " + entry.id);
             }
@@ -405,6 +412,11 @@ public class Mapper {
         public final String variantType;
         public final String variantKey;
         public final CompoundTag variantData;
+        //True for the in-memory air placeholder of a record that failed to decode (mod removed or
+        //updated). It must NEVER be persisted: writing it would overwrite the original bytes with
+        //minecraft:air permanently - the stored record stays untouched on disk so reinstalling the
+        //mod heals the mapping on the next load.
+        public boolean unresolved;
 
         public StateEntry(int id, BlockState state) {
             this(id, state, null, null, null);
@@ -477,13 +489,18 @@ public class Mapper {
         }
 
         private static StateEntry airReplacement(int id, boolean[] forceResave, String message, Throwable cause) {
-            forceResave[0] = true;
+            //Does NOT set forceResave: a resave exists to persist successfully upgraded states,
+            //and an unresolved placeholder has nothing worth persisting - flagging it here means a
+            //full-table rewrite (plus WAL flush) on every world join for as long as one dead
+            //record exists
             if (cause == null) {
                 Logger.warn(message + "; mapping id " + id + " will use air");
             } else {
                 Logger.error(message + "; mapping id " + id + " will use air", cause);
             }
-            return new StateEntry(id, Blocks.AIR.defaultBlockState());
+            var entry = new StateEntry(id, Blocks.AIR.defaultBlockState());
+            entry.unresolved = true;
+            return entry;
         }
 
         public static StateEntry deserialize(int id, byte[] data, boolean[] forceResave) {

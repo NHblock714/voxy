@@ -95,15 +95,19 @@ public final class CreateTrainSampler {
         }
         this.tickCounter = 0;
         var server = event.getServer();
-        if (CTT_LOADED && this.submitToTrainWorker(server)) {
+        //Snapshot ON the server thread: under createthreadedtrains the sample runs on the train
+        //worker overlapping the next tick, and iterating the live player list there is a CME plus
+        //a logout race that leaks per-player keys forever
+        var players = java.util.List.copyOf(server.getPlayerList().getPlayers());
+        if (CTT_LOADED && this.submitToTrainWorker(server, players)) {
             return;
         }
-        this.sampleSafe(server);
+        this.sampleSafe(server, players);
     }
 
-    private void sampleSafe(MinecraftServer server) {
+    private void sampleSafe(MinecraftServer server, java.util.List<ServerPlayer> players) {
         try {
-            this.sample(server);
+            this.sample(server, players);
             lastSampleAtMs = System.currentTimeMillis();
         } catch (Throwable e) {
             var top = e.getStackTrace().length > 0 ? " @ " + e.getStackTrace()[0] : "";
@@ -114,7 +118,7 @@ public final class CreateTrainSampler {
 
     //Queue the sample onto createthreadedtrains' worker so it never races the off-thread train tick.
     //The worker is recreated per server run, so the field is re-read every time.
-    private boolean submitToTrainWorker(MinecraftServer server) {
+    private boolean submitToTrainWorker(MinecraftServer server, java.util.List<ServerPlayer> players) {
         if (cttReflectionFailed) {
             return false;
         }
@@ -129,7 +133,7 @@ public final class CreateTrainSampler {
             if (worker == null) {
                 return false;
             }
-            cttSubmitMethod.invoke(worker, (Runnable) () -> this.sampleSafe(server));
+            cttSubmitMethod.invoke(worker, (Runnable) () -> this.sampleSafe(server, players));
             return true;
         } catch (Throwable e) {
             cttReflectionFailed = true;
@@ -159,9 +163,8 @@ public final class CreateTrainSampler {
     private static final int SHAPE_BUILDS_PER_ROUND = 8;
     private int shapeBuildsThisRound;
 
-    private void sample(MinecraftServer server) {
+    private void sample(MinecraftServer server, java.util.List<ServerPlayer> players) {
         this.shapeBuildsThisRound = 0;
-        var players = server.getPlayerList().getPlayers();
         //DistantTrainConfig combines the client's preference (integrated server) with the dedicated
         //server's uniform ceiling (voxy-server.toml); either side disabling it stops streaming.
         if (players.isEmpty() || !DistantTrainConfig.enabled() || Create.RAILWAYS.trains.isEmpty()) {
@@ -175,10 +178,21 @@ public final class CreateTrainSampler {
             return;
         }
 
+        //Close the logout race: a worker-side put can land after the logout handler's remove,
+        //and nothing else removes that key again. retainAll only removes, so racing a login is
+        //harmless - a fresh player re-enters the maps on their first sampled round.
+        var uuids = new java.util.HashSet<UUID>(players.size() * 2);
+        for (var p : players) {
+            uuids.add(p.getUUID());
+        }
+        this.visibleTrains.keySet().retainAll(uuids);
+        this.sentShapes.keySet().retainAll(uuids);
+
         //Snapshot: on the fallback path under createthreadedtrains the map may still be mutated
         //concurrently; a torn copy at worst drops one sampling round (caller catches).
         var trains = new ArrayList<>(Create.RAILWAYS.trains.values());
         lastTrainsSeen = trains.size();
+        this.pruneDeadTrainCaches(trains);
         int posePacketsSent = 0;
         //Stream window ceiling = min(client render distance, dedicated-server ceiling), clamped to the
         //hard max. On the integrated server it shrinks to what the host draws; on a dedicated server it
@@ -422,6 +436,33 @@ public final class CreateTrainSampler {
 
     private static long shapeId(UUID trainId, int carriageIndex) {
         return trainId.getMostSignificantBits() ^ trainId.getLeastSignificantBits() ^ (carriageIndex * 0x9E3779B97F4A7C15L);
+    }
+
+    private long lastPruneMs;
+
+    //A shapeId embeds the train UUID and every disassembly mints a fresh train, so a dead train's
+    //cached payloads and sent-markers are deterministic garbage - the id can never be asked for
+    //again. On a pack whose trains assemble and disassemble all day the caches only ever grew.
+    //Bounded O(trains x carriages) and self-throttled well below the sample cadence.
+    private void pruneDeadTrainCaches(java.util.List<Train> trains) {
+        long now = System.currentTimeMillis();
+        if (now - this.lastPruneMs < 10_000) {
+            return;
+        }
+        this.lastPruneMs = now;
+        var liveShapeIds = new java.util.HashSet<Long>();
+        var liveTrainIds = new HashSet<UUID>();
+        for (Train train : trains) {
+            liveTrainIds.add(train.id);
+            for (int i = 0; i < train.carriages.size(); i++) {
+                liveShapeIds.add(shapeId(train.id, i));
+            }
+        }
+        this.shapeCache.keySet().retainAll(liveShapeIds);
+        this.failedShapes.retainAll(liveShapeIds);
+        for (var byTrain : this.sentShapes.values()) {
+            byTrain.keySet().retainAll(liveTrainIds);
+        }
     }
 
     //Full server-side pipeline dump for /voxy debug trains on an integrated server: every train,

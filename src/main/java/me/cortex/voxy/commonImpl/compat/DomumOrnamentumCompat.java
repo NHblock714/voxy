@@ -121,12 +121,20 @@ public final class DomumOrnamentumCompat {
         return LOADED;
     }
 
+    //Per-Block verdict cache: this runs on every client block change (ahead of the air fast path
+    //in MixinClientLevel), and a registry reverse-lookup there costs ~40-80ns per call -
+    //noticeable during Create-factory block-update storms. Keyed on the Block instance so the
+    //answer is exactly the registry's; bounded by the block registry size.
+    private static final Map<net.minecraft.world.level.block.Block, Boolean> DOMUM_BLOCKS = new ConcurrentHashMap<>();
+
     public static boolean isDomumState(BlockState state) {
         if (!LOADED || state == null) {
             return false;
         }
-        ResourceLocation id = BuiltInRegistries.BLOCK.getKey(state.getBlock());
-        return id != null && VARIANT_TYPE.equals(id.getNamespace());
+        return DOMUM_BLOCKS.computeIfAbsent(state.getBlock(), block -> {
+            ResourceLocation id = BuiltInRegistries.BLOCK.getKey(block);
+            return id != null && VARIANT_TYPE.equals(id.getNamespace());
+        });
     }
 
     public static void beginSection(Mapper mapper, SectionStorage storage, LevelChunk chunk, LevelChunkSection section, int sectionX, int sectionY, int sectionZ) {

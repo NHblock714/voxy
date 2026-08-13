@@ -36,6 +36,21 @@ public final class CreateServerConfig {
                      "rate automatically. 5 = default (4 samples/second).")
             .defineInRange("sampleIntervalTicks", 5, 1, 40);
 
+    //Far-player proxy streaming is otherwise entirely client-steered: a voxy client picks its own
+    //radius (up to 32768 blocks) and every player's position/pose/equipment is shared into it.
+    //The ceiling below is applied per send, so a config reload takes effect without clients
+    //re-subscribing.
+    public static final ModConfigSpec.BooleanValue FAR_PLAYERS_ENABLED = BUILDER
+            .comment("Master switch for streaming far-player snapshots (position, pose, equipment ids)",
+                     "to voxy clients. Off = no far-player proxies for anyone on this server.")
+            .define("farPlayersEnabled", true);
+
+    public static final ModConfigSpec.IntValue MAX_FAR_PLAYER_DISTANCE_BLOCKS = BUILDER
+            .comment("Uniform ceiling, in blocks, for how far the server streams player snapshots to",
+                     "any client. A client asking for more still gets this. Data-exposure lever: the",
+                     "radius within which other players' positions are shared.")
+            .defineInRange("maxFarPlayerDistanceBlocks", 8192, 0, 32768);
+
     public static final ModConfigSpec SPEC = BUILDER.build();
 
     public static void register(ModContainer container, IEventBus modEventBus) {
@@ -61,5 +76,8 @@ public final class CreateServerConfig {
                 DISTANT_TRAINS_ENABLED.get(),
                 MAX_TRAIN_STREAM_CHUNKS.get() * 16.0,
                 SAMPLE_INTERVAL_TICKS.get());
+        me.cortex.voxy.compat.far.FarEntityService.updateServerConfig(
+                FAR_PLAYERS_ENABLED.get(),
+                MAX_FAR_PLAYER_DISTANCE_BLOCKS.get());
     }
 }

@@ -23,6 +23,7 @@ import static org.lwjgl.opengl.GL43C.GL_MAX_SHADER_STORAGE_BLOCK_SIZE;
 import static org.lwjgl.opengl.GL44.GL_DYNAMIC_STORAGE_BIT;
 import static org.lwjgl.opengl.GL44.GL_MAP_COHERENT_BIT;
 import static org.lwjgl.opengl.GL45.glClearNamedFramebufferfi;
+import static org.lwjgl.opengl.ARBSparseBuffer.GL_SPARSE_BUFFER_PAGE_SIZE_ARB;
 import static org.lwjgl.opengl.GL45C.*;
 import static org.lwjgl.opengl.GL45C.glCreateFramebuffers;
 import static org.lwjgl.opengl.NVXGPUMemoryInfo.*;
@@ -45,6 +46,7 @@ public class Capabilities {
     public final boolean isIntel;
     public final boolean subgroup;
     public final boolean sparseBuffer;
+    public final int sparseBufferPageSize;
     public final boolean isNvidia;
     public final boolean isAmd;
     public final boolean nvBarryCoords;
@@ -53,6 +55,13 @@ public class Capabilities {
     public Capabilities() {
         var cap = GL.getCapabilities();
         this.sparseBuffer = cap.GL_ARB_sparse_buffer;
+        //Page-commitment granularity, queried once while the context is current; a driver
+        //returning 0/garbage falls back to the 64KB every known implementation uses
+        int sparsePageSize = 0;
+        if (this.sparseBuffer) {
+            sparsePageSize = glGetInteger(GL_SPARSE_BUFFER_PAGE_SIZE_ARB);
+        }
+        this.sparseBufferPageSize = sparsePageSize > 0 ? sparsePageSize : 65536;
         this.compute = cap.glDispatchComputeIndirect != 0;
         this.indirectParameters = cap.glMultiDrawElementsIndirectCountARB != 0;
         this.repFragTest = cap.GL_NV_representative_fragment_test;

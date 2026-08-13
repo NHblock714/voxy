@@ -60,26 +60,39 @@ public class PerThreadContextExecutor extends TrackedObject {
     private void ctxCleaner(ThreadContext ctx) {
         try {
             ctx.cleanup.run();
-        } catch (Exception e) {
-            this.exceptionHandler.accept(e);
+        } catch (Throwable e) {
+            this.exceptionHandler.accept(e instanceof Exception ex ? ex : new RuntimeException(e));
         }
     }
 
     boolean run() {
+        //The decrement must be unconditional: a leaked increment is a silently dead worker AND a
+        //shutdown()/setNumThreads() that spins forever - and setNumThreads runs on the render
+        //thread on every world join. Context creation runs arbitrary service setup so it lives
+        //inside the try, and the catch takes Throwable because an Error (OOM in a bake) leaking
+        //past a narrower catch strands the counter just as hard. This executor also runs on
+        //hijacked sodium chunk builders, whose own loop only guards InterruptedException -
+        //anything escaping here kills that thread for the session.
         this.currentRunning.incrementAndGet();
-        if (!this.isLive) {
-            this.currentRunning.decrementAndGet();
-            this.exceptionHandler.accept(new IllegalStateException("Executor is in shutdown"));
-            return false;
-        }
-        var ctx = this.contexts.computeIfAbsent(THREAD_CTX.get(), this.contextFactory);
         try {
-            ctx.execute.run();
-        } catch (Exception e) {
-            this.exceptionHandler.accept(e);
+            if (!this.isLive) {
+                this.exceptionHandler.accept(new IllegalStateException("Executor is in shutdown"));
+                return false;
+            }
+            var ctx = this.contexts.computeIfAbsent(THREAD_CTX.get(), this.contextFactory);
+            try {
+                ctx.execute.run();
+            } catch (Throwable e) {
+                try {
+                    this.exceptionHandler.accept(e instanceof Exception ex ? ex : new RuntimeException(e));
+                } catch (Throwable handlerFailure) {
+                    Logger.error("Executor exception handler itself threw", handlerFailure);
+                }
+            }
+            return true;
+        } finally {
+            this.currentRunning.decrementAndGet();
         }
-        this.currentRunning.decrementAndGet();
-        return true;
     }
 
     public void shutdown() {
@@ -87,11 +100,21 @@ public class PerThreadContextExecutor extends TrackedObject {
             throw new IllegalStateException("Tried shutting down a executor twice");
         }
         this.isLive = false;
+        long nextReport = System.nanoTime() + 2_000_000_000L;
         while (this.currentRunning.get() != 0) {
-            Thread.onSpinWait();//TODO: maybe add a sleep or something
+            //A worker wedged inside execute (blocked on a lock) holds this loop; the wait itself
+            //must stay - contexts cannot be cleaned under a live runner - but it has to be
+            //visible and must not burn a core
+            long now = System.nanoTime();
+            if (now >= nextReport) {
+                Logger.warn("Waiting for " + this.currentRunning.get() + " executor runner(s) to finish");
+                nextReport = now + 2_000_000_000L;
+            }
+            java.util.concurrent.locks.LockSupport.parkNanos(100_000L);
         }
+        //One throwing cleanup must not skip the rest (ctxCleaner routes through the handler)
         for (var ctx : this.contexts.clear()) {
-            ctx.cleanup.run();
+            this.ctxCleaner(ctx);
         }
 
         this.free0();

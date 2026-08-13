@@ -46,6 +46,11 @@ public class MixinTrackRenderer {
         if (me.cortex.voxy.client.compat.ShipBorne.isShipBorne(be.getBlockPos())) {
             return;
         }
+        //Ponder/schematic scenes carry scene-local positions - never cull those against the
+        //world camera (the Train Track ponder lost its bezier spans to exactly that)
+        if (!me.cortex.voxy.client.compat.create.KineticCull.isWorldPlaced(be)) {
+            return;
+        }
         Vec3 cam = mc.gameRenderer.getMainCamera().getPosition();
         double reach = mc.options.getEffectiveRenderDistance() * 16.0;
         if (be.getBlockPos().distToCenterSqr(cam.x, cam.y, cam.z) > reach * reach) {

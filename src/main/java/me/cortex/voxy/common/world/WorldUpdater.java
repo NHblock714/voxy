@@ -21,74 +21,78 @@ public class WorldUpdater {
         if (!into.isLive) throw new IllegalStateException("World is not live");
         boolean shouldCheckEmptiness = false;
         WorldSection previousSection = null;
-        for (int lvl = 0; lvl <= MAX_LOD_LAYER; lvl++) {
-            var worldSection = into.acquire(lvl, section.x >> (lvl + 1), section.y >> (lvl + 1), section.z >> (lvl + 1));
+        WorldSection current = null;
+        //Refcounts must survive any throw out of this loop - markDirty fans into the dirty-callback
+        //chain (node manager, render router), and one leaked acquire keeps isWorldUsed() true
+        //forever, pinning the engine's whole native footprint past dimension teardown. Every
+        //hand-off nulls its local so the finally releases exactly the refs still held.
+        try {
+            for (int lvl = 0; lvl <= MAX_LOD_LAYER; lvl++) {
+                current = into.acquire(lvl, section.x >> (lvl + 1), section.y >> (lvl + 1), section.z >> (lvl + 1));
 
-            int emptinessStateChange = 0;
-            //Propagate the child existence state of the previous iteration to this section
-            if (lvl != 0 && shouldCheckEmptiness) {
-                emptinessStateChange = worldSection.updateEmptyChildState(previousSection);
-                //We kept the previous section acquired, so we need to release it
-                previousSection.release();
-                previousSection = null;
-            }
-
-            long status = insertSectionLvlIntoWorld(section, worldSection);
-            boolean didStateChange = (status&1)==1;
-            int airCount = (int) ((status>>1)&0x1FFF);
-
-
-            if (lvl == 0) {
-                int nonAirCountDelta = section.lvl0NonAirCount-(4096-airCount);
-                if (nonAirCountDelta != 0) {
-                    worldSection.addNonEmptyBlockCount(nonAirCountDelta);
-                    emptinessStateChange = worldSection.updateLvl0State() ? 2 : 0;
-                }
-            }
-
-            if (didStateChange||(emptinessStateChange!=0)) {
-                //TODO: somehow foward the neighbors that are facing the updated area, this allows forwarding to the dirty consumer
-                // which can decide wether to dispatch mesh rebuilds to the surounding sections
-                //Bitmask of neighboring sections
-                //Note, this may be zero (this is more likely to occure at higher lod levels) if it doesnt face any neighbors
-                int neighbors = 0;
-                if (didStateChange) {
-                    neighbors |= ((section.y^(section.y-1))>>(lvl+1))==0?0:1<<0;//Down
-                    neighbors |= ((section.y^(section.y+1))>>(lvl+1))==0?0:1<<1;//Up
-                    neighbors |= ((section.x^(section.x-1))>>(lvl+1))==0?0:1<<2;//-x
-                    neighbors |= ((section.x^(section.x+1))>>(lvl+1))==0?0:1<<3;//+x
-                    neighbors |= ((section.z^(section.z-1))>>(lvl+1))==0?0:1<<4;//-z
-                    neighbors |= ((section.z^(section.z+1))>>(lvl+1))==0?0:1<<5;//+z
+                int emptinessStateChange = 0;
+                //Propagate the child existence state of the previous iteration to this section
+                if (lvl != 0 && shouldCheckEmptiness) {
+                    emptinessStateChange = current.updateEmptyChildState(previousSection);
+                    //We kept the previous section acquired, so we need to release it
+                    previousSection.release();
+                    previousSection = null;
                 }
 
-                into.markDirty(worldSection, (didStateChange?UPDATE_TYPE_BLOCK_BIT:0)|(emptinessStateChange!=0?UPDATE_TYPE_CHILD_EXISTENCE_BIT:0), neighbors);
-            }
+                long status = insertSectionLvlIntoWorld(section, current);
+                boolean didStateChange = (status&1)==1;
+                int airCount = (int) ((status>>1)&0x1FFF);
 
-            //Need to release the section after using it
-            if (didStateChange||(emptinessStateChange==2)) {
+
+                if (lvl == 0) {
+                    int nonAirCountDelta = section.lvl0NonAirCount-(4096-airCount);
+                    if (nonAirCountDelta != 0) {
+                        current.addNonEmptyBlockCount(nonAirCountDelta);
+                        emptinessStateChange = current.updateLvl0State() ? 2 : 0;
+                    }
+                }
+
+                if (didStateChange||(emptinessStateChange!=0)) {
+                    //TODO: somehow foward the neighbors that are facing the updated area, this allows forwarding to the dirty consumer
+                    // which can decide wether to dispatch mesh rebuilds to the surounding sections
+                    //Bitmask of neighboring sections
+                    //Note, this may be zero (this is more likely to occure at higher lod levels) if it doesnt face any neighbors
+                    int neighbors = 0;
+                    if (didStateChange) {
+                        neighbors |= ((section.y^(section.y-1))>>(lvl+1))==0?0:1<<0;//Down
+                        neighbors |= ((section.y^(section.y+1))>>(lvl+1))==0?0:1<<1;//Up
+                        neighbors |= ((section.x^(section.x-1))>>(lvl+1))==0?0:1<<2;//-x
+                        neighbors |= ((section.x^(section.x+1))>>(lvl+1))==0?0:1<<3;//+x
+                        neighbors |= ((section.z^(section.z-1))>>(lvl+1))==0?0:1<<4;//-z
+                        neighbors |= ((section.z^(section.z+1))>>(lvl+1))==0?0:1<<5;//+z
+                    }
+
+                    into.markDirty(current, (didStateChange?UPDATE_TYPE_BLOCK_BIT:0)|(emptinessStateChange!=0?UPDATE_TYPE_CHILD_EXISTENCE_BIT:0), neighbors);
+                }
+
+                //Need to release the section after using it
                 if (emptinessStateChange==2) {
                     //Major state emptiness change, bubble up
                     shouldCheckEmptiness = true;
                     //Dont release the section, it will be released on the next loop
-                    previousSection = worldSection;
+                    previousSection = current;
+                    current = null;
                 } else {
-                    //Propagate up without state change
+                    //Keep walking the remaining mip levels even when nothing changed here: each level compares the
+                    //fresh mip against storage, so stale parents get detected and rewritten. Unchanged levels write
+                    //identical data and mark nothing dirty.
                     shouldCheckEmptiness = false;
-                    previousSection = null;
-                    worldSection.release();
+                    current.release();
+                    current = null;
                 }
-            } else {
-                //Keep walking the remaining mip levels even when nothing changed here: each level compares the
-                //fresh mip against storage, so stale parents get detected and rewritten. Unchanged levels write
-                //identical data and mark nothing dirty.
-                shouldCheckEmptiness = false;
-                previousSection = null;
-                worldSection.release();
             }
-        }
-
-        if (previousSection != null) {
-            previousSection.release();
+        } finally {
+            if (current != null) {
+                current.release();
+            }
+            if (previousSection != null) {
+                previousSection.release();
+            }
         }
     }
 

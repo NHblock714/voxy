@@ -56,6 +56,9 @@ public final class DistantTrainRenderer implements LodPipelineHooks.Renderer {
 
     private void renderCommon(me.cortex.voxy.client.core.AbstractRenderPipeline pipeline, Viewport<?> viewport, Matrix4f viewProjection, double camX, double camY, double camZ, int depthFunc) {
         lastFrameCarriagesDrawn = 0;
+        //Self-throttled to once a second; runs before the empty check because orphaned shapes are
+        //exactly the ones left behind when every train has gone
+        DistantTrainManager.sweepShapes();
         if (DistantTrainManager.isEmpty()) {
             return;
         }

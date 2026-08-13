@@ -34,6 +34,11 @@ public abstract class MixinStationRenderer {
         if (me.cortex.voxy.client.compat.ShipBorne.isShipBorne(be.getBlockPos())) {
             return;
         }
+        //Ponder scenes carry scene-local positions - the Train Station ponder lost its flag,
+        //assembly arrow and target overlay to a world-camera cull here
+        if (!me.cortex.voxy.client.compat.create.KineticCull.isWorldPlaced(be)) {
+            return;
+        }
         Vec3 cam = mc.gameRenderer.getMainCamera().getPosition();
         double reach = mc.options.getEffectiveRenderDistance() * 16.0;
         if (be.getBlockPos().distToCenterSqr(cam.x, cam.y, cam.z) > reach * reach) {

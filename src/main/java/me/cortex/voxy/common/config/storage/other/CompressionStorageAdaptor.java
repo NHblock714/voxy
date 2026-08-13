@@ -22,7 +22,16 @@ public class CompressionStorageAdaptor extends DelegatingStorageAdaptor {
         if (data == null) {
             return null;
         }
-        return this.compressor.decompress(data);
+        var decompressed = this.compressor.decompress(data);
+        if (decompressed == null) {
+            //Corrupt frame: delete it so the section regenerates from ingest instead of failing
+            //the same decompression on every future load. Same bargain deserialize makes for a
+            //corrupt body - LOD data is regenerable.
+            me.cortex.voxy.common.Logger.error("Deleting section " + key + " with undecompressable data");
+            this.delegate.deleteSectionData(key);
+            return null;
+        }
+        return decompressed;
     }
 
     @Override

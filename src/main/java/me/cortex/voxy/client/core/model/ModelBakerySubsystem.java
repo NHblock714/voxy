@@ -29,21 +29,40 @@ public class ModelBakerySubsystem {
     private volatile Throwable processingThreadException;
     public ModelBakerySubsystem(Mapper mapper) {
         this.mapper = mapper;
-        this.factory = new ModelFactory(mapper, this.storage);
-        this.processingThread = new Thread(()->{//TODO replace this with something good/integrate it into the async processor so that we just have less threads overall
-            while (this.isRunning) {
-                while (this.factory.processAllThings());
-                LockSupport.park();
-            }
-        }, "Model factory processor");
-        this.processingThread.setUncaughtExceptionHandler((t,e)->{
-            this.isRunning = false;
-            if (e == null) {
-                e = new RuntimeException("unhandled excpetion not added");
-            }
-            this.processingThreadException = e;
-        });
-        this.processingThread.start();
+        try {
+            this.factory = new ModelFactory(mapper, this.storage);
+            this.processingThread = new Thread(()->{//TODO replace this with something good/integrate it into the async processor so that we just have less threads overall
+                while (this.isRunning) {
+                    while (this.factory.processAllThings());
+                    //Interrupt = stop request from a teardown that cannot reach isRunning (VSS replaces
+                    //shutdown()). Checked after the drain so a normal unpark still processes its work.
+                    if (Thread.interrupted()) {
+                        break;
+                    }
+                    LockSupport.park();
+                }
+            }, "Model factory processor");
+            this.processingThread.setUncaughtExceptionHandler((t,e)->{
+                this.isRunning = false;
+                if (e == null) {
+                    e = new RuntimeException("unhandled excpetion not added");
+                }
+                this.processingThreadException = e;
+            });
+            this.processingThread.start();
+        } catch (RuntimeException | Error e) {
+            //The storage's field initializer already checked the atlas out of the reuse cache; a
+            //failure past that point orphans ~537MiB of VRAM unless it goes back
+            this.storage.free();
+            throw e;
+        }
+    }
+
+    //Ahead of the pipeline: the blend indices the mesh workers wrote into geometry must exist in
+    //the colour buffer before that geometry is uploaded and drawn, which happens at the head of
+    //the pipeline - not at this subsystem's own budgeted upload tick, which runs after the draws.
+    public void drainBlendPalette() {
+        this.factory.drainBlendPalette();
     }
 
     public void tick(long totalBudget) {
@@ -56,6 +75,11 @@ public class ModelBakerySubsystem {
 
     public void shutdown() {
         this.isRunning = false;
+        //Interrupt as well as unpark: a full re-bake queue is minutes of drain, and the untimed
+        //join below would hold the render thread for all of it. The drain aborts within one bake
+        //on interrupt; whatever it left queued is heap-only, and factory.free() right after this
+        //drains the queued native results.
+        this.processingThread.interrupt();
         LockSupport.unpark(this.processingThread);
         try {
             this.processingThread.join();
@@ -82,9 +106,25 @@ public class ModelBakerySubsystem {
             return;
         }
         this.seenIdsLock.unlock();
+        //addEntry resolves the state and touches mod-supplied code; a throw with the lock held
+        //would block every voxy worker (and hijacked sodium builders) forever at the next
+        //lock() with exactly one stack trace in the log and no deadlock evidence anywhere
         this.enqueueLock.lock();
-        this.factory.addEntry(blockId);
-        this.enqueueLock.unlock();
+        try {
+            this.factory.addEntry(blockId);
+        } catch (Throwable t) {
+            //Un-mark the id so a later request can retry the bake instead of the block staying
+            //model-less for the session
+            this.seenIdsLock.lock();
+            try {
+                this.seenIds.remove(blockId);
+            } finally {
+                this.seenIdsLock.unlock();
+            }
+            throw t;
+        } finally {
+            this.enqueueLock.unlock();
+        }
         LockSupport.unpark(this.processingThread);
     }
 

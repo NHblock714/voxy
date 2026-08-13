@@ -87,6 +87,8 @@ public class VoxyCommands {
                                 .executes(ctx -> profile(ctx, IntegerArgumentType.getInteger(ctx, "seconds")))))
                 .then(Commands.literal("createmem")
                         .executes(VoxyCommands::dumpCreateMemory))
+                .then(Commands.literal("memory")
+                        .executes(VoxyCommands::dumpMemory))
                 .then(Commands.literal("kinetics")
                         .executes(VoxyCommands::dumpKinetics))
                 .then(Commands.literal("ship")
@@ -104,7 +106,11 @@ public class VoxyCommands {
                 .then(Commands.literal("capture")
                         .executes(ctx -> frameCapture(ctx, 20))
                         .then(Commands.argument("seconds", IntegerArgumentType.integer(3, 300))
-                                .executes(ctx -> frameCapture(ctx, IntegerArgumentType.getInteger(ctx, "seconds")))));
+                                .executes(ctx -> frameCapture(ctx, IntegerArgumentType.getInteger(ctx, "seconds")))))
+                .then(Commands.literal("fullreport")
+                        .executes(ctx -> fullReport(ctx, 30))
+                        .then(Commands.argument("seconds", IntegerArgumentType.integer(5, 300))
+                                .executes(ctx -> fullReport(ctx, IntegerArgumentType.getInteger(ctx, "seconds")))));
 
         return Commands.literal("voxy")//.requires((ctx)-> VoxyCommon.getInstance() != null)
                 .then(Commands.literal("reload")
@@ -272,6 +278,71 @@ public class VoxyCommands {
             }
         }, seconds * 1000L);
         return 1;
+    }
+
+    //Per-system byte accounting, so a tester paste names the offender instead of "memory grows"
+    private static int fullReport(CommandContext<CommandSourceStack> ctx, int seconds) {
+        String msg = FullReport.start(seconds);
+        ctx.getSource().sendSuccess(() -> Component.literal(msg), false);
+        return 1;
+    }
+
+    private static int dumpMemory(CommandContext<CommandSourceStack> ctx) {
+        String msg = buildMemoryReport();
+        me.cortex.voxy.common.Logger.info(msg);
+        ctx.getSource().sendSuccess(() -> Component.literal(msg), false);
+        return 1;
+    }
+
+    //Shared with the full-report capture, which needs the same panel without a command context
+    static String buildMemoryReport() {
+        var sb = new StringBuilder("voxy memory:\n");
+        var instance = me.cortex.voxy.commonImpl.VoxyCommon.getInstance();
+        if (instance != null) {
+            sb.append(String.format("  ingest pending      %,d jobs (~%,d KiB light-copies, chunk refs not counted; superseded %,d, overflow-dropped %,d)%n",
+                    instance.getIngestService().pendingCount(),
+                    instance.getIngestService().pendingCount() * 4L,
+                    me.cortex.voxy.commonImpl.PerfStats.ingestSuperseded.sum(),
+                    me.cortex.voxy.commonImpl.PerfStats.ingestOverflowDropped.sum()));
+            //Every queued section is an acquired materialised section, so this one is exact, not an
+            //estimate - and it is the largest thing voxy holds while the store is behind
+            sb.append(String.format("  save queue          %,d sections (%,.1f MiB acquired)%n",
+                    instance.getSaveQueueDepth(), instance.getSaveQueueDepth() * 256.0 / 1024.0));
+            instance.addMemoryDebug(sb);
+        }
+        var vrs = me.cortex.voxy.client.core.IGetVoxyRenderSystem.getNullable();
+        if (vrs != null) {
+            vrs.addMemoryDebug(sb);
+        }
+        sb.append(String.format("  reuse caches        atlas/geom cached %s; section arrays %,d (%,.1f MiB)%n",
+                me.cortex.voxy.client.core.RenderResourceReuse.cacheDepths(),
+                me.cortex.voxy.common.world.WorldSection.getReuseCacheCount(),
+                me.cortex.voxy.common.world.WorldSection.getReuseCacheCount() * 256.0 / 1024.0));
+        var rt = Runtime.getRuntime();
+        long direct = 0;
+        for (var p : java.lang.management.ManagementFactory.getPlatformMXBeans(java.lang.management.BufferPoolMXBean.class)) {
+            if ("direct".equals(p.getName())) {
+                direct = p.getMemoryUsed();
+            }
+        }
+        sb.append(String.format("  jvm                 heap %,d/%,d MiB, nio-direct %,d MiB, voxy native %,d bufs (%,d MiB)%n",
+                (rt.totalMemory() - rt.freeMemory()) >> 20, rt.maxMemory() >> 20, direct >> 20,
+                me.cortex.voxy.common.util.MemoryBuffer.getCount(),
+                me.cortex.voxy.common.util.MemoryBuffer.getTotalSize() >> 20));
+        if (net.neoforged.fml.ModList.get().isLoaded("create")) {
+            sb.append(String.format("  train shapes        %,d meshes, %,.1f MiB gpu (swept %,d)%n",
+                    me.cortex.voxy.client.compat.create.DistantTrainManager.meshCount(),
+                    me.cortex.voxy.client.compat.create.DistantTrainManager.shapesGpuBytes() / 1048576.0,
+                    me.cortex.voxy.commonImpl.PerfStats.trainShapeSweepClosed.sum()));
+            long oldest = me.cortex.voxy.client.compat.create.DistantContraptionManager.oldestRecordMs;
+            sb.append(String.format("  contraption records restore-skipped %,d, oldest %s%n",
+                    me.cortex.voxy.client.compat.create.DistantContraptionManager.restoreSkipped,
+                    oldest == 0 ? "n/a" : ((System.currentTimeMillis() - oldest) / 86_400_000L) + "d"));
+            sb.append(String.format("  azimuth walkers     %,d visuals%n",
+                    me.cortex.voxy.client.compat.create.AzimuthBehaviourIndex.size()));
+            sb.append(me.cortex.voxy.client.compat.create.CreateMemoryReport.dump());
+        }
+        return sb.toString();
     }
 
     private static int dumpCreateMemory(CommandContext<CommandSourceStack> ctx) {

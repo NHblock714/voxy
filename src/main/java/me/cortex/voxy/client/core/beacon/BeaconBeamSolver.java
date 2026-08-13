@@ -28,18 +28,39 @@ public final class BeaconBeamSolver {
     //lookupFailed marks a beam solved against a mapper that did not know one of its ids yet - the
     //ingest that wrote the voxel races the id registration. Such a verdict is provisional: caching it
     //as final would freeze a wrong answer until the next voxel change, so the caller retries instead.
-    public record Result(List<Segment> segments, boolean lookupFailed) {
-        static final Result EMPTY = new Result(List.of(), false);
-        static final Result RETRY = new Result(List.of(), true);
+    //cacheMissed marks a solve that stopped at a section not in the section cache. The render thread
+    //only ever reads the cache - a miss is a synchronous RocksDB load it must not pay - so the solve
+    //aborts, the whole column warms in the background, and the warmer re-queues the beacon once the
+    //warm lands. Also provisional: nothing about the beam has been decided.
+    public record Result(List<Segment> segments, boolean lookupFailed, boolean cacheMissed) {
+        static final Result EMPTY = new Result(List.of(), false, false);
+        static final Result RETRY = new Result(List.of(), true, false);
+        static final Result DEFERRED = new Result(List.of(), false, true);
     }
 
     public static Result solve(WorldEngine engine, int bx, int by, int bz, int maxBuildY) {
+        //The walk stops at the build height: no block can exist above it, so nothing up there can stop
+        //or tint the beam - and while an above-world acquire never touches the backend, it does mint a
+        //uniform-air section that lands in the shared section LRU on release. Twenty-odd of those per
+        //beacon per rebuild was enough to cycle the whole LRU and evict live terrain. The last segment
+        //still runs to the visual top, exactly as vanilla's does.
+        int top = by + MAX_SCAN_HEIGHT;
+        int walkTop = Math.min(top, maxBuildY);
+
         //A beacon with no base emits nothing. The gate is in BeaconBlockEntity.getBeamSections, which
         //returns an empty list while levels == 0 - the segments are still computed and stored, they are
         //just never handed out, so neither the vanilla renderer nor Quark's replacement draws them.
         //tick() alone reads as though there were no such gate.
         boolean[] lookupFailed = new boolean[1];
-        if (!hasBase(engine, bx, by, bz, lookupFailed)) {
+        boolean[] cacheMissed = new boolean[1];
+        if (!hasBase(engine, bx, by, bz, lookupFailed, cacheMissed)) {
+            if (cacheMissed[0]) {
+                //A base section is not in the cache - "never ingested" and "evicted" cannot be told
+                //apart without a storage read, so no verdict may be cached from here
+                me.cortex.voxy.commonImpl.PerfStats.beaconSolveDeferred.increment();
+                BeaconColumnWarmer.warm(engine, bx, by, bz, walkTop);
+                return Result.DEFERRED;
+            }
             return lookupFailed[0] ? Result.RETRY : Result.EMPTY;
         }
         var segments = new ArrayList<Segment>();
@@ -48,25 +69,22 @@ public final class BeaconBeamSolver {
         boolean anyColorSeen = false;
 
         var mapper = engine.getMapper();
-        int top = by + MAX_SCAN_HEIGHT;
-        //The walk stops at the build height: no block can exist above it, so nothing up there can stop
-        //or tint the beam - and while an above-world acquire never touches the backend, it does mint a
-        //uniform-air section that lands in the shared section LRU on release. Twenty-odd of those per
-        //beacon per rebuild was enough to cycle the whole LRU and evict live terrain. The last segment
-        //still runs to the visual top, exactly as vanilla's does.
-        int walkTop = Math.min(top, maxBuildY);
 
         //One acquire per section rather than per block: the column walks 16 blocks of a section before
         //it needs the next one, and acquire/release is the expensive part
         int y = by + 1;
         while (y <= walkTop) {
             int sectionY = y >> 5;
-            var section = engine.acquireIfExists(0, bx >> 5, sectionY, bz >> 5);
+            var section = engine.acquireIfCached(0, bx >> 5, sectionY, bz >> 5);
             if (section == null) {
-                //Nothing ingested up here. Above the surface that is the normal case and the beam simply
-                //continues; the alternative - stopping - would cut every beam at the last stored section.
-                y = (sectionY + 1) << 5;
-                continue;
+                //Not in the section cache. The old skip-and-continue for never-ingested air survives
+                //through the warm: a section absent from storage is minted as uniform sky-air by the
+                //warmer's nullOnEmpty acquire and cached, so the retry walks it as air and never
+                //misses here twice. Nothing is held at this point - every earlier section was
+                //released by its own finally - so aborting releases nothing.
+                me.cortex.voxy.commonImpl.PerfStats.beaconSolveDeferred.increment();
+                BeaconColumnWarmer.warm(engine, bx, by, bz, walkTop);
+                return Result.DEFERRED;
             }
             try {
                 int lx = bx & 31, lz = bz & 31;
@@ -118,16 +136,17 @@ public final class BeaconBeamSolver {
         if (top > segmentBottom) {
             segments.add(new Segment(currentColor, segmentBottom, top));
         }
-        return new Result(segments, lookupFailed[0]);
+        return new Result(segments, lookupFailed[0], false);
     }
 
     //Only the first pyramid layer, because only levels != 0 matters here - the higher layers change the
     //powers on offer, not whether there is a beam. Vanilla's updateBase walks 3x3 up to 9x9 for the same
     //first answer.
-    private static boolean hasBase(WorldEngine engine, int bx, int by, int bz, boolean[] lookupFailed) {
+    private static boolean hasBase(WorldEngine engine, int bx, int by, int bz,
+                                   boolean[] lookupFailed, boolean[] cacheMissed) {
         for (int dx = -1; dx <= 1; dx++) {
             for (int dz = -1; dz <= 1; dz++) {
-                if (!isBaseBlock(engine, bx + dx, by - 1, bz + dz, lookupFailed)) {
+                if (!isBaseBlock(engine, bx + dx, by - 1, bz + dz, lookupFailed, cacheMissed)) {
                     return false;
                 }
             }
@@ -135,10 +154,14 @@ public final class BeaconBeamSolver {
         return true;
     }
 
-    private static boolean isBaseBlock(WorldEngine engine, int x, int y, int z, boolean[] lookupFailed) {
-        var section = engine.acquireIfExists(0, x >> 5, y >> 5, z >> 5);
+    private static boolean isBaseBlock(WorldEngine engine, int x, int y, int z,
+                                       boolean[] lookupFailed, boolean[] cacheMissed) {
+        var section = engine.acquireIfCached(0, x >> 5, y >> 5, z >> 5);
         if (section == null) {
-            //The layer under the beacon was never ingested, so there is nothing to justify a beam with
+            //Not in the section cache. A never-ingested base layer must read as "no beam", but proving
+            //never-ingested takes a storage read - so flag the miss; after the warm an absent layer is
+            //cached uniform air, which the retry reads as not-a-base, same verdict as before.
+            cacheMissed[0] = true;
             return false;
         }
         try {

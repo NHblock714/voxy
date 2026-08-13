@@ -35,8 +35,10 @@ public class VoxyNeoForgeConfig {
             .define("ingestEnabled", true);
 
     private static final ModConfigSpec.IntValue SECTION_RENDER_DISTANCE = BUILDER
-            .comment("LOD section render distance (multiplied by 32 for actual chunk distance)",
-                     "Example: 16 = 512 chunks render distance")
+            .comment("LOD render distance in TOP-LEVEL SECTIONS (1 section = 32 chunks = 512 blocks).",
+                     "NOT the same unit as the in-game Voxy GUI slider, which shows CHUNKS:",
+                     "GUI '64' (chunks) == 2 here; 16 here == 512 chunks; 64 here == 2048 chunks.",
+                     "At startup the JSON config wins over offline edits to this file.")
             .defineInRange("sectionRenderDistance", 16, 2, 64);
 
     private static final ModConfigSpec.IntValue SERVICE_THREADS = BUILDER
@@ -47,7 +49,10 @@ public class VoxyNeoForgeConfig {
     private static final ModConfigSpec.DoubleValue SUB_DIVISION_SIZE = BUILDER
             .comment("Subdivision size for LOD rendering (28-256)",
                      "Lower = more detailed LODs but more GPU load")
-            .defineInRange("subDivisionSize", 63.0, 28.0, 256.0);
+            //Must match VoxyConfig's default: this value leaks into the JSON through the mirror
+            //for anyone whose toml regenerates, so a mismatch here silently retunes every such
+            //install
+            .defineInRange("subDivisionSize", 28.0, 28.0, 256.0);
 
     private static final ModConfigSpec.BooleanValue USE_ENVIRONMENTAL_FOG = BUILDER
             .comment("Apply environmental fog to LOD terrain")
@@ -148,9 +153,20 @@ public class VoxyNeoForgeConfig {
         VoxyConfig.CONFIG.enabled = ENABLED.get();
         VoxyConfig.CONFIG.enableRendering = ENABLE_RENDERING.get();
         VoxyConfig.CONFIG.ingestEnabled = INGEST_ENABLED.get();
-        VoxyConfig.CONFIG.sectionRenderDistance = SECTION_RENDER_DISTANCE.get();
+        //The toml holds whole sections, the json holds fractions (4.5 sections = 144 chunks).
+        //Only overwrite the json when the toml genuinely differs from the json's rounded view,
+        //or every save round-trip quietly destroys the fraction
+        if (SECTION_RENDER_DISTANCE.get() != Math.round(VoxyConfig.CONFIG.sectionRenderDistance)) {
+            VoxyConfig.CONFIG.sectionRenderDistance = SECTION_RENDER_DISTANCE.get();
+        }
         VoxyConfig.CONFIG.serviceThreads = SERVICE_THREADS.get();
-        VoxyConfig.CONFIG.subDivisionSize = SUB_DIVISION_SIZE.get().floatValue();
+        //Same differs-guard as sectionRenderDistance: the sodium-page slider writes log-scaled
+        //fractional values straight into the json (e.g. 128.915) while the toml mirror holds a
+        //coarser copy - an unguarded write here rolls the slider's value back whenever anything
+        //touches the toml (any NeoForge Mods->Config edit fires Reloading)
+        if (Math.abs(SUB_DIVISION_SIZE.get() - VoxyConfig.CONFIG.subDivisionSize) >= 1.0) {
+            VoxyConfig.CONFIG.subDivisionSize = SUB_DIVISION_SIZE.get().floatValue();
+        }
         VoxyConfig.CONFIG.useEnvironmentalFog = USE_ENVIRONMENTAL_FOG.get();
         VoxyConfig.CONFIG.dontUseSodiumBuilderThreads = DONT_USE_SODIUM_BUILDER_THREADS.get();
         VoxyConfig.CONFIG.earthCurveRatio = EARTH_CURVE_RATIO.get();
@@ -182,7 +198,7 @@ public class VoxyNeoForgeConfig {
         ENABLED.set(VoxyConfig.CONFIG.enabled);
         ENABLE_RENDERING.set(VoxyConfig.CONFIG.enableRendering);
         INGEST_ENABLED.set(VoxyConfig.CONFIG.ingestEnabled);
-        SECTION_RENDER_DISTANCE.set((int) VoxyConfig.CONFIG.sectionRenderDistance);
+        SECTION_RENDER_DISTANCE.set(Math.clamp(Math.round(VoxyConfig.CONFIG.sectionRenderDistance), 2, 64));
         SERVICE_THREADS.set(VoxyConfig.CONFIG.serviceThreads);
         SUB_DIVISION_SIZE.set((double) VoxyConfig.CONFIG.subDivisionSize);
         USE_ENVIRONMENTAL_FOG.set(VoxyConfig.CONFIG.useEnvironmentalFog);
@@ -210,6 +226,10 @@ public class VoxyNeoForgeConfig {
     public static void onConfigLoad(ModConfigEvent.Loading event) {
         if (event.getConfig().getSpec() == SPEC) {
             syncFromVoxyConfig();
+            //Persist the freshly-synced values: a later file-watch Reloading re-reads this file
+            //and pushes it back over the JSON, so the disk copy must track the JSON from startup
+            //on - a stale file rolls every mirrored setting back at once
+            SPEC.save();
         }
     }
 

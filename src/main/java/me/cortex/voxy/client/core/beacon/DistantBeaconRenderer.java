@@ -43,6 +43,12 @@ public final class DistantBeaconRenderer implements LodPipelineHooks.Renderer {
     //world queues them all at once - the budget turns that into a short ramp instead of one frame.
     private static final int SOLVES_PER_FRAME = 4;
     private static final long LOOKUP_RETRY_MS = 5000;
+    //Backstop for a solve deferred on a cold section cache. The real retry is event-driven - the
+    //column warmer re-queues the beacon the moment its background reads land, typically a few frames
+    //later - so this only covers a warm lost to an engine-teardown race. It must sit well under
+    //LOOKUP_RETRY_MS (that backoff is for a different, slower fault), and the 2s filter pass that
+    //checks it quantizes it upward anyway, so the exact value is not load-bearing.
+    private static final long WARM_RETRY_MS = 500;
 
     //Beacon pos -> its current verdict. A beam is re-solved only when its column's voxels changed,
     //its index entry changed, or it crossed the LOD range - never on a timer. EMPTY is a cached
@@ -53,7 +59,8 @@ public final class DistantBeaconRenderer implements LodPipelineHooks.Renderer {
     private static final class BeaconState {
         DistantMesh mesh;
         double topY;
-        //Mapper did not know an id mid-solve; provisional, retried after a backoff
+        //Provisional verdict pending a retry: the mapper did not know an id mid-solve (5s backoff),
+        //or a column section was cold and is warming (short backstop; the warmer re-queues sooner)
         long retryAtMs;
     }
 
@@ -208,6 +215,16 @@ public final class DistantBeaconRenderer implements LodPipelineHooks.Renderer {
                     BeaconBeamTracker.queueDirty(pos);
                     continue;
                 }
+                if (!BeaconBeamTracker.isTracked(pos)) {
+                    //Queued past its own removal or across an engine rebind - a solve of a ghost pos
+                    //would mint a beam no event can ever remove. Drop it and whatever it built.
+                    BeaconState stale = this.states.remove(pos);
+                    if (stale != null && stale.mesh != null) {
+                        stale.mesh.free();
+                        this.builtStale = true;
+                    }
+                    continue;
+                }
                 int bx = BlockPos.getX(pos), by = BlockPos.getY(pos), bz = BlockPos.getZ(pos);
                 double dx = (bx + 0.5) - viewport.cameraX;
                 double dz = (bz + 0.5) - viewport.cameraZ;
@@ -235,6 +252,14 @@ public final class DistantBeaconRenderer implements LodPipelineHooks.Renderer {
         if (state == null) {
             state = new BeaconState();
             this.states.put(pos, state);
+        }
+        if (result.cacheMissed()) {
+            //Aborted on a cold section; the column is warming in the background. Keep whatever the
+            //last complete solve built - a beam that lags a change by one warm round trip beats one
+            //that blinks off during it - and let the warmer's re-queue drive the retry, with the
+            //timer as the teardown-race backstop.
+            state.retryAtMs = now + WARM_RETRY_MS;
+            return;
         }
         if (state.mesh != null) {
             state.mesh.free();

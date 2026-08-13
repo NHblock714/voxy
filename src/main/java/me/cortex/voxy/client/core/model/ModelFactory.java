@@ -125,6 +125,12 @@ public class ModelFactory {
 
     private final Mapper mapper;
     private final ModelStore storage;
+    //Blended border colours + the CPU mirror of the colour LUT the mesh workers blend from
+    private final BiomeBlendPalette blendPalette = new BiomeBlendPalette();
+
+    public BiomeBlendPalette blendPalette() {
+        return this.blendPalette;
+    }
 
     //The field name is load-bearing: VSS 0.2.8's ModelFactoryFluidBakeOrderMixin reflects for
     //`bakeQueue` to re-order fluid bakes. Fluid dependencies are handled natively here (see addEntry's
@@ -408,8 +414,24 @@ public class ModelFactory {
             biomeEntry = this.biomeQueue.poll();
         }
 
-        while (this.processModelResult());
-        return (this.blockStatesInFlight.size()!=0)||(!this.blockBakeQueue.isEmpty())||!this.biomeQueue.isEmpty();
+        //Interrupt is the external (VSS) teardown signal: its mixin replaces the subsystem's
+        //shutdown(), joins the bakery thread for only 1000ms, and on timeout abandons the atlas
+        //free - orphaning ~537MiB of VRAM per occurrence. The queue after a reload holds a full
+        //re-bake, far more than 1000ms of work, so the drain must bail within one bake of an
+        //interrupt. Non-clearing check: the subsystem's run loop consumes the flag.
+        while (!Thread.currentThread().isInterrupted() && this.processModelResult());
+        return !Thread.currentThread().isInterrupted()
+                && ((this.blockStatesInFlight.size()!=0)||(!this.blockBakeQueue.isEmpty())||!this.biomeQueue.isEmpty());
+    }
+
+    //Must run before the geometry the mesh workers built can be uploaded and drawn: a section
+    //carrying a fresh blend index and its palette entry are produced together off-thread, and the
+    //render thread consumes the geometry at the head of the pipeline. Called from there, not from
+    //processUploads, which runs after the frame's draws. 4-byte writes, no budget needed.
+    public void drainBlendPalette() {
+        if (this.blendPalette.drainUploads(this.storage.modelColourBuffer)) {
+            UploadStream.INSTANCE.commit();
+        }
     }
 
     public void processUploads(long totalBudgetNanos) {
@@ -779,6 +801,14 @@ public class ModelFactory {
         } else {
             //Populate the list of biomes for the model state
             int biomeIndex = this.modelsRequiringBiomeColours.size() * this.biomes.size();
+            if (biomeIndex + this.biomes.size() > BiomeBlendPalette.PALETTE_BASE) {
+                //The rows have grown into the reserved region. The two overwrite each other from
+                //here - rows re-upload whole on every biome add, palette entries never re-upload -
+                //so the blend stands down and the plain per-biome colours keep the whole buffer.
+                this.blendPalette.disable();
+                Logger.error("Biome colour rows reached the blend palette boundary ("
+                        + BiomeBlendPalette.PALETTE_BASE + ") - LOD biome blending disabled");
+            }
             MemoryUtil.memPutInt(uploadPtr, biomeIndex);
             this.modelsRequiringBiomeColours.add(new Pair<>(modelId, colourState));
             if (!this.biomes.isEmpty()) {
@@ -787,6 +817,7 @@ public class ModelFactory {
                 for (var biome : this.biomes) {
                     MemoryUtil.memPutInt(clrUploadPtr, captureColourConstant(colourProvider, colourState, biome) | 0xFF000000); clrUploadPtr += 4;
                 }
+                this.blendPalette.mirrorRow(modelId, biomeIndex, uploadResult.biomeUpload.address, this.biomes.size());
             }
         }
         uploadPtr += 4;
@@ -935,6 +966,15 @@ public class ModelFactory {
                 MemoryUtil.memPutInt(clrUploadPtr, captureColourConstant(colourProvider, entry.right(), biomeE)|0xFF000000); clrUploadPtr += 4;
             }
         }
+
+        if (this.modelsRequiringBiomeColours.size() * this.biomes.size() > BiomeBlendPalette.PALETTE_BASE) {
+            this.blendPalette.disable();
+            Logger.error("Biome colour rows reached the blend palette boundary ("
+                    + BiomeBlendPalette.PALETTE_BASE + ") - LOD biome blending disabled");
+        }
+        //Mirror before the result is queued: the buffers are freed after their render-thread upload
+        this.blendPalette.mirrorRebuild(result.modelBiomeIndexPairs.address, this.modelsRequiringBiomeColours.size(),
+                result.biomeColourBuffer.address, (int) (result.biomeColourBuffer.size / 4), this.biomes.size());
 
         return result;
     }
@@ -1153,6 +1193,11 @@ public class ModelFactory {
     public void free() {
         this.bakery2.free();
         MemoryUtil.nmemFree(this.bakeScratchBuffer);
+        //A processor killed by its uncaught handler mid-bake never ran its rollback
+        if (this.pendingUpload != null) {
+            this.pendingUpload.free();
+            this.pendingUpload = null;
+        }
         while (!this.uploadResults.isEmpty()) {
             this.uploadResults.poll().free();
         }

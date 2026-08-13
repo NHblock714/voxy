@@ -1,5 +1,6 @@
 package me.cortex.voxy.client.core.rendering;
 
+import me.cortex.voxy.client.config.VoxyConfig;
 import me.cortex.voxy.client.core.AbstractRenderPipeline;
 import me.cortex.voxy.client.core.RenderProperties;
 import me.cortex.voxy.client.core.gl.GlBuffer;
@@ -44,7 +45,8 @@ public class ChunkBoundRenderer {
     private final RenderProperties properties;
 
     //CPU-side stream of visible section positions (2 ints each), mirrored to the gpu buffer when
-    //it changes; sodium caches its render lists across frames so most frames re-draw the same set
+    //it changes. Sodium 0.8 re-streams this every frame even for an identical set - `changed`
+    //means "re-streamed", and only the content hash above knows whether anything really moved.
     private int[] visibleSections = new int[INIT_MAX_SECTION_COUNT*2];
     private int count;
     private boolean changed;
@@ -81,6 +83,17 @@ public class ChunkBoundRenderer {
         }
     }
 
+    //Sodium 0.8 restarts this stream EVERY frame (async occlusion culling re-collects the list),
+    //so "the stream restarted" carries no information about the set actually changing. Reuse keys
+    //on content instead: the streamed positions are hashed, and only a hash/count change advances
+    //the generation - which is also what gates the GPU upload, so an unchanged set skips both the
+    //re-raster and the re-upload. Not keyed on `changed` either way: that flag is consumed by the
+    //first viewport to upload, so a second viewport the same frame would wrongly keep a mask built
+    //from the previous section set.
+    private long uploadedHash;
+    private int uploadedCount = -1;
+    private int contentGeneration;
+
     //Called when sodium starts rebuilding its render list (and on level swap)
     public void reset() {
         this.count = 0;
@@ -95,13 +108,89 @@ public class ChunkBoundRenderer {
         return this.lastRenderedSectionCount;
     }
 
+    //Chunk-mask reuse (experimentalChunkMaskReuse) tallies, for the F3 line. reuseFail attributes
+    //each non-reused frame to the FIRST key that failed (content set changed / buffer invalidated /
+    //camera moved / MVP changed / render distance changed) - the split is the diagnostic for why
+    //the reuse rate is what it is.
+    private long reusedMaskFrames, rasterisedMaskFrames;
+    private final long[] reuseFail = new long[5];
+
+    public long getReusedMaskFrames() { return this.reusedMaskFrames; }
+    public long getRasterisedMaskFrames() { return this.rasterisedMaskFrames; }
+
+    public String describeReuseState() {
+        return "kept " + this.reusedMaskFrames + " raster " + this.rasterisedMaskFrames
+                + " gen " + this.contentGeneration
+                + " fail[set=" + this.reuseFail[0] + ",inv=" + this.reuseFail[1]
+                + ",cam=" + this.reuseFail[2] + ",mvp=" + this.reuseFail[3]
+                + ",rd=" + this.reuseFail[4] + "]";
+    }
+
     //Bind and render, changing as little gl state as possible so that the caller may configure how it wants to render
     public void render(Viewport<?> viewport) {
+        final float renderDistance = Minecraft.getInstance().options.getEffectiveRenderDistance()*16;//In blocks
+
+        if (VoxyConfig.CONFIG.experimentalChunkMaskReuse && this.changed) {
+            //Resolve whether the re-streamed set actually differs. Order-dependent FNV over the raw
+            //stream: sodium's traversal order is deterministic for an unchanged graph+camera, and a
+            //differing order merely hashes as "changed" - a wasted rebuild, never a stale mask.
+            long h = 0xcbf29ce484222325L;
+            for (int i = 0; i < this.count; i++) {
+                h = (h ^ this.visibleSections[i]) * 0x100000001b3L;
+            }
+            if (h == this.uploadedHash && this.count == this.uploadedCount) {
+                this.changed = false;//Identical bytes are already on the GPU - nothing to upload
+            } else {
+                this.uploadedHash = h;
+                this.uploadedCount = this.count;
+                this.contentGeneration++;//Real set change - invalidates every held mask
+            }
+        }
+
+        //The buffer already holds the mask for exactly these inputs - keep it. The content
+        //generation covers the section set, the camera/MVP/distance keys cover every uniform the
+        //raster reads, and chunkMaskValid covers external clears/resizes. Shader-pack TAA is
+        //deliberately NOT a key: a held mask freezes one jitter phase, but the mask is the
+        //conservative silhouette of whole section AABBs in the far-field overlap band - the frozen
+        //phase steps forward on every rebuild and the pack's TAA resolve absorbs the sub-pixel
+        //nudge. (Keying on it locks reuse out entirely under packs that declare TAA - every raster
+        //jitters, so no two frames ever match.) Evaluated key-by-key so a failed frame is
+        //attributed to what actually broke it.
+        //Under shader-pack TAA (this.pipeline != null) the mask is never reused: the seam is only
+        //stable when the mask re-rasterises every frame with THAT frame's jitter. Both cheats fail
+        //in the field - a reused jittered mask freezes its phase and flickers on every re-raster
+        //jump, and an unjittered mask shimmers per frame against the jittered terrain around it.
+        //The content-hash upload squash above stays active either way; it is phase-independent.
+        if (VoxyConfig.CONFIG.experimentalChunkMaskReuse && this.pipeline == null) {
+            if (viewport.chunkMaskContentGen != this.contentGeneration) {
+                this.reuseFail[0]++;
+            } else if (!viewport.chunkMaskValid) {
+                this.reuseFail[1]++;
+            } else if (viewport.chunkMaskCamX != viewport.cameraX
+                    || viewport.chunkMaskCamY != viewport.cameraY
+                    || viewport.chunkMaskCamZ != viewport.cameraZ) {
+                this.reuseFail[2]++;
+            } else if (!viewport.MVP.equals(viewport.chunkMaskMVP)) {
+                this.reuseFail[3]++;
+            } else if (viewport.chunkMaskRenderDistance != renderDistance) {
+                this.reuseFail[4]++;
+            } else {
+                this.reusedMaskFrames++;
+                //Leave the GL state exactly as the raster path does - downstream passes inherit it
+                glEnable(GL_CULL_FACE);
+                glEnable(GL_DEPTH_TEST);
+                glDepthFunc(this.properties.closerEqualDepthCompare());
+                return;
+            }
+        }
+        this.rasterisedMaskFrames++;
+
         viewport.depthBoundingBuffer.clear(this.properties.inverseClearDepth());
 
         int sectionCount = this.count >> 1;
         this.lastRenderedSectionCount = sectionCount;
         if (sectionCount == 0) {
+            this.recordMaskInputs(viewport, renderDistance);
             return;
         }
 
@@ -121,8 +210,6 @@ public class ChunkBoundRenderer {
 
         long ptr = UploadStream.INSTANCE.upload(this.uniformBuffer, 0, 128);
         long matPtr = ptr; ptr += 4*4*4;
-
-        final float renderDistance = Minecraft.getInstance().options.getEffectiveRenderDistance()*16;//In blocks
 
         {//This is recomputed to be in chunk section space not worldsection
 
@@ -181,6 +268,18 @@ public class ChunkBoundRenderer {
             glEnable(GL_CULL_FACE);
             glEnable(GL_DEPTH_TEST);
         }
+
+        this.recordMaskInputs(viewport, renderDistance);
+    }
+
+    private void recordMaskInputs(Viewport<?> viewport, float renderDistance) {
+        viewport.chunkMaskMVP.set(viewport.MVP);
+        viewport.chunkMaskCamX = viewport.cameraX;
+        viewport.chunkMaskCamY = viewport.cameraY;
+        viewport.chunkMaskCamZ = viewport.cameraZ;
+        viewport.chunkMaskRenderDistance = renderDistance;
+        viewport.chunkMaskContentGen = this.contentGeneration;
+        viewport.chunkMaskValid = true;
     }
 
     public void free() {

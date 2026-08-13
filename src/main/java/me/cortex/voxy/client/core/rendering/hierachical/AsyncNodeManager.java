@@ -63,6 +63,9 @@ public class AsyncNodeManager {
     public final int maxNodeCount;
     private final long geometryCapacity;
     private volatile boolean running = true;
+    //Distinct from running: running=false also means "worker died on its own", and stop() must
+    //still drain in that state - this only guards double-stop
+    private volatile boolean stopped = false;
     private volatile Throwable uncaughtException;
 
     private final NodeManager manager;
@@ -82,6 +85,38 @@ public class AsyncNodeManager {
     private final IntOpenHashSet cleanerIdResetClear = new IntOpenHashSet();//Tells the cleaner if it needs to clear the id to 0, or reset the id to the current frame
 
     private boolean needsWaitForSync = false;
+
+    //Per-frame apply budget for a merged SyncResults; the byte value matches the post-publish
+    //needsWaitForSync threshold, the copy value sits under the 500-copy dispatch that warns of lag
+    private static final long FRAME_GEOMETRY_BUDGET_BYTES = 2L << 20;
+    private static final int FRAME_GEOMETRY_BUDGET_COPIES = 400;
+    //Totals of the most recent publish, counted against the admission budget while that publish is
+    //still unconsumed. Worker thread only.
+    private long publishedCopyBytes = 0;
+    private int publishedCopyCount = 0;
+
+    //Queue depth gauges for the memory report - the queues are concurrent linked structures whose
+    //size() is O(n), and a runaway depth here is heap plus (for childUpdate) pinned section arrays
+    //that nothing else accounts for. Observe-only: capping these would drop geometry or child
+    //updates and corrupt the render tree.
+    private final java.util.concurrent.atomic.AtomicInteger reqQDepth = new java.util.concurrent.atomic.AtomicInteger();
+    private final java.util.concurrent.atomic.AtomicInteger remQDepth = new java.util.concurrent.atomic.AtomicInteger();
+    private final java.util.concurrent.atomic.AtomicInteger geomQDepth = new java.util.concurrent.atomic.AtomicInteger();
+    private final java.util.concurrent.atomic.AtomicInteger childQDepth = new java.util.concurrent.atomic.AtomicInteger();
+    private volatile boolean depthWarned;
+
+    public int[] queueDepths() {
+        return new int[]{this.reqQDepth.get(), this.remQDepth.get(), this.geomQDepth.get(), this.childQDepth.get()};
+    }
+
+    private void noteChildDepth(int depth) {
+        //One-shot: names the offender in the log before an eventual OOM instead of after it
+        if (depth > 4096 && !this.depthWarned) {
+            this.depthWarned = true;
+            Logger.warn("Node child-update queue depth crossed 4096 (" + depth
+                    + " sections pinned) - the worker is not keeping up");
+        }
+    }
 
     public AsyncNodeManager(int maxNodeCount, IGeometryData geometryData, RenderGenerationService renderService) {
         //Note the current implmentation of ISectionWatcher is threadsafe
@@ -242,6 +277,7 @@ public class AsyncNodeManager {
             var job = this.childUpdateQueue.poll();
             if (job == null)
                 break;
+            this.childQDepth.decrementAndGet();
             workDone++;
             this.manager.processChildChange(job.key, job.getNonEmptyChildren());
             job.release();
@@ -251,16 +287,31 @@ public class AsyncNodeManager {
         //Limit uploading as well as by geometry capacity being available
         // must have 50 mb of free geometry space to upload
 
-        //Limit to X geometry for each loop run to try smooth things more
+        //The render tick applies one merged SyncResults in a single frame and a merged result
+        //cannot be split afterwards (a section's geometry bytes, its metadata scatter write and
+        //the node updates referencing it must land together), so the per-frame budget is enforced
+        //here at merge admission: whatever the unconsumed publish already stages counts against
+        //the budget and everything past it stays queued for a later merge. The needsWaitForSync
+        //thresholds after publish remain the backstop.
+        long budgetBytes = FRAME_GEOMETRY_BUDGET_BYTES;
+        int budgetCopies = FRAME_GEOMETRY_BUDGET_COPIES;
+        if (RESULT_HANDLE.get(this) != null) {//Unconsumed publish lands in the same frame as this batch
+            budgetBytes -= this.publishedCopyBytes;
+            budgetCopies -= this.publishedCopyCount;
+        }
         long estimatedGeometryUploadAmount = 0;
-        for (int limit = 0; limit < 300 && ((this.geometryCapacity-this.geometryManager.getGeometryUsedBytes())>50_000_000L) && estimatedGeometryUploadAmount<1_000L<<10; limit++) {
+        int admittedCopies = 0;
+        for (int limit = 0; limit < 300 && ((this.geometryCapacity-this.geometryManager.getGeometryUsedBytes())>50_000_000L)
+                && estimatedGeometryUploadAmount < budgetBytes && admittedCopies < budgetCopies; limit++) {
             var job = this.geometryUpdateQueue.poll();
             if (job == null)
                 break;
+            this.geomQDepth.decrementAndGet();
             workDone++;
             this.manager.processGeometryResult(job);
             if (job.geometryBuffer!=null) {
                 estimatedGeometryUploadAmount += job.geometryBuffer.size;
+                admittedCopies++;
             }
         }
 
@@ -268,6 +319,7 @@ public class AsyncNodeManager {
             var job = this.requestBatchQueue.poll();
             if (job == null)
                 break;
+            this.reqQDepth.decrementAndGet();
             workDone++;
             long ptr = job.address;
             int count = MemoryUtil.memGetInt(ptr);
@@ -288,6 +340,7 @@ public class AsyncNodeManager {
             var job = this.removeBatchQueue.poll();
             if (job == null)
                 break;
+            this.remQDepth.decrementAndGet();
             workDone++;
             long ptr = job.address;
             int zeroCount = 0;
@@ -325,6 +378,16 @@ public class AsyncNodeManager {
 
         if (workDone == 0) {//Nothing happened, which is odd, but just return
             //Should probably log that nothing happened, at least once
+            if (!this.geometryUpdateQueue.isEmpty()) {
+                //Geometry is queued but the frame budget is already staged in the unconsumed
+                //publish; the retained workCounter keeps this loop from parking, so yield until
+                //the render thread consumes
+                try {
+                    Thread.sleep(2);
+                } catch (InterruptedException e) {
+                    throw new RuntimeException(e);
+                }
+            }
             return;
         }
         //=====================
@@ -485,10 +548,15 @@ public class AsyncNodeManager {
         results.usedGeometry = this.geometryManager.getGeometryUsedBytes();
         results.currentMaxNodeId = this.manager.getCurrentMaxNodeId();
 
-        this.needsWaitForSync |= results.geometryUpload.currentElemCopyAmount*8L > 2L<<20;//2mb limit per frame
+        this.needsWaitForSync |= results.geometryUpload.currentElemCopyAmount*8L > FRAME_GEOMETRY_BUDGET_BYTES;//2mb limit per frame
         this.needsWaitForSync |= results.cleanerOperations.size() > 1024;
         this.needsWaitForSync |= results.scatterWriteLocationMap.size() > 4096;
         this.needsWaitForSync |= results.tlnDelta.size() > 10;
+
+        //What this publish stages toward the next frame; the admission bound reads these while
+        //RESULT_HANDLE is still non-null
+        this.publishedCopyBytes = results.geometryUpload.currentElemCopyAmount*8L;
+        this.publishedCopyCount = results.geometryUpload.dataUploadPoints.size();
 
         if (!RESULT_HANDLE.compareAndSet(this, null, results)) {
             throw new IllegalArgumentException("Should always have null");
@@ -501,13 +569,17 @@ public class AsyncNodeManager {
 
     private IntConsumer tlnAddCallback; private IntConsumer tlnRemoveCallback;
     //Render thread synchronization
-    public void tick(GlBuffer nodeBuffer, NodeCleaner cleaner) {//TODO: dont pass nodeBuffer here??, do something else thats better
+    //Returns whether anything was consumed. The command-list hold keys on this: commands bake
+    //baseVertex offsets into the geometry arena, so ANY consumed result set (geometry copies,
+    //scatter writes, TLN changes, arena moves) makes held command lists point at stale memory -
+    //a build is then mandatory, not optional.
+    public boolean tick(GlBuffer nodeBuffer, NodeCleaner cleaner) {//TODO: dont pass nodeBuffer here??, do something else thats better
         if (this.uncaughtException != null) {
             throw new RuntimeException(this.uncaughtException);//Propagate internal exception
         }
         var results = (SyncResults)RESULT_HANDLE.getAndSet(this, null);//Acquire the results
         if (results == null) {//There are no new results to process, return
-            return;
+            return false;
         }
 
         //top level node add/remove
@@ -596,6 +668,7 @@ public class AsyncNodeManager {
                 throw new IllegalStateException("Could not insert result into cache");
             }
         }
+        return true;
     }
 
 
@@ -616,6 +689,13 @@ public class AsyncNodeManager {
 
     public long getGeometryCapacity() {
         return this.geometryCapacity;
+    }
+
+    //Resident section count. The per-frame costs that scale with residency (indirect draw records
+    //above all) scale with the COUNT, not with the bytes - a section averages ~14KB, so a byte
+    //budget is a poor proxy for them.
+    public int getResidentSectionCount() {
+        return this.geometryData.getSectionCount();
     }
 
 
@@ -647,6 +727,7 @@ public class AsyncNodeManager {
 
     public void submitRequestBatch(MemoryBuffer batch) {//Only called from render thread
         this.requestBatchQueue.add(batch);
+        this.reqQDepth.incrementAndGet();
         this.addWork();
     }
 
@@ -656,6 +737,7 @@ public class AsyncNodeManager {
         }
         section.acquire();//We must acquire the section before putting in the queue
         this.childUpdateQueue.add(section);
+        this.noteChildDepth(this.childQDepth.incrementAndGet());
         this.addWork();
     }
 
@@ -665,11 +747,13 @@ public class AsyncNodeManager {
             return;
         }
         this.geometryUpdateQueue.add(geometry);
+        this.geomQDepth.incrementAndGet();
         this.addWork();
     }
 
     public void submitRemoveBatch(MemoryBuffer batch) {//Only called from render thread
         this.removeBatchQueue.add(batch);
+        this.remQDepth.incrementAndGet();
         this.addWork();
     }
 
@@ -714,9 +798,14 @@ public class AsyncNodeManager {
     }
 
     public void stop() {
-        if (!this.running) {
-            throw new IllegalStateException();
+        //Idempotent, and it never throws before the drains: running may already be false because
+        //the worker died on its own, and bailing here would leak every queued MemoryBuffer plus
+        //pin the WorldSections acquired in submitChildChange for the rest of the process (world
+        //exit then hangs in awaitWorldQuiescence). Joining a dead thread returns immediately.
+        if (this.stopped) {
+            return;
         }
+        this.stopped = true;
         this.running = false;
         LockSupport.unpark(this.thread);
         try {
@@ -725,7 +814,8 @@ public class AsyncNodeManager {
                 this.thread.join(1000);
             }
         } catch (InterruptedException e) {
-            throw new RuntimeException(e);
+            //Keep draining regardless - the queues must be emptied on this path too
+            Thread.currentThread().interrupt();
         }
 
         while (true) {
@@ -752,6 +842,16 @@ public class AsyncNodeManager {
             section.release();
         }
 
+        //Thread is joined above; nothing else touches the manager now. Bounded by one merge window
+        //(the 300-job/1MB cap in the tick loop), but unconditionally leaked without this.
+        this.geometryManager.freePendingUploads();
+
+        //The drains above emptied every queue without going through the worker polls
+        this.reqQDepth.set(0);
+        this.remQDepth.set(0);
+        this.geomQDepth.set(0);
+        this.childQDepth.set(0);
+
         if (RESULT_HANDLE.get(this) != null) {
             var result = (SyncResults)RESULT_HANDLE.getAndSet(this, null);
             result.geometryUpload.free();
@@ -775,7 +875,12 @@ public class AsyncNodeManager {
     }
 
     public void addDebug(List<String> debug) {
-        debug.add("UC/GC,#N: " + (this.getUsedGeometryCapacity()/(1<<20))+"/"+(this.getGeometryCapacity()/(1<<20)) + "," + (this.geometryData.getSectionCount()));
+        //GC is the buffer capacity constant, #N the resident section count against its cap - both
+        //were misread as "a gauge that is stuck full" before they said what they measure
+        int sectionCap = me.cortex.voxy.client.config.VoxyConfig.CONFIG.geometryResidencySections;
+        debug.add("geomMiB used/cap: " + (this.getUsedGeometryCapacity()/(1<<20))+"/"+(this.getGeometryCapacity()/(1<<20))
+                + " | residentSections: " + this.geometryData.getSectionCount()
+                + (sectionCap > 0 ? "/" + sectionCap : " (uncapped)"));
         //debug.add("GUQ/NRC: " + this.geometryUpdateQueue.size()+"/"+this.removeBatchQueue.size());
     }
 

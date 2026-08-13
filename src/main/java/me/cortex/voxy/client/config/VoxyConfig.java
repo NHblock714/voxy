@@ -88,6 +88,64 @@ public class VoxyConfig {
     // that cannot be rebuilt from the block state - so holding the source to rebuild from costs more
     // than the mesh it releases. The sweep captures it again when the player returns.
     public int distantKineticGpuBudgetMiB = 32;
+    // Vertex-memory ceiling for baked distant train shapes. A shapeId embeds the train UUID, so
+    // every disassembly orphans its meshes; the sweep closes orphans and the budget bounds the rest.
+    // The server re-sends a shape on window re-entry, so eviction costs one resend. 0 disables.
+    public int distantTrainGpuBudgetMiB = 32;
+    // Residency cap for LOD geometry, in MiB of the geometry buffer; 0 = uncapped. On large-VRAM
+    // cards the emergency cleaner never fires, so the resident set grows for the whole session and
+    // per-frame costs that scale with it ratchet up until the renderer is recreated. The cap
+    // evicts least-recently-seen meshes past the limit; they re-request when looked at again.
+    public int geometryResidencyCapMB = 1536;
+    // Companion cap in resident SECTIONS; 0 = uncapped (the default, and the only safe default).
+    // A cap below the view's working set thrashes: the cleaner evicts meshes the traversal needs
+    // this frame, they are re-requested and rebuilt immediately, and the LOD visibly flickers as
+    // detail drops and returns. Only set this above the resident count a settled session reaches
+    // (F3 "residentSections"), as a ceiling against unbounded growth - never as a budget.
+    public int geometryResidencySections = 0;
+    // Selects the pack's voxy_*_lite.glsl programs (if it ships them) instead of the standard
+    // ones - a pack-authored cheaper LOD lighting path for A/B testing. Off = exactly the
+    // current behaviour; packs without lite files are unaffected either way. Takes effect on
+    // shader reload (R) or renderer recreation.
+    public boolean lodLiteShading = false;
+    // EXPERIMENTAL: when the camera is still and no geometry changed, reuse the previous frame's
+    // LOD command lists instead of re-running hi-z + traversal + command generation + the temporal
+    // pass. Any geometry consumption, camera movement or the frame cap below forces a full build -
+    // failure direction is always the current per-frame path. Off = exactly current behaviour.
+    public boolean experimentalCmdListHold = false;
+    // Longest run of consecutive held frames before a build is forced regardless (bounds request
+    // latency, statistics staleness and hi-z age).
+    public int cmdListHoldMaxFrames = 4;
+    // Section voxel-array reuse pool budget, in MiB (256KiB per array; 100 = the long-standing 400
+    // array cap). The pool absorbs materialise/release churn from the mesh workers - when the F3
+    // counters show sustained misses AND overflows together, the churn amplitude exceeds the cap
+    // and every miss is a fresh 256KiB allocation handed to the GC. Raise toward 256 on large-heap
+    // clients to trade heap for GC pressure.
+    public int sectionArrayPoolMiB = 100;
+    // EXPERIMENTAL: emit opaque LOD draw commands near-to-far instead of the traversal's natural
+    // far-to-near list order, letting early-z reject the far fill hidden behind near terrain. Pure
+    // draw-order heuristic - the depth test owns correctness either way. Matters because the LOD
+    // opaque pass is fill-bound (geometry density barely moves its cost); takes effect on renderer
+    // recreation (rejoin world or toggle voxy rendering off/on).
+    public boolean experimentalOpaqueNearFirst = false;
+    // EXPERIMENTAL: when the camera is still and the sodium-visible section set is unchanged
+    // (content-hashed - sodium 0.8 re-streams an identical list every frame), keep the previous
+    // frame's hole-punch mask (the depth bounding buffer) instead of re-rasterising every visible
+    // section's AABB. Any camera motion, set change, render-distance change or buffer clear/resize
+    // re-rasterises. Under a shader pack that declares TAA, reuse disables itself: the seam is
+    // only stable when the mask re-rasterises every frame with that frame's jitter (a kept mask
+    // freezes its phase and flickers; an unjittered mask shimmers against the jittered terrain -
+    // both field-verified). The duplicate-upload squash stays active under TAA. Off = exactly
+    // current behaviour.
+    public boolean experimentalChunkMaskReuse = false;
+    // Vanilla-style biome colour blending for LOD water: each border voxel's tint is the box
+    // average over a (2*radius+1)^2 window, radius measured in LOD voxels so every ring shows the
+    // same apparent transition width. Same 0..7 range as vanilla's biomeBlendRadius; 0 = off (hard
+    // edges, the pre-blend behaviour). Applies on mesh rebuild - changing it needs a renderer
+    // reload (F3+A / rejoin) to repaint already-built sections.
+    public int biomeBlendRadius = 2;
+    // "water" = fluids only; "water_grass" = every biome-tinted block (grass and foliage too)
+    public String biomeBlendScope = "water";
     // Aero/sable: render simulated contraptions within this % of voxy's LOD render distance.
     public int simulatedContraptionRenderDistancePercent = 50;
     public int serviceThreads = (int) Math.max(CpuLayout.getCoreCount()/1.5, 1);
@@ -205,6 +263,10 @@ public class VoxyConfig {
     }
 
     public void sanitize() {
+        //The one guard no path can bypass: a zero here reaches the traversal as far²=0 and ALL
+        //LOD terrain disappears with no error, surviving restarts. Fractional section counts are
+        //legitimate (4.5 sections = 144 chunks) and must survive the clamp.
+        this.sectionRenderDistance = Math.clamp(this.sectionRenderDistance, 2.0f, 64.0f);
         this.subDivisionSize = Math.clamp(this.subDivisionSize, MIN_SUBDIVISION_SIZE, MAX_SUBDIVISION_SIZE);
         //The fog percentage is measured against the LOD radius. It was once measured against a
         //sixteenth of it, so anyone who raised the slider to see past that is carrying a value that now
@@ -223,6 +285,14 @@ public class VoxyConfig {
         this.fogDensity = Math.clamp(this.fogDensity, 0.0f, 1.0f);
         this.setLeafLodMode(this.getLeafLodMode());
         this.farPlayerAnimationDistance = Math.clamp(this.farPlayerAnimationDistance, 0, 32768);
+        this.biomeBlendRadius = Math.clamp(this.biomeBlendRadius, 0, 7);
+        this.geometryResidencyCapMB = Math.max(this.geometryResidencyCapMB, 0);
+        this.geometryResidencySections = Math.max(this.geometryResidencySections, 0);
+        this.cmdListHoldMaxFrames = Math.clamp(this.cmdListHoldMaxFrames, 2, 60);
+        this.sectionArrayPoolMiB = Math.clamp(this.sectionArrayPoolMiB, 25, 1024);
+        if (!"water".equals(this.biomeBlendScope) && !"water_grass".equals(this.biomeBlendScope)) {
+            this.biomeBlendScope = "water";
+        }
     }
 
     public void save() {

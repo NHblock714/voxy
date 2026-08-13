@@ -92,7 +92,20 @@ public class SoftwareModelTextureBakery {
         glPixelStorei(GL_PACK_SKIP_ROWS, 0);
         glPixelStorei(GL_PACK_SKIP_PIXELS, 0);
         glPixelStorei(GL_PACK_ALIGNMENT, 4);
-        glGetTexImage(GL_TEXTURE_2D, 0, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+        //The readback goes through native memory, never a Java array: handing the driver an int[]
+        //holds a JNI critical pin on a (large-atlas: humongous) heap region across a full GPU sync,
+        //and that pin path has produced a hard JVM crash in the field (Zulu 25 + AMD GL, EXCEPTION_
+        //ACCESS_VIOLATION inside jvm.dll under glGetTexImage). The extra bulk copy is a one-time
+        //cost at renderer creation.
+        long size = (long) width * height * 4L;
+        long addr = MemoryUtil.nmemAlloc(size);
+        if (addr == 0) throw new OutOfMemoryError("atlas readback buffer: " + size + " bytes");
+        try {
+            nglGetTexImage(GL_TEXTURE_2D, 0, GL_RGBA, GL_UNSIGNED_BYTE, addr);
+            MemoryUtil.memIntBuffer(addr, width * height).get(pixels);
+        } finally {
+            MemoryUtil.nmemFree(addr);
+        }
         glPixelStorei(GL_PACK_ROW_LENGTH, 0);
 
         this.rasterizer.setSamplerTexture(pixels, width, height);

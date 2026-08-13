@@ -112,7 +112,8 @@ public class ClientVoxyMixinPlugin implements IMixinConfigPlugin {
             mixins.add("eclipticseasons.MixinModelBakerySubsystem");
             mixins.add("eclipticseasons.MixinModelFactory");
             mixins.add("eclipticseasons.MixinModelTextureBakery");
-            mixins.add("eclipticseasons.MixinWorldConversionFactory");
+            //The convert() snow hook is a direct BlockIdRemapper registration in VoxyClient now,
+            //not a mixin - the WrapOperation bridge boxed three args + the return per voxel
             mixins.add("eclipticseasons.MixinWorldImporter");
         }
 

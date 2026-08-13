@@ -46,6 +46,19 @@ public final class FrameProfiler {
     private static volatile boolean stallCapturedThisFrame;
     private static Thread watchdog;
 
+    //Full-report integration: when armed, the capture writes to this name and appends the
+    //supplier's sections (hardware, config, counter deltas) around the percentile table
+    private static volatile String outputFileName = "voxy-frame-capture.txt";
+    private static volatile java.util.function.Supplier<String> extraSections;
+
+    public static void armFullReport(String fileName, java.util.function.Supplier<String> extra) {
+        outputFileName = fileName;
+        extraSections = extra;
+    }
+
+    private static int stallsInsideVoxy;
+    private static int stallsOutsideVoxy;
+
     private static long startedAtMs;
     private static long endAtMs;
     private static long lastSnapshotMs;
@@ -67,6 +80,8 @@ public final class FrameProfiler {
         frames.clear();
         snapshots.clear();
         stalls.clear();
+        stallsInsideVoxy = 0;
+        stallsOutsideVoxy = 0;
         startedAtMs = System.currentTimeMillis();
         endAtMs = startedAtMs + seconds * 1000L;
         lastSnapshotMs = 0;
@@ -137,6 +152,11 @@ public final class FrameProfiler {
                 trace = thread.getStackTrace();
             } catch (Throwable e) {
                 continue;
+            }
+            if (insideVoxyRender) {
+                stallsInsideVoxy++;
+            } else {
+                stallsOutsideVoxy++;
             }
             var sb = new StringBuilder();
             sb.append("=== IN-FLIGHT stall (").append(insideVoxyRender ? "inside voxy render" : "outside voxy render").append("), blocked ")
@@ -328,7 +348,9 @@ public final class FrameProfiler {
         }
         report.append("\nstalls (>").append(STALL_THRESHOLD_MICROS / 1000).append("ms): ")
                 .append(stallFrames).append(" frames, ")
-                .append(String.format("%.2fs", stallMicros / 1_000_000.0)).append(" total\n");
+                .append(String.format("%.2fs", stallMicros / 1_000_000.0)).append(" total")
+                .append(" (in-flight captures: ").append(stallsInsideVoxy).append(" inside voxy render, ")
+                .append(stallsOutsideVoxy).append(" outside)\n");
 
         if (!stalls.isEmpty()) {
             report.append("\nstall stacks (").append(stalls.size()).append(" captured, cap ")
@@ -343,7 +365,20 @@ public final class FrameProfiler {
             report.append(s).append('\n');
         }
 
-        Path out = Minecraft.getInstance().gameDirectory.toPath().resolve("voxy-frame-capture.txt");
+        var extra = extraSections;
+        if (extra != null) {
+            extraSections = null;
+            try {
+                //The supplier returns the report head (static sections) followed by its own tail;
+                //the percentile capture above slots between them
+                report = new StringBuilder(extra.get()).append('\n').append(report);
+            } catch (Throwable t) {
+                Logger.error("Full report extra sections failed", t);
+            }
+        }
+
+        Path out = Minecraft.getInstance().gameDirectory.toPath().resolve(outputFileName);
+        outputFileName = "voxy-frame-capture.txt";
         try {
             Files.writeString(out, report.toString(), StandardCharsets.UTF_8);
         } catch (IOException e) {

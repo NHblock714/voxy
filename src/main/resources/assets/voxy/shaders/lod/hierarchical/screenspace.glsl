@@ -193,18 +193,22 @@ bool isCulledByHiz() {
 
 //Returns if we should decend into its children or not
 bool shouldDecend() {
-    if (_screenSize > minSSS) {
-        return true;
+    //Angular-size parity: planar projection stretches equal nodes to LARGER areas toward the
+    //screen edges (jacobian ~(1+tan^2 theta)^1.5), so a raw area test spends its subdivision on
+    //the edges and starves the centre - centre mushy, edges sharp, worse at high FOV. Dividing
+    //each node's area by its own stretch judges every screen position by the same ANGULAR size:
+    //the centre keeps the raw metric (stretch=1 there) and the edges stop receiving subdivision
+    //paid for by projection stretch alone. This keeps minSSS calibrated to centre-of-screen
+    //quality; normalising the other way (boosting everything to edge parity) inflates total
+    //demand by up to the corner stretch (~5x at FOV70), which saturates the entire
+    //subdivision-size range on large screens and deadens the slider.
+    if (_screenSize <= minSSS) {
+        //stretch >= 1 everywhere: if the raw area already fails, the divided area fails too
+        return false;
     }
-    //Perspective-stretch parity: planar projection stretches equal nodes to LARGER areas at the
-    //screen edges than at the centre (jacobian ~(1+tan^2(theta))^1.5), so the raw area test starves
-    //the middle of the screen of subdivision - centre mushy, edges sharp, worse at high FOV. Boost
-    //each node's area by maxStretch/stretch(nodePos): the centre is judged as if it sat at the
-    //screen's most favourable position, edges get boost~1 and keep their existing behaviour.
     vec2 ndcCenter = (_minBB.xy + _maxBB.xy) - 1.0f;
     vec2 tanPos = ndcCenter * vec2(invP00, invP11);
     float stretchNode = pow(1.0f + dot(tanPos, tanPos), 1.5f);
-    //stretchMax (the screen-edge stretch) is a frame constant supplied as a uniform
-    return _screenSize * (stretchMax / stretchNode) > minSSS;
+    return _screenSize / stretchNode > minSSS;
 }
 

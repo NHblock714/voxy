@@ -86,6 +86,8 @@
   "voxy.config.general.leafLodMode.fast": "Fast",
   "voxy.config.general.leafLodMode.balanced": "Balanced",
   "voxy.config.general.leafLodMode.quality": "Quality",
+  "voxy.config.general.lodLiteShading": "Lite LOD shading",
+  "voxy.config.general.lodLiteShading.tooltip": "Shades LOD terrain with the shader pack's cut-down programs (voxy_opaque_lite.glsl / voxy_translucent_lite.glsl) instead of its full ones. Distant terrain loses per-material detail such as specular on stone and metal, in exchange for a large cut to the LOD fill cost. Shaders only, and only for packs that ship those files - otherwise nothing changes.",
   "voxy.config.general.lodBoundaryFade": "Circular LOD transition",
   "voxy.config.general.lodBoundaryFade.tooltip": "Keeps vanilla terrain inside a camera-centred circle and Voxy LOD outside, using a stable dithered handoff without transparent terrain sorting. Water retains the existing section boundary.",
   "voxy.config.general.lodBoundaryFade.warning": "⚠ Circular LOD fade — disable for Photon-like shaders",

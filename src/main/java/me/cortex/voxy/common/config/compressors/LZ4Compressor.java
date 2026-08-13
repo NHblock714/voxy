@@ -28,8 +28,15 @@ public class LZ4Compressor implements StorageCompressor {
     @Override
     public MemoryBuffer decompress(MemoryBuffer saveData) {
         var res = SCRATCH.get().createUntrackedUnfreeableReference();
-        int size = this.decompressor.decompress(saveData.asByteBuffer(), 4, res.asByteBuffer(), 0, MemoryUtil.memGetInt(saveData.address));
-        return res.subSize(size);
+        //The leading length word comes off disk: corruption makes it lie, and lz4 then throws.
+        //null routes to the adaptor's corrupt-entry deletion, same as the ZSTD side.
+        try {
+            int size = this.decompressor.decompress(saveData.asByteBuffer(), 4, res.asByteBuffer(), 0, MemoryUtil.memGetInt(saveData.address));
+            return res.subSize(size);
+        } catch (RuntimeException e) {
+            me.cortex.voxy.common.Logger.error("LZ4 decompression failed", e);
+            return null;
+        }
     }
 
     @Override

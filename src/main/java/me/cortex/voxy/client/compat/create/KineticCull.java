@@ -61,6 +61,11 @@ public final class KineticCull {
         return reach * reach;
     }
 
+    //For the other per-frame cull sites (track visuals): same cached value, public face
+    public static double reachSqShared() {
+        return reachSq();
+    }
+
     private static boolean beyond(BlockPos pos, double camX, double camY, double camZ) {
         double dx = pos.getX() + 0.5 - camX;
         double dy = pos.getY() + 0.5 - camY;
@@ -88,6 +93,14 @@ public final class KineticCull {
         }
         Vec3 cam = ctx.camera().getPosition();
         return beyond(pos, cam.x, cam.y, cam.z);
+    }
+
+    //Distance culls may only apply to block entities living in the real client level: Ponder
+    //scenes, schematic previews and contraption render worlds all carry scene-local positions
+    //that read as "beyond" against the world camera - culling those blanks the Ponder UI's
+    //curved tracks and station overlays. Create itself never world-camera-culls a PonderLevel.
+    public static boolean isWorldPlaced(net.minecraft.world.level.block.entity.BlockEntity be) {
+        return be.getLevel() == Minecraft.getInstance().level;
     }
 
     //Vanilla-BER fallback path (Flywheel backend off): the camera comes from the game renderer.

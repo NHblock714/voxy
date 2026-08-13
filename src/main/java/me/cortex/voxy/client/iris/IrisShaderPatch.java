@@ -353,14 +353,34 @@ public class IrisShaderPatch {
             }
 
             {//Inject data from the auxilery files if they are present
-                var opaque = sourceProvider.apply(directory.resolve("voxy_opaque.glsl"));
+                //Lite-shading contract: with the config on, a pack- or modpack-provided
+                //voxy_*_lite.glsl takes precedence over the standard file. The downgrade program
+                //lives on the same contract surface as voxy.json - the fork never edits pack
+                //source text (any shape-based injection breaks on the next pack update). A pack
+                //without lite files behaves exactly as before regardless of the switch.
+                boolean lite = me.cortex.voxy.client.config.VoxyConfig.CONFIG.lodLiteShading;
+                String opaque = lite ? sourceProvider.apply(directory.resolve("voxy_opaque_lite.glsl")) : null;
                 if (opaque != null) {
-                    Logger.info("External opaque shader patch applied");
+                    Logger.info("External opaque LITE shader patch applied (lodLiteShading)");
+                } else {
+                    opaque = sourceProvider.apply(directory.resolve("voxy_opaque.glsl"));
+                    if (opaque != null) {
+                        Logger.info("External opaque shader patch applied");
+                    }
+                }
+                if (opaque != null) {
                     patchData.opaquePatchData = opaque;
                 }
-                var translucent = sourceProvider.apply(directory.resolve("voxy_translucent.glsl"));
+                String translucent = lite ? sourceProvider.apply(directory.resolve("voxy_translucent_lite.glsl")) : null;
                 if (translucent != null) {
-                    Logger.info("External translucent shader patch applied");
+                    Logger.info("External translucent LITE shader patch applied (lodLiteShading)");
+                } else {
+                    translucent = sourceProvider.apply(directory.resolve("voxy_translucent.glsl"));
+                    if (translucent != null) {
+                        Logger.info("External translucent shader patch applied");
+                    }
+                }
+                if (translucent != null) {
                     patchData.translucentPatchData = translucent;
                 }
                 //This might be ok? not.. sure if is nice or not

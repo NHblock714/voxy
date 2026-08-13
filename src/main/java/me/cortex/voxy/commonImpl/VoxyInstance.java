@@ -35,18 +35,26 @@ public abstract class VoxyInstance {
         Logger.info("Initializing voxy instance");
         this.threadPool = new UnifiedServiceThreadPool();
         this.savingService = new SectionSavingService(this.getServiceManager());
-        this.ingestService = new VoxelIngestService(this.getServiceManager());
+        //Ingest fans one job out to up to MAX_LOD_LAYER+1 dirty sections, each of which becomes an
+        //acquired 256KiB section in the save queue. An external producer throttling on the ingest
+        //queue's depth (a pregen mod feeding tryAutoIngestChunk) cannot see that amplification, so
+        //ingest gates on the save backlog itself: while it is deep, ingest stands down and the
+        //queue drains, which is the only thing that reopens the gate.
+        this.ingestService = new VoxelIngestService(this.getServiceManager(), this::isSaveBacklogClear);
         this.importManager = this.createImportManager();
-        this.savingServiceRateLimiter = () -> this.savingService.getTaskCount() < 1200;
+        this.savingServiceRateLimiter = this::isSaveBacklogClear;
         this.worldCleaner = new Thread(() -> {
-            try {
-                while (this.isRunning) {
+            //Catch inside the loop: a throw reaching outside it ends the 1Hz cleaner for the
+            //rest of the session and idle engines (memtables, section arrays) pile up
+            while (this.isRunning) {
+                try {
                     Thread.sleep(1000);
                     this.cleanIdle();
+                } catch (InterruptedException ignored) {
+                    return;
+                } catch (Throwable e) {
+                    Logger.error("Exception in world cleaner", e);
                 }
-            } catch (InterruptedException ignored) {
-            } catch (Exception e) {
-                Logger.error("Exception in world cleaner", e);
             }
         });
         this.worldCleaner.setPriority(Thread.MIN_PRIORITY);
@@ -78,6 +86,17 @@ public abstract class VoxyInstance {
 
     public UnifiedServiceThreadPool getThreadPool() {
         return this.threadPool;
+    }
+
+    //Sections queued for a store write, each holding an acquired 256KiB materialised section - the
+    //largest single thing voxy holds under a sustained write load, and the one the memory report
+    //had no line for
+    public int getSaveQueueDepth() {
+        return this.savingService.getTaskCount();
+    }
+
+    private boolean isSaveBacklogClear() {
+        return this.savingService.getTaskCount() < 1200;
     }
 
     public VoxelIngestService getIngestService() {
@@ -142,25 +161,30 @@ public abstract class VoxyInstance {
             }
             return world;
         }
+        //createWorld opens storage and can throw (RocksDB LOCK held by another process, corrupt
+        //MANIFEST, full disk). A StampedLock has no owner tracking: a leaked write stamp is dead
+        //for the whole process - every later lookup, the 1Hz cleaner AND shutdown block
+        //un-interruptibly, and the emergency-save path hangs on the same lock before the crash
+        //report gets written.
         long stamp = this.activeWorldLock.writeLock();
+        try {
+            if (!this.isRunning) {
+                Logger.error("Tried getting world object on voxy instance but its not running");
+                return null;
+            }
 
-        if (!this.isRunning) {
-            Logger.error("Tried getting world object on voxy instance but its not running");
+            world = this.activeWorlds.get(identifier);
+            if (world == null) {
+                world = this.createWorld(identifier);
+            }
+            world.markActive();
+
+            if (incrementRef) {
+                world.acquireRef();
+            }
+        } finally {
             this.activeWorldLock.unlockWrite(stamp);
-            return null;
         }
-
-        world = this.activeWorlds.get(identifier);
-        if (world == null) {
-            world = this.createWorld(identifier);
-        }
-        world.markActive();
-
-        if (incrementRef) {
-            world.acquireRef();
-        }
-
-        this.activeWorldLock.unlockWrite(stamp);
         identifier.cachedEngineObject = new WeakReference<>(world);
         return world;
     }
@@ -214,7 +238,15 @@ public abstract class VoxyInstance {
                     continue;
                 }
                 Logger.info("Shutting down idle world: " + id.getLongHash());
-                world.free();
+                try {
+                    world.free();
+                } catch (Throwable t) {
+                    //free() may have died midway. Keep the engine registered rather than orphaning
+                    //a half-closed store - a later round or shutdown retries; NOT closing the
+                    //storage under it here is deliberate, live sections may still reference it
+                    Logger.error("Failed to free idle world " + id.getLongHash() + ", keeping it registered", t);
+                    this.activeWorlds.put(id, world);
+                }
             }
         } finally {
             this.activeWorldLock.unlockWrite(writeStamp);
@@ -227,6 +259,24 @@ public abstract class VoxyInstance {
                 .map(world -> Integer.toString(world.getActiveSectionCount()))
                 .collect(Collectors.joining(", "));
         debug.add("I/S/AWSC: " + this.ingestService.getTaskCount() + "/" + this.savingService.getTaskCount() + "/[" + sectionCounts + "]");
+    }
+
+    //One line per open engine for the memory report: engines lingering after a dimension hop are
+    //the multi-hundred-MB native holders (memtable + section arrays), and this is where a leaked
+    //ref shows up by name instead of as an anonymous rise
+    public void addMemoryDebug(StringBuilder sb) {
+        long stamp = this.activeWorldLock.readLock();
+        try {
+            for (var entry : this.activeWorlds.entrySet()) {
+                var engine = entry.getValue();
+                int lru = engine.getSecondaryCacheCount();
+                sb.append(String.format("  engine %-28s active %,d, lru %,d (~%,.1f MiB)%n",
+                        entry.getKey().key.location(), engine.getActiveSectionCount(),
+                        lru, lru * 256.0 / 1024.0));
+            }
+        } finally {
+            this.activeWorldLock.unlockRead(stamp);
+        }
     }
 
     private List<WorldEngine> snapshotWorlds() {
@@ -273,7 +323,12 @@ public abstract class VoxyInstance {
             Logger.error("Interrupted while stopping the Voxy world cleaner", e);
         }
 
-        this.cleanIdle();
+        try {
+            this.cleanIdle();
+        } catch (Throwable t) {
+            //Shutdown must reach the service teardown below even if one idle world fails to free
+            Logger.error("cleanIdle failed during shutdown", t);
+        }
         var worlds = this.snapshotWorlds();
         for (var world : worlds) {
             this.importManager.cancelImport(world);

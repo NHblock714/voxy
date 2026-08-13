@@ -481,6 +481,29 @@ public final class DistantContraptionManager {
         });
 
         enforceGpuBudget(camX, camY, camZ);
+
+        //Heap count cap over the distance pass, which keeps sources for the whole session by design.
+        //Heap-only eviction of the furthest dormant entries: their disk records stay, so they restore
+        //on the next world entry - this deliberately weakens "kept for the whole session" only past
+        //a count no legitimate base reaches. Live, frozen-held, and meshed entries are never touched.
+        if (SNAPSHOTS.size() > 2048) {
+            var dormant = new ArrayList<Map.Entry<UUID, Snapshot>>();
+            for (var entry : SNAPSHOTS.entrySet()) {
+                var s = entry.getValue();
+                if (s.mesh == null && !s.live && !s.frozenControlled && dimId.equals(s.dim)) {
+                    dormant.add(entry);
+                }
+            }
+            double fcamX = camX, fcamY = camY, fcamZ = camZ;
+            dormant.sort(java.util.Comparator.comparingDouble(
+                    e -> -((e.getValue().x - fcamX) * (e.getValue().x - fcamX)
+                            + (e.getValue().y - fcamY) * (e.getValue().y - fcamY)
+                            + (e.getValue().z - fcamZ) * (e.getValue().z - fcamZ))));
+            int toDrop = SNAPSHOTS.size() - 2048;
+            for (int i = 0; i < toDrop && i < dormant.size(); i++) {
+                SNAPSHOTS.remove(dormant.get(i).getKey());
+            }
+        }
         snapshotCount = SNAPSHOTS.size();
     }
 
@@ -643,6 +666,13 @@ public final class DistantContraptionManager {
         loadStored(level);
     }
 
+    //Heap admission cap for world entry: the store has no expiry, so a long-lived server world can
+    //hold more records than any one session looks at. Nearest first; the rest stay on disk untouched
+    //and restore on a later entry if the player has moved toward them.
+    private static final int MAX_RESTORED = 1024;
+    public static volatile int restoreSkipped;
+    public static volatile long oldestRecordMs;
+
     public static void loadStored(ClientLevel level) {
         var storage = storageFor(level);
         if (storage == null) {
@@ -650,6 +680,8 @@ public final class DistantContraptionManager {
         }
         var here = level.dimension().location();
         int restored = 0;
+        var eligible = new ArrayList<ContraptionStore.Stored>();
+        long oldest = Long.MAX_VALUE;
         for (var entry : ContraptionStore.loadAll(storage)) {
             //Another dimension's records stay on disk; they are read again when the player goes there
             if (!here.equals(entry.dim()) || SNAPSHOTS.containsKey(entry.id())) {
@@ -661,6 +693,23 @@ public final class DistantContraptionManager {
             if (Math.abs(entry.x()) > 1.0e6 || Math.abs(entry.z()) > 1.0e6) {
                 continue;
             }
+            if (entry.savedMs() != 0 && entry.savedMs() < oldest) {
+                oldest = entry.savedMs();
+            }
+            eligible.add(entry);
+        }
+        oldestRecordMs = oldest == Long.MAX_VALUE ? 0 : oldest;
+        var player = Minecraft.getInstance().player;
+        double px = player != null ? player.getX() : 0, pz = player != null ? player.getZ() : 0;
+        if (eligible.size() > MAX_RESTORED) {
+            eligible.sort(java.util.Comparator.comparingDouble(
+                    e -> (e.x() - px) * (e.x() - px) + (e.z() - pz) * (e.z() - pz)));
+            restoreSkipped = eligible.size() - MAX_RESTORED;
+            eligible = new ArrayList<>(eligible.subList(0, MAX_RESTORED));
+        } else {
+            restoreSkipped = 0;
+        }
+        for (var entry : eligible) {
             //Dormant: it knows what it is made of and where it stood, and nothing has been uploaded for
             //it yet. The same pass that rebuilds an evicted snapshot picks these up, nearest first, so
             //there is one path for "came back into range" and "was just read off disk".

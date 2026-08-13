@@ -86,6 +86,8 @@
   "voxy.config.general.leafLodMode.fast": "性能",
   "voxy.config.general.leafLodMode.balanced": "平衡",
   "voxy.config.general.leafLodMode.quality": "质量",
+  "voxy.config.general.lodLiteShading": "LOD 轻量光照",
+  "voxy.config.general.lodLiteShading.tooltip": "远景 LOD 改用光影包的精简程序（voxy_opaque_lite.glsl / voxy_translucent_lite.glsl）着色，不再跑完整版。远景会失去逐材质细节（如石头、金属的高光），换取 LOD 填充开销大幅下降。仅在开启光影时有效，且需要光影包提供上述文件，否则没有任何变化。",
   "voxy.config.general.lodBoundaryFade": "圆形 LOD 过渡",
   "voxy.config.general.lodBoundaryFade.tooltip": "圆内保留原版地形，圆外使用 Voxy LOD，中间用稳定抖动平滑交接，不引入透明地形排序。水体仍使用原有区段边界。",
   "voxy.config.general.lodBoundaryFade.warning": "⚠ 圆形 LOD 淡入——Photon 等光影必须关闭",

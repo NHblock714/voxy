@@ -103,6 +103,16 @@ public class MixinClientSubLevelFinalizeLighting {
             return level.getBrightness(LightLayer.SKY, pos);
         }
 
+        //No chunk, but the far-ship parent light sync delivers bare light packets that 1.21.1
+        //applies without one - if the engine holds real data for this section, read it instead of
+        //discarding exactly what that sync exists to deliver. The per-section presence test also
+        //keeps the no-data case falling through: a plain getBrightness would answer the above-world
+        //default where the honest answer is a miss.
+        var sectionPos = SectionPos.of(chunkX, SectionPos.blockToSectionCoord(pos.getY()), chunkZ);
+        if (level.getLightEngine().getLayerListener(LightLayer.SKY).getDataLayerData(sectionPos) != null) {
+            return level.getBrightness(LightLayer.SKY, pos);
+        }
+
         //Straight to the voxel store: a chunk the client does not have has no brightness to read, and
         //this is the only remaining source.
         return voxy$readVoxySkyLight(level, pos);

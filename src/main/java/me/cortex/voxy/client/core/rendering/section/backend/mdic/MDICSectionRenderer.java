@@ -61,8 +61,11 @@ public class MDICSectionRenderer extends AbstractSectionRenderer<MDICViewport, B
 
             .define("TRANSLUCENT_DISTANCE_BUFFER_BINDING", 7)
 
-            .defineIf("HAS_STATISTICS", RenderStatistics.enabled)
-            .defineIf("STATISTICS_BUFFER_BINDING", RenderStatistics.enabled, STATISTICS_BUFFER_BINDING)
+            .define("HAS_STATISTICS")
+            .define("STATISTICS_BUFFER_BINDING", STATISTICS_BUFFER_BINDING)
+
+            //Read at renderer construction - toggling the option needs a renderer recreation
+            .defineIf("OPAQUE_NEAR_FIRST", me.cortex.voxy.client.config.VoxyConfig.CONFIG.experimentalOpaqueNearFirst)
 
             .add(ShaderType.COMPUTE, "voxy:lod/gl46/cmdgen.comp")
             .compile();
@@ -176,7 +179,7 @@ public class MDICSectionRenderer extends AbstractSectionRenderer<MDICViewport, B
         MemoryUtil.memPutFloat(ptr, boundary.enabled() ? 1.0f : 0.0f); ptr += 4;
         MemoryUtil.memPutFloat(ptr, boundary.fadeStart()); ptr += 4;
         MemoryUtil.memPutFloat(ptr, boundary.fadeEnd()); ptr += 4;
-        MemoryUtil.memPutFloat(ptr, 0.0f); ptr += 4;
+        MemoryUtil.memPutInt(ptr, viewport.prevBuildFrameId & 0x7fffffff); ptr += 4;
 
         UploadStream.INSTANCE.commit();
     }
@@ -230,13 +233,90 @@ public class MDICSectionRenderer extends AbstractSectionRenderer<MDICViewport, B
         //RenderLayer.getCutoutMipped().endDrawing();
     }
 
+    //Feedback clamp for the three indirect-count draws. The formula-based maxDrawCount is
+    //proportional to RESIDENT section count, and the command frontend pays per potential record up
+    //to that bound regardless of the GPU-side count - on a long session that is milliseconds of
+    //GPU time for records that never draw, which vanishes on renderer recreation because the
+    //resident set resets. The clamp follows the OBSERVED command counts (read back from the
+    //drawCountCallBuffer, a few frames latent) with 1.5x headroom; a readback that ever reaches
+    //the bound that was passed means real truncation, and the fuse then reverts to the formula for
+    //the rest of the session - degrading toward the pre-clamp behaviour, never accumulating error.
+    //Per-lane floors: the opaque lane needs headroom for view swings, but the translucent and
+    //temporal lanes sit near zero when still - a shared 16384 floor made the command frontend
+    //predicate thousands of empty records per frame on lanes that draw almost nothing. A
+    //truncation on either small lane self-heals (temporal misses are repainted by the next
+    //frame's opaque lane, a translucent miss is one frame of missing water) and each lane's
+    //strike fuse reverts only itself.
+    private static final int[] DRAW_CLAMP_FLOORS = {16384, 4096, 2048};
+    private static final int DRAW_CLAMP_WINDOW_FRAMES = 240;
+    //A truncation has to keep happening to count: the readback is several frames behind the bound
+    //it is compared against, so a single hit is far more likely to be that skew than real loss.
+    private static final int DRAW_CLAMP_TRUNCATION_STRIKES = 120;
+    private final int[] drawCountWindowMax = new int[3];
+    private final int[] drawCountLastWindowMax = new int[3];
+    //Per lane, the smallest bound this clamp has actually imposed recently - Integer.MAX_VALUE
+    //while the formula itself was the binding constraint (small resident set), which is when a
+    //naive comparison against "the last bound passed" reports saturation that never happened.
+    private final int[] recentBindingClamp = {Integer.MAX_VALUE, Integer.MAX_VALUE, Integer.MAX_VALUE};
+    private final int[] truncationStrikes = new int[3];
+    private int drawClampFrameCounter;
+    private final boolean[] drawClampDisabled = new boolean[3];
+
+    private int clampMaxDraws(int lane, int formula) {
+        if (this.drawClampDisabled[lane]) {
+            return formula;
+        }
+        int observed = Math.max(this.drawCountWindowMax[lane], this.drawCountLastWindowMax[lane]);
+        int clamp = Math.max(observed + (observed >> 1), DRAW_CLAMP_FLOORS[lane]);
+        if (clamp < formula) {
+            //Only a clamp below the formula can truncate anything
+            this.recentBindingClamp[lane] = Math.min(this.recentBindingClamp[lane], clamp);
+            return clamp;
+        }
+        return formula;
+    }
+
+    private void onDrawCountsRead(int opaque, int translucent, int temporal) {
+        int[] counts = {opaque, translucent, temporal};
+        for (int lane = 0; lane < 3; lane++) {
+            int c = counts[lane];
+            if (c > this.drawCountWindowMax[lane]) {
+                this.drawCountWindowMax[lane] = c;
+            }
+            if (this.drawClampDisabled[lane]) {
+                continue;
+            }
+            if (c >= this.recentBindingClamp[lane]) {
+                //Real truncation: widen immediately (the clamp follows the window maximum, so
+                //seeding it with the truncated count restores headroom within a frame) and only
+                //fall back to the formula if it keeps happening anyway - and only for this lane
+                this.drawCountWindowMax[lane] = Math.max(this.drawCountWindowMax[lane], c * 2);
+                if (++this.truncationStrikes[lane] >= DRAW_CLAMP_TRUNCATION_STRIKES) {
+                    this.drawClampDisabled[lane] = true;
+                    me.cortex.voxy.common.Logger.warn("Draw-count clamp kept truncating (lane " + lane
+                            + ", count " + c + "), reverting to formula bounds for this session");
+                }
+            } else if (this.truncationStrikes[lane] > 0) {
+                this.truncationStrikes[lane]--;
+            }
+        }
+        if (++this.drawClampFrameCounter >= DRAW_CLAMP_WINDOW_FRAMES) {
+            this.drawClampFrameCounter = 0;
+            for (int lane = 0; lane < 3; lane++) {
+                this.drawCountLastWindowMax[lane] = this.drawCountWindowMax[lane];
+                this.drawCountWindowMax[lane] = 0;
+                this.recentBindingClamp[lane] = Integer.MAX_VALUE;
+            }
+        }
+    }
+
     @Override
     public void renderOpaque(MDICViewport viewport) {
         if (this.geometryManager.getSectionCount() == 0) return;
 
         this.uploadUniformBuffer(viewport);
 
-        this.renderTerrain(viewport, 0, 4*3, Math.min((int)(this.geometryManager.getSectionCount()*4.4+128), OPAQUE_DRAW_COUNT));
+        this.renderTerrain(viewport, 0, 4*3, this.clampMaxDraws(0, Math.min((int)(this.geometryManager.getSectionCount()*4.4+128), OPAQUE_DRAW_COUNT)));
     }
 
     @Override
@@ -256,7 +336,7 @@ public class MDICSectionRenderer extends AbstractSectionRenderer<MDICViewport, B
 
         glMemoryBarrier(GL_COMMAND_BARRIER_BIT|GL_SHADER_STORAGE_BARRIER_BIT);//Barrier everything is needed
         glProvokingVertex(GL_FIRST_VERTEX_CONVENTION);
-        glMultiDrawElementsIndirectCountARB(GL_TRIANGLES, GL_UNSIGNED_SHORT, TRANSLUCENT_OFFSET*5*4, 4*4, Math.min(this.geometryManager.getSectionCount(), TRANSLUCENT_DRAW_COUNT), 0);
+        glMultiDrawElementsIndirectCountARB(GL_TRIANGLES, GL_UNSIGNED_SHORT, TRANSLUCENT_OFFSET*5*4, 4*4, this.clampMaxDraws(1, Math.min(this.geometryManager.getSectionCount(), TRANSLUCENT_DRAW_COUNT)), 0);
 
         glEnable(GL_CULL_FACE);
         glBindVertexArray(0);
@@ -328,15 +408,25 @@ public class MDICSectionRenderer extends AbstractSectionRenderer<MDICViewport, B
             glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 6, viewport.positionScratchBuffer.id);
             glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 7, this.distanceCountBuffer.id);
 
+            //HAS_STATISTICS is always compiled (the F3 toggle only gates the readback), so the
+            //shader's atomic writes always target binding 8 - the bind must be unconditional or
+            //those writes hit an unbound SSBO. Zeroing only matters when someone will read.
             if (RenderStatistics.enabled) {
                 this.statisticsBuffer.zero();
-                glBindBufferBase(GL_SHADER_STORAGE_BUFFER, STATISTICS_BUFFER_BINDING, this.statisticsBuffer.id);
             }
+            glBindBufferBase(GL_SHADER_STORAGE_BUFFER, STATISTICS_BUFFER_BINDING, this.statisticsBuffer.id);
 
             glBindBuffer(GL_DISPATCH_INDIRECT_BUFFER, viewport.drawCountCallBuffer.id);
             glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
             glDispatchComputeIndirect(0);
             glMemoryBarrier(GL_COMMAND_BARRIER_BIT|GL_SHADER_STORAGE_BARRIER_BIT);
+
+            //Feeds the draw-count clamp: the actual emitted command counts live at offsets 12/16/20
+            //(opaque/translucent/temporal, matching the renderTerrain drawCountOffsets 4*3/4*4/4*5)
+            DownloadStream.INSTANCE.download(viewport.drawCountCallBuffer, down -> this.onDrawCountsRead(
+                    MemoryUtil.memGetInt(down.address + 12),
+                    MemoryUtil.memGetInt(down.address + 16),
+                    MemoryUtil.memGetInt(down.address + 20)));
 
             if (RenderStatistics.enabled) {
                 DownloadStream.INSTANCE.download(this.statisticsBuffer, down->{
@@ -380,13 +470,17 @@ public class MDICSectionRenderer extends AbstractSectionRenderer<MDICViewport, B
     public void renderTemporal(MDICViewport viewport) {
         if (this.geometryManager.getSectionCount() == 0) return;
         //Render temporal
-        this.renderTerrain(viewport, TEMPORAL_OFFSET*5*4, 4*5, Math.min(this.geometryManager.getSectionCount(), TEMPORAL_DRAW_COUNT));
+        this.renderTerrain(viewport, TEMPORAL_OFFSET*5*4, 4*5, this.clampMaxDraws(2, Math.min(this.geometryManager.getSectionCount(), TEMPORAL_DRAW_COUNT)));
     }
 
     @Override
     public void addDebug(List<String> lines) {
         super.addDebug(lines);
-        //lines.add("SC/GS: " + this.geometryManager.getSectionCount() + "/" + (this.geometryManager.getGeometryUsed()/(1024*1024)));//section count/geometry size (MB)
+        //The clamp silently reverting is exactly the state a report needs to expose - it decides
+        //whether the resident-scaling draw cost is bounded this session or back on the formula
+        lines.add("drawClamp: " + (this.drawClampDisabled[0] ? "R" : "a") + (this.drawClampDisabled[1] ? "R" : "a") + (this.drawClampDisabled[2] ? "R" : "a")
+                + " lastWin[" + this.drawCountLastWindowMax[0] + "," + this.drawCountLastWindowMax[1] + "," + this.drawCountLastWindowMax[2] + "]"
+                + " strikes[" + this.truncationStrikes[0] + "," + this.truncationStrikes[1] + "," + this.truncationStrikes[2] + "]");
     }
 
     @Override

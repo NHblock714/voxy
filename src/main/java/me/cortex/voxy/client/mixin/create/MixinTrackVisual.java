@@ -35,18 +35,34 @@ public abstract class MixinTrackVisual implements SimpleDynamicVisual {
 
     @Override
     public void beginFrame(DynamicVisual.Context ctx) {
+        //Cheapest gates first: this runs for every track visual every frame on the Flywheel plan
+        //workers, so nothing below this line may execute while voxy rendering is off.
+        //A visual culled before the toggle flipped must still come back, hence the restore.
+        if (!VoxyConfig.CONFIG.isRenderingEnabled()) {
+            if (this.voxy$culled) {
+                this.collectConnections();
+                if (this.lightSections != null) {
+                    this.lightSections.sections(this.collectLightSections());
+                }
+                this.voxy$culled = false;
+            }
+            return;
+        }
+        //Scene-local visuals (Ponder, schematic previews) carry positions the world camera makes
+        //nonsense of - never cull them
+        if (((AccessorAbstractVisualLevel) this).voxy$getLevel() != Minecraft.getInstance().level) {
+            return;
+        }
         //Track sitting on a sable ship is at plot-grid coordinates, where a world-space distance is
-        //meaningless - leave it to sable
+        //meaningless - leave it to sable. Map probe, so it goes after the static checks.
         if (me.cortex.voxy.client.compat.ShipBorne.isShipBorne(this.pos)) {
             return;
         }
-        boolean rendering = VoxyConfig.CONFIG.isRenderingEnabled();
         Vec3 cam = ctx.camera().getPosition();
-        double reach = Minecraft.getInstance().options.getEffectiveRenderDistance() * 16.0;
         double dx = this.pos.getX() + 0.5 - cam.x;
         double dy = this.pos.getY() + 0.5 - cam.y;
         double dz = this.pos.getZ() + 0.5 - cam.z;
-        boolean beyond = rendering && (dx * dx + dy * dy + dz * dz) > reach * reach;
+        boolean beyond = (dx * dx + dy * dy + dz * dz) > me.cortex.voxy.client.compat.create.KineticCull.reachSqShared();
 
         if (beyond) {
             //Idempotent: also clears instances a BE update may have rebuilt while we were far

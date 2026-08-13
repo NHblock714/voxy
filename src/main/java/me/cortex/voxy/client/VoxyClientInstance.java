@@ -30,6 +30,14 @@ public class VoxyClientInstance extends VoxyInstance {
         this.basePath = getBasePath().normalize();
         this.config = StorageConfigUtil.getCreateStorageConfig(Config.class, c->c.version==1&&c.sectionStorageConfig!=null, ()->DEFAULT_STORAGE_CONFIG, this.basePath);
         this.updateDedicatedThreads();
+        //The three switches mean very different things - only `enabled=false` is a true zero
+        //baseline, `enableRendering=false` still ingests, stores and saves - and a memory report
+        //that does not say which one was off cannot be compared against another session's
+        var cfg = me.cortex.voxy.client.config.VoxyConfig.CONFIG;
+        me.cortex.voxy.common.Logger.info("Voxy instance: enabled=" + cfg.enabled
+                + " rendering=" + cfg.enableRendering + " ingest=" + cfg.ingestEnabled
+                + ", heap max " + (Runtime.getRuntime().maxMemory() >> 20) + " MiB"
+                + ", service threads " + cfg.serviceThreads);
     }
 
     @Override

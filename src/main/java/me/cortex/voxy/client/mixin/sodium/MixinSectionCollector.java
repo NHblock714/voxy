@@ -20,20 +20,18 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 public class MixinSectionCollector {
     @Inject(method = "visit(Lnet/caffeinemc/mods/sodium/client/render/chunk/RenderSection;I)V", at = @At("HEAD"))
     private void voxy$collectVisibleSection(RenderSection section, int flags, CallbackInfo ci) {
-        var levelRenderer = Minecraft.getInstance().levelRenderer;
-        if (levelRenderer == null || IrisUtil.irisShadowActive() || !section.isBuilt()) {
+        //One static read only: this runs for every visited section on every camera-moved frame,
+        //so the levelRenderer/shadow/system resolution lives in the per-traversal reset hook
+        var sink = me.cortex.voxy.client.core.rendering.ChunkBoundMaskSink.active;
+        if (sink == null || !section.isBuilt()) {
             return;
         }
-
-        var system = ((IGetVoxyRenderSystem) levelRenderer).voxy$getRenderSystem();
-        if (system != null) {
-            int x = section.getChunkX(), y = section.getChunkY(), z = section.getChunkZ();
-            if (VoxyCommon.IS_MINE_IN_ABYSS) {
-                int sector = (x+512)>>10;
-                x -= sector<<10;
-                y += 16+(256-32-sector*30);
-            }
-            system.chunkBoundRenderer.put(SectionPos.asLong(x, y, z));
+        int x = section.getChunkX(), y = section.getChunkY(), z = section.getChunkZ();
+        if (VoxyCommon.IS_MINE_IN_ABYSS) {
+            int sector = (x+512)>>10;
+            x -= sector<<10;
+            y += 16+(256-32-sector*30);
         }
+        sink.put(SectionPos.asLong(x, y, z));
     }
 }

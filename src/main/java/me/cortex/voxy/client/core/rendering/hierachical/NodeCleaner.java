@@ -103,9 +103,20 @@ public class NodeCleaner {
     }
 
 
+    //Hysteresis state for the residency cap: clean from cap down to 80% of it, then stand down -
+    //running the threshold saturated would make the full-node-space sorter scan a permanent
+    //per-frame cost, which is the very disease the cap treats
+    private boolean capCleanActive;
+
     public void tick(GlBuffer nodeDataBuffer) {
         this.visibilityId++;
         if (this.shouldCleanGeometry()) {
+            //Cap-driven (non-emergency) cleaning is throttled to every 4th tick: eviction is
+            //bounded to OUTPUT_COUNT per pass anyway, and the sorter walks the whole node id
+            //space each time it runs
+            if (this.capCleanActive && !this.emergencyClean() && (this.visibilityId & 3) != 0) {
+                return;
+            }
             this.outputBuffer.fill(this.nodeManager.maxNodeCount - 2);//TODO: maybe dont set to zero??
 
             this.sorter.bind();
@@ -134,15 +145,39 @@ public class NodeCleaner {
         }
     }
 
+    private boolean emergencyClean() {
+        long remaining = this.nodeManager.getGeometryCapacity() - this.nodeManager.getUsedGeometryCapacity();
+        return remaining < 256_000_000;//If less than 256 mb free memory
+    }
+
     private boolean shouldCleanGeometry() {
-        if (false) {
-            //If used more than 75% of geometry buffer
-            long used = this.nodeManager.getUsedGeometryCapacity();
-            return 3 < ((double) used) / ((double) (this.nodeManager.getGeometryCapacity() - used));
-        } else {
-            long remaining = this.nodeManager.getGeometryCapacity() - this.nodeManager.getUsedGeometryCapacity();
-            return remaining < 256_000_000;//If less than 256 mb free memory
+        //Emergency headroom clause stays unconditional - it is the buffer-exhaustion fuse
+        if (this.emergencyClean()) {
+            return true;
         }
+        //Residency caps with 20% hysteresis: on a large-VRAM card the emergency clause never fires
+        //and the resident set only ever grows for the whole session - the per-frame costs that
+        //scale with residency (indirect-count draw records above all) ratchet up with it, which is
+        //the "renderer ages, recreation fixes it" symptom. Evicted meshes re-request through the
+        //normal traversal path when seen again; 0 = uncapped (the pre-cap behaviour).
+        //Two caps because the two resources are unrelated: the draw-record cost tracks the section
+        //COUNT (~14KB each, so a byte budget lets tens of thousands through), the buffer pressure
+        //tracks bytes.
+        var cfg = me.cortex.voxy.client.config.VoxyConfig.CONFIG;
+        long capBytes = cfg.geometryResidencyCapMB > 0 ? cfg.geometryResidencyCapMB * 1024L * 1024L : Long.MAX_VALUE;
+        int capSections = cfg.geometryResidencySections > 0 ? cfg.geometryResidencySections : Integer.MAX_VALUE;
+        if (capBytes == Long.MAX_VALUE && capSections == Integer.MAX_VALUE) {
+            this.capCleanActive = false;
+            return false;
+        }
+        long used = this.nodeManager.getUsedGeometryCapacity();
+        int sections = this.nodeManager.getResidentSectionCount();
+        if (used > capBytes || sections > capSections) {
+            this.capCleanActive = true;
+        } else if (used < capBytes / 5 * 4 && sections < capSections / 5 * 4) {
+            this.capCleanActive = false;
+        }
+        return this.capCleanActive;
     }
 
     public void updateIds(IntOpenHashSet collection) {

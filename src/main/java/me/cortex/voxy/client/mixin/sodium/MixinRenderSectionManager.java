@@ -152,12 +152,18 @@ public class MixinRenderSectionManager {
     @Inject(method = "createTerrainRenderList", at = @At("HEAD"))
     private void voxy$resetVisibleSectionStream(Camera camera, Viewport viewport, int frame, boolean spectator,
                                                CallbackInfoReturnable<Boolean> cir) {
+        //Also publishes the per-traversal sink the visit hook reads: everything expensive
+        //(levelRenderer, shadow state, system lookup) is decided once here, not per section
         if (this.level.levelRenderer == null || me.cortex.voxy.client.core.util.IrisUtil.irisShadowActive()) {
+            me.cortex.voxy.client.core.rendering.ChunkBoundMaskSink.active = null;
             return;
         }
         var system = ((IGetVoxyRenderSystem)(this.level.levelRenderer)).voxy$getRenderSystem();
         if (system != null) {
             system.chunkBoundRenderer.reset();
+            me.cortex.voxy.client.core.rendering.ChunkBoundMaskSink.active = system.chunkBoundRenderer;
+        } else {
+            me.cortex.voxy.client.core.rendering.ChunkBoundMaskSink.active = null;
         }
     }
 }

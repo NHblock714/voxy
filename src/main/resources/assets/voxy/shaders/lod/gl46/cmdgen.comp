@@ -52,7 +52,17 @@ void main() {
     if (gl_GlobalInvocationID.x >= sectionCount) {
         return;
     }
-    uint sectionId = indirectLookup[gl_GlobalInvocationID.x];
+    #ifdef OPAQUE_NEAR_FIRST
+    //The traversal appends the render list coarse-to-fine, and coarse nodes are the FAR ones (near
+    //nodes descend deepest and enqueue last) - so list order is systematically far-to-near, the
+    //worst case for overdraw. Walking it backwards emits near sections' commands first and early-z
+    //rejects the far fill hidden behind them. Order is a heuristic only; the depth test owns
+    //correctness, and command slots still come from the same atomic so every lane stays dense.
+    uint listIdx = (sectionCount - 1u) - gl_GlobalInvocationID.x;
+    #else
+    uint listIdx = gl_GlobalInvocationID.x;
+    #endif
+    uint sectionId = indirectLookup[listIdx];
     SectionMeta meta = sectionData[sectionId];
     uint detail = extractDetail(meta);
     ivec3 ipos = extractPosition(meta);
@@ -61,9 +71,16 @@ void main() {
 
 
     uint dat = visibilityData[sectionId];
+    uint stamp = dat&0x7fffffffu;
 
-    //if the section was visible this frame
-    bool shouldRender = (dat&0x7fffffffu) == frameId;
+    //Visible this frame, OR visible at the previous build (one-build grace, stamp 0 = never
+    //tested, no grace). The occlusion raster is marginal exactly where vanilla terrain half-covers
+    //LOD proxy boxes - the render-distance seam - and a section whose test flips between builds
+    //would otherwise vanish for a whole hold period at a time under the command-list hold:
+    //per-frame flips were invisible when every frame rebuilt (the temporal lane papered over
+    //them the same frame), held replays turn them into multi-frame blinking. The one stale build
+    //of presence is overdraw the depth test eats, never a correctness change.
+    bool shouldRender = stamp == frameId || (stamp == prevBuildFrameId && stamp != 0u);
     bool renderTemporally = (dat&0x80000000u)==0;// means, if it was not visible last frame
 
 
@@ -76,7 +93,12 @@ void main() {
 
         uint ptr = extractQuadStart(meta);
         ivec3 relative = ipos-(baseSectionPos>>detail);
-        uint drawId = gl_GlobalInvocationID.x;
+        //drawId MUST be this section's LIST index, never the invocation id: buildtranslucents
+        //resolves the section back through indirectLookup[drawId] and the vertex stage fetches
+        //positionBuffer[baseInstance] - both break the moment drawId and the entry diverge (with
+        //OPAQUE_NEAR_FIRST they differ for every invocation). The near-first effect lives purely
+        //in which invocation grabs the earlier command slots from the atomic below.
+        uint drawId = listIdx;
 
         positionBuffer[drawId] = extractRawPos(meta);
         uvec4 counts = meta.b;

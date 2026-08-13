@@ -15,6 +15,13 @@ public class MixinShaderPackSourceNames {
         builder.add("voxy.json");
         builder.add("voxy_opaque.glsl");
         builder.add("voxy_translucent.glsl");
+        //Lite-shading contract (IrisShaderPatch#makePatch): the source provider can only hand back
+        //files that are nodes of the include graph, and the graph is built from this candidate list.
+        //Without these two names the lite lookup always returns null and silently falls back to the
+        //standard program. Candidates that a pack does not ship are skipped, so packs without lite
+        //files are unaffected.
+        builder.add("voxy_opaque_lite.glsl");
+        builder.add("voxy_translucent_lite.glsl");
         return builder;
     }
 }

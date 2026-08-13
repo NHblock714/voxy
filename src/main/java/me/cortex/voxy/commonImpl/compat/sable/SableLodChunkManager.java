@@ -142,6 +142,7 @@ public final class SableLodChunkManager {
             LongSet active = new LongOpenHashSet(desiredFull);
             active.addAll(desiredTicking);
             activeChunkLoads.put(level, active);
+            refreshAnyActive();
         } catch (NoClassDefFoundError e) {
             sableUnavailable = true;
             clearTickets(level, trackedTickingChunks, trackedFullChunks, trackedHoldingChunks);
@@ -189,6 +190,7 @@ public final class SableLodChunkManager {
 
     public static void clearTickets(ServerLevel level, LongSet trackedTickingChunks, LongSet trackedFullChunks, LongSet trackedHoldingChunks) {
         activeChunkLoads.remove(level);
+        refreshAnyActive();
         SIGNATURES.remove(level);
         clearTicketSet(level, trackedTickingChunks, ANCHOR_TICKET_DISTANCE);
         clearTicketSet(level, trackedFullChunks, FOOTPRINT_TICKET_DISTANCE);
@@ -209,9 +211,28 @@ public final class SableLodChunkManager {
         }
     }
 
+    //Fast no-ship path for the per-block/light-change dirty hook: with zero ships tracked
+    //anywhere, a map probe pair per event in every world is pure waste. Maintained at the two
+    //mutation sites below; monotone-true within a refresh round, recomputed on removal.
+    private static volatile boolean anyActiveLodChunks;
+
+    private static void refreshAnyActive() {
+        boolean any = false;
+        for (LongSet set : activeChunkLoads.values()) {
+            if (!set.isEmpty()) {
+                any = true;
+                break;
+            }
+        }
+        anyActiveLodChunks = any;
+    }
+
     //Membership in the ticketed footprint, for the light sync's dirty hook - the only chunks it ever
     //sent are the ones this manager keeps loaded. Server thread, same as every other caller here.
     public static boolean isActiveLodChunk(ServerLevel level, long chunkLong) {
+        if (!anyActiveLodChunks) {
+            return false;
+        }
         LongSet activeChunks = activeChunkLoads.get(level);
         return activeChunks != null && activeChunks.contains(chunkLong);
     }

@@ -26,14 +26,40 @@ public class VoxelIngestService {
     private static final ThreadLocal<VoxelizedSection> SECTION_CACHE = ThreadLocal.withInitial(VoxelizedSection::createEmpty);
     private final Service service;
     private record IngestSection(int cx, int cy, int cz, WorldEngine world, LevelChunk chunk, LevelChunkSection section, DataLayer blockLight, DataLayer skyLight){}
-    private final ConcurrentLinkedDeque<IngestSection> ingestQueue = new ConcurrentLinkedDeque<>();
+    //One pending job per section, latest wins: every trigger source (per-block, bulk packet, chunk
+    //lifecycle, VSS stream) can re-fire for the same section many times per second, the job reads
+    //live section state at process time anyway, and the newer light copy is the fresher one - so a
+    //busy section costs one slot instead of an unbounded pileup of ~4KB payloads, each pinning its
+    //engine ref. The deque holds keys (one node per in-map key, permits track deque nodes); the map
+    //is the single owner of the engine refs.
+    private record IngestKey(WorldEngine world, int cx, int cy, int cz){}
+    private final ConcurrentLinkedDeque<IngestKey> ingestQueue = new ConcurrentLinkedDeque<>();
+    private final java.util.concurrent.ConcurrentHashMap<IngestKey, IngestSection> pending = new java.util.concurrent.ConcurrentHashMap<>();
+    //Hard fuse over the dedup: a storage stall collapses drain throughput while arrival continues,
+    //and the payloads pin engines and chunks. Dropping the OLDEST fails toward pre-existing
+    //behavior - stale LOD that self-heals on the next update or visit; dropping newest would keep
+    //older, equally stale data instead.
+    private static final int MAX_PENDING = 10_000;
 
     public VoxelIngestService(ServiceManager pool) {
-        this.service = pool.createServiceNoCleanup(()->this::processJob, 5000, "Ingest service");
+        this(pool, null);
+    }
+
+    public VoxelIngestService(ServiceManager pool, java.util.function.BooleanSupplier saveBacklogGate) {
+        this.service = pool.createService(() -> new me.cortex.voxy.common.util.Pair<Runnable, Runnable>(this::processJob, () -> {}),
+                5000, "Ingest service", saveBacklogGate);
     }
 
     private void processJob() {
-        var task = this.ingestQueue.pop();
+        var key = this.ingestQueue.poll();
+        if (key == null) {
+            return;
+        }
+        var task = this.pending.remove(key);
+        if (task == null) {
+            //Dropped by the overflow fuse after its permit was issued
+            return;
+        }
 
         var section = task.section;
         long tIngest = me.cortex.voxy.commonImpl.VoxyProfile.begin();
@@ -73,6 +99,7 @@ public class VoxelIngestService {
             //on a laggy system cannot let the idle cleaner close the world out from under its own
             //pending ingests
             task.world.releaseRef();
+            me.cortex.voxy.commonImpl.PerfStats.ingestProcessed.increment();
             me.cortex.voxy.commonImpl.VoxyProfile.end("ingest/section", tIngest);
         }
     }
@@ -112,6 +139,43 @@ public class VoxelIngestService {
         return true;
     }
 
+    //Sole enqueue path: takes ownership of one engine ref per pending section, supersedes in place,
+    //and drops the oldest pending job past the fuse.
+    private boolean enqueueJob(WorldEngine engine, IngestSection job) {
+        engine.acquireRef();
+        var key = new IngestKey(engine, job.cx(), job.cy(), job.cz());
+        var prev = this.pending.put(key, job);
+        if (prev != null) {
+            prev.world().releaseRef();
+            me.cortex.voxy.commonImpl.PerfStats.ingestSuperseded.increment();
+            //The old deque node still names this key and drains the NEW job - no extra permit needed
+            return true;
+        }
+        if (this.pending.size() > MAX_PENDING) {
+            var oldestKey = this.ingestQueue.pollFirst();
+            if (oldestKey != null) {
+                var oldest = this.pending.remove(oldestKey);
+                if (oldest != null) {
+                    oldest.world().releaseRef();
+                    me.cortex.voxy.commonImpl.PerfStats.ingestOverflowDropped.increment();
+                }
+            }
+        }
+        this.ingestQueue.add(key);
+        me.cortex.voxy.commonImpl.PerfStats.ingestEnqueued.increment();
+        try {
+            this.service.execute();
+            return true;
+        } catch (Exception e) {
+            Logger.error("Executing had an error: assume shutting down, aborting", e);
+            return false;
+        }
+    }
+
+    public int pendingCount() {
+        return this.pending.size();
+    }
+
     public boolean enqueueIngest(WorldEngine engine, LevelChunk chunk) {
         if (!this.service.isLive()) {
             return false;
@@ -144,12 +208,7 @@ public class VoxelIngestService {
             for (var section : chunk.getSections()) {
                 i++;
                 if (section == null || !shouldIngestSection(section, chunk.getPos().x, i, chunk.getPos().z)) continue;
-                engine.acquireRef();
-                this.ingestQueue.add(new IngestSection(chunk.getPos().x, i, chunk.getPos().z, engine, chunk, section, null, null));
-                try {
-                    this.service.execute();
-                } catch (Exception e) {
-                    Logger.error("Executing had an error: assume shutting down, aborting",e);
+                if (!this.enqueueJob(engine, new IngestSection(chunk.getPos().x, i, chunk.getPos().z, engine, chunk, section, null, null))) {
                     break;
                 }
             }
@@ -192,30 +251,32 @@ public class VoxelIngestService {
             //if (blNone && slNone) {
             //    continue;
             //}
-            engine.acquireRef();
-            this.ingestQueue.add(new IngestSection(chunk.getPos().x, i, chunk.getPos().z, engine, chunk, section, bl, sl));//TODO: fixme, this is technically not safe todo on the chunk load ingest, we need to copy the section data so it cant be modified while being read
-            try {
-                this.service.execute();
-            } catch (Exception e) {
-                Logger.error("Executing had an error: assume shutting down, aborting",e);
+            //TODO: fixme, this is technically not safe todo on the chunk load ingest, we need to copy the section data so it cant be modified while being read
+            if (!this.enqueueJob(engine, new IngestSection(chunk.getPos().x, i, chunk.getPos().z, engine, chunk, section, bl, sl))) {
                 break;
             }
         }
         return true;
     }
 
+    //External producers throttle on this (a pregen mod feeding tryAutoIngestChunk reads it every
+    //batch), so it must be the queue they can actually shorten: the pending map is what the fuse
+    //bounds and what supersession collapses, while the service's permit count runs ahead of it by
+    //one for every dropped job. Service.numJobs stays the internal drain signal.
     public int getTaskCount() {
-        return this.service.numJobs();
+        return this.pending.size();
     }
 
     public void shutdown() {
         this.service.shutdown();
-        //Every queued task still holds a world ref - drain and release so worlds can close
-        while (!this.ingestQueue.isEmpty()) {
-            var task = this.ingestQueue.pop();
-            if (task != null) {
-                task.world().releaseRef();
-            }
+        //Every pending task still holds a world ref, owned by the map - drain and release so worlds
+        //can close
+        this.ingestQueue.clear();
+        var it = this.pending.entrySet().iterator();
+        while (it.hasNext()) {
+            var entry = it.next();
+            it.remove();
+            entry.getValue().world().releaseRef();
         }
     }
 
@@ -236,16 +297,7 @@ public class VoxelIngestService {
     }
 
     private boolean rawIngest0(WorldEngine engine, LevelChunk chunk, LevelChunkSection section, int x, int y, int z, DataLayer bl, DataLayer sl) {
-        engine.acquireRef();
-        this.ingestQueue.add(new IngestSection(x, y, z, engine, chunk, section, bl, sl));
-        try {
-            this.service.execute();
-            return true;
-        } catch (Exception e) {
-            //Task stays queued; shutdown's queue drain releases its ref exactly once
-            Logger.error("Executing had an error: assume shutting down, aborting",e);
-            return false;
-        }
+        return this.enqueueJob(engine, new IngestSection(x, y, z, engine, chunk, section, bl, sl));
     }
 
     //Sections that arrive without an owning chunk - VSS streams them from the server, so the client has

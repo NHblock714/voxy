@@ -50,6 +50,9 @@ public final class SeasonalSnowRefresher {
     private static volatile Run active;
 
     public static volatile long runs;
+    //End of the last pass, for the auto-trigger's cooldown: snow-depth broadcasts arrive repeatedly
+    //while it is snowing, and each pass walks the whole store
+    public static volatile long lastPassEndMillis;
     public static volatile long sectionsScanned;
     public static volatile long sectionsRewritten;
     public static volatile long voxelsFlipped;
@@ -60,6 +63,10 @@ public final class SeasonalSnowRefresher {
 
     private static final class Run {
         volatile boolean cancelled;
+        //Captured on the client thread at start: the walk sorts its keys around where the viewer
+        //stood when the pass began. A pass takes minutes; re-reading the camera mid-walk would only
+        //reshuffle the far rings.
+        double centerBlockX, centerBlockZ;
     }
 
     //Control flow, not an error - no stack trace, no suppression
@@ -82,6 +89,11 @@ public final class SeasonalSnowRefresher {
             return;
         }
         Run run = new Run();
+        var player = net.minecraft.client.Minecraft.getInstance().player;
+        if (player != null) {
+            run.centerBlockX = player.getX();
+            run.centerBlockZ = player.getZ();
+        }
         active = run;
         runs++;
         worker = new Thread(() -> run(level, engine, run), "Voxy seasonal snow refresh");
@@ -116,8 +128,12 @@ public final class SeasonalSnowRefresher {
     }
 
     public static String describe() {
+        Run run = active;
         return "status=" + status + " runs=" + runs + " sectionsScanned=" + sectionsScanned
-                + " sectionsRewritten=" + sectionsRewritten + " voxelsFlipped=" + voxelsFlipped;
+                + " sectionsRewritten=" + sectionsRewritten + " voxelsFlipped=" + voxelsFlipped
+                + (run != null ? " center=(" + (int) run.centerBlockX + "," + (int) run.centerBlockZ + ")" : "")
+                + (lastPassEndMillis != 0
+                ? " lastPassEnd=" + ((System.currentTimeMillis() - lastPassEndMillis) / 1000) + "s ago" : "");
     }
 
     /** Kicks off a pass without waiting for the season to move, for /voxy debug seasons refresh. */
@@ -182,6 +198,30 @@ public final class SeasonalSnowRefresher {
                 status = "cancelled while listing sections";
                 return;
             }
+            //The storage iterator yields keys in packed order - level, then y, then z, then x - which
+            //painted the refresh as horizontal scanlines marching across the screen: markDirty order
+            //is remesh order, because the build queue has no distance term within a LOD tier. Nearest
+            //column first, and within a column bottom-up, makes the same work read as the rings a
+            //viewer expects and puts the sections most likely on screen first.
+            int centerX = ((int) Math.floor(run.centerBlockX)) >> 5;
+            int centerZ = ((int) Math.floor(run.centerBlockZ)) >> 5;
+            keys.sort((long a, long b) -> {
+                long adx = WorldEngine.getX(a) - centerX, adz = WorldEngine.getZ(a) - centerZ;
+                long bdx = WorldEngine.getX(b) - centerX, bdz = WorldEngine.getZ(b) - centerZ;
+                int byDist = Long.compare(adx * adx + adz * adz, bdx * bdx + bdz * bdz);
+                if (byDist != 0) {
+                    return byDist;
+                }
+                int byX = Integer.compare(WorldEngine.getX(a), WorldEngine.getX(b));
+                if (byX != 0) {
+                    return byX;
+                }
+                int byZ = Integer.compare(WorldEngine.getZ(a), WorldEngine.getZ(b));
+                if (byZ != 0) {
+                    return byZ;
+                }
+                return Integer.compare(WorldEngine.getY(a), WorldEngine.getY(b));
+            });
             status = "scanning " + keys.size() + " sections";
 
             for (int i = 0; i < keys.size(); i++) {
@@ -232,6 +272,7 @@ public final class SeasonalSnowRefresher {
             status = "failed: " + t;
             Logger.error("Seasonal snow LOD refresh failed", t);
         } finally {
+            lastPassEndMillis = System.currentTimeMillis();
             sectionsScanned = scanned;
             sectionsRewritten = rewritten;
             voxelsFlipped = flipped;
@@ -351,9 +392,10 @@ public final class SeasonalSnowRefresher {
             }
         } finally {
             if (above != null) {
-                //Key order brings this section back as the primary a whole horizontal plane later -
-                //beyond LRU reach on any store large enough for the walk to matter
-                above.release(WorldSection.RELEASE_HINT_DONT_CACHE);
+                //Nearest-column-first order visits this section as the primary within the next few
+                //keys (the column is walked bottom-up), so letting it into the cache saves that
+                //acquire a storage round-trip
+                above.release();
             }
         }
         return changed;

@@ -78,19 +78,52 @@ public class BasicSectionGeometryData implements IGeometryData {
     }
 
     private long sparseCommitment = 0;//Tracks the current range of the allocated sparse buffer
+
+    //Page commitment is a driver page-table operation that stalls the command stream, so pages a
+    //frame writes must already be committed by an earlier frame. The step bounds the single-call
+    //stall; the slack must exceed the per-frame apply cap on geometry uploads times the number of
+    //lead frames wanted (2MB/frame cap, two frames of lead).
+    private static final long COMMIT_STEP = 16L << 20;
+    private static final long COMMIT_SLACK = COMMIT_STEP / 4;
+    //Commitment offset/size must be multiples of the driver page size; 64KB is the floor so a
+    //driver reporting smaller pages keeps the coarser (still valid) granularity
+    private final long commitAlign = Math.max(65536L, me.cortex.voxy.client.core.gl.Capabilities.INSTANCE.sparseBufferPageSize);
+
     public void ensureAccessable(int maxElementAccess) {
-        long size = (Integer.toUnsignedLong(maxElementAccess)*8L+65535L)&~65535L;
         //If we are a sparse buffer, ensure the memory upto the requested size is allocated
-        if (this.geometryBuffer.isSparse()) {
-            if (this.sparseCommitment < size) {//if we try to access memory outside the allocation range, allocate it
-                glBindBuffer(GL_ARRAY_BUFFER, this.geometryBuffer.id);
-                size += 65536L*1024;//increase size by 64mb to prevent driver allocation thrashing
-                glBufferPageCommitmentARB(GL_ARRAY_BUFFER, this.sparseCommitment, size-this.sparseCommitment, true);
-                glBindBuffer(GL_ARRAY_BUFFER, 0);
-                //Logger.info("Resizing sparse: " + this.sparseCommitment + ", " + (size-this.sparseCommitment));
-                this.sparseCommitment = size;
-            }
+        if (!this.geometryBuffer.isSparse()) {
+            return;
         }
+        long need = ((Integer.toUnsignedLong(maxElementAccess)*8L + this.commitAlign-1)/this.commitAlign)*this.commitAlign;
+        if (this.sparseCommitment < need) {
+            //The pages are written this frame, committing now is mandatory; include a full step so
+            //the following frames stay inside committed space
+            this.commitUpTo(need + COMMIT_STEP);
+        } else if (this.sparseCommitment - need < COMMIT_SLACK) {
+            //Within slack of the boundary: take the page-table cost now, while nothing in this
+            //frame touches the pages being committed
+            this.commitUpTo(this.sparseCommitment + COMMIT_STEP);
+        }
+    }
+
+    private void commitUpTo(long target) {
+        target = ((target + this.commitAlign-1)/this.commitAlign)*this.commitAlign;
+        //A commitment range may only end unaligned when it ends exactly at the buffer end, which
+        //this clamp produces; without it the call errors, commits nothing, and the advanced
+        //tracker would leave every later write on uncommitted pages
+        target = Math.min(target, this.geometryBuffer.size());
+        if (target <= this.sparseCommitment) {
+            return;
+        }
+        glBindBuffer(GL_ARRAY_BUFFER, this.geometryBuffer.id);
+        glBufferPageCommitmentARB(GL_ARRAY_BUFFER, this.sparseCommitment, target-this.sparseCommitment, true);
+        glBindBuffer(GL_ARRAY_BUFFER, 0);
+        this.sparseCommitment = target;
+    }
+
+    //Render-thread read (client commands execute there)
+    public long getCommittedBytes() {
+        return this.geometryBuffer.isSparse() ? this.sparseCommitment : this.geometryBuffer.size();
     }
 
     public GlBuffer getGeometryBuffer() {

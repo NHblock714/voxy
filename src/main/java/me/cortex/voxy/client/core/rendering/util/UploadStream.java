@@ -26,6 +26,14 @@ public class UploadStream {
     public static final int BASE_ALLOCATION_ALIGNEMENT = Math.max(Capabilities.INSTANCE.ssboBindingAlignment, 16);
 
     private final AllocationArena allocationArena = new AllocationArena();
+
+    public long getRingCapacityBytes() {
+        return this.allocationArena.getLimit();
+    }
+
+    public long getRingUsedBytes() {
+        return this.allocationArena.getSize();
+    }
     private final GlPersistentMappedBuffer uploadBuffer;
 
     private final Deque<UploadFrame> frames = new ArrayDeque<>();

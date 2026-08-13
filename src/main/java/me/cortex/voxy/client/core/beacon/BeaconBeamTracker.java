@@ -19,6 +19,23 @@ import net.minecraft.core.BlockPos;
 //lock.
 public final class BeaconBeamTracker {
     //32-block column key of a level-0 section
+    //Whether the tracker's current column map still claims this beacon. A re-queue can outlive the
+    //beacon it was queued for - the warmer's completion hook, the retry backstop and the budget
+    //re-queue all race removal and engine rebinds - and a solve of a ghost pos can mint a beam with
+    //no beacon under it: the solver never checks the beacon block itself, only base and column.
+    public static boolean isTracked(long pos) {
+        long[] beacons = columnToBeacons.get(columnKey(BlockPos.getX(pos) >> 5, BlockPos.getZ(pos) >> 5));
+        if (beacons == null) {
+            return false;
+        }
+        for (long p : beacons) {
+            if (p == pos) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     private static long columnKey(int sx, int sz) {
         return ((long) sx << 32) | (sz & 0xFFFFFFFFL);
     }

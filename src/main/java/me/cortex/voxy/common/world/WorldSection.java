@@ -39,9 +39,23 @@ public final class WorldSection {
 
 
     //TODO: should make it dynamically adjust the size allowance based on memory pressure/WorldSection allocation rate (e.g. is it doing a world import)
-    private static final int ARRAY_REUSE_CACHE_SIZE = 400;//500;//32*32*32*8*ARRAY_REUSE_CACHE_SIZE == number of bytes
+    //Pool cap in arrays (256KiB each; 400 = 100MiB). Mutable via the setter below, NOT read from
+    //client config here: this class runs on dedicated servers too, and touching a client config
+    //class from common code is a dist crash. The client pushes its configured budget in each frame.
+    private static volatile int ARRAY_REUSE_CACHE_SIZE = 400;//500;//32*32*32*8*ARRAY_REUSE_CACHE_SIZE == number of bytes
+
+    public static void setArrayPoolCapMiB(int miB) {
+        int arrays = Math.max(miB, 0) * 4;//4 arrays per MiB
+        if (arrays != ARRAY_REUSE_CACHE_SIZE) {
+            ARRAY_REUSE_CACHE_SIZE = arrays;
+        }
+    }
     //TODO: maybe just swap this to a ConcurrentLinkedDeque
     private static final AtomicInteger ARRAY_REUSE_CACHE_COUNT = new AtomicInteger(0);
+
+    public static int getReuseCacheCount() {
+        return ARRAY_REUSE_CACHE_COUNT.get();
+    }
     private static final ConcurrentLinkedDeque<long[]> ARRAY_REUSE_CACHE = new ConcurrentLinkedDeque<>();
 
 
@@ -137,6 +151,8 @@ public final class WorldSection {
             long[] fresh = ARRAY_REUSE_CACHE.poll();
             if (fresh == null) {
                 fresh = new long[SECTION_VOLUME];
+                //Each miss is a fresh 256KiB allocation on a worker - the pool-sizing signal
+                me.cortex.voxy.commonImpl.PerfStats.sectionArrayPoolMiss.increment();
             } else {
                 ARRAY_REUSE_CACHE_COUNT.decrementAndGet();
             }
@@ -253,9 +269,15 @@ public final class WorldSection {
             //Never materialised - nothing to return to the pool
             return;
         }
-        if (ARRAY_REUSE_CACHE_COUNT.get() < ARRAY_REUSE_CACHE_SIZE) {
+        //Reserve-then-add: check-then-add lets concurrent releasers all pass the check and push the
+        //pool past its cap
+        if (ARRAY_REUSE_CACHE_COUNT.incrementAndGet() <= ARRAY_REUSE_CACHE_SIZE) {
             ARRAY_REUSE_CACHE.add(d);
-            ARRAY_REUSE_CACHE_COUNT.incrementAndGet();
+        } else {
+            ARRAY_REUSE_CACHE_COUNT.decrementAndGet();
+            //A full pool discards to GC; sustained overflow next to sustained misses means the
+            //cap is undersized for the churn amplitude
+            me.cortex.voxy.commonImpl.PerfStats.sectionArrayPoolOverflow.increment();
         }
         this.data = null;
         //Without this the section still answers isUniform() with whatever value it held before it was

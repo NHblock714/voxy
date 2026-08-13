@@ -124,8 +124,8 @@ public class HierarchicalOcclusionTraverser {
 
             .define("RENDER_TRACKER_BINDING", RENDER_TRACKER_BINDING)
 
-            .defineIf("HAS_STATISTICS", RenderStatistics.enabled)
-            .defineIf("STATISTICS_BUFFER_BINDING", RenderStatistics.enabled, STATISTICS_BUFFER_BINDING)
+            .define("HAS_STATISTICS")
+            .define("STATISTICS_BUFFER_BINDING", STATISTICS_BUFFER_BINDING)
 
             .defineIf("TAA", taa != null)
 
@@ -142,11 +142,26 @@ public class HierarchicalOcclusionTraverser {
                 .ssboIf("STATISTICS_BUFFER_BINDING", this.statisticsBuffer);
     }
 
+    //Nodes turned away at the capacity fuse. remTLN must treat their removal as a clean no-op or
+    //the ring's bookkeeping desyncs the moment it shrinks back out of the overflow.
+    private final it.unimi.dsi.fastutil.ints.IntOpenHashSet rejectedTLNs = new it.unimi.dsi.fastutil.ints.IntOpenHashSet();
+    private long lastRejectWarnMs;
+
     private void addTLN(int id) {
-        int aid = this.topNodeCount++;//Increment buffer
-        if (this.topNodeCount > this.topNodeIds.size()/4) {
-            throw new IllegalStateException("Top level node count greater than capacity");
+        //Capacity check BEFORE any state changes: refusing the node degrades that area to plain
+        //vanilla range (no LOD), which is the fail-toward-existing-behaviour direction - the ring
+        //adds frontier columns last, so refusal naturally sheds the farthest ones. This runs on
+        //the render thread with no catch above it; a throw here takes the whole frame down.
+        if (this.topNodeCount + 1 > this.topNodeIds.size()/4) {
+            this.rejectedTLNs.add(id);
+            long now = System.currentTimeMillis();
+            if (now - this.lastRejectWarnMs > 5000) {
+                this.lastRejectWarnMs = now;
+                Logger.warn("Top level node capacity reached (" + this.topNodeCount + "), refusing new far nodes");
+            }
+            return;
         }
+        int aid = this.topNodeCount++;//Increment buffer
 
         //Use clear buffer, yes know is a bad idea, TODO: replace
         //Add the new top level node to the queue
@@ -160,13 +175,18 @@ public class HierarchicalOcclusionTraverser {
     }
 
     private void remTLN(int id) {
+        if (this.rejectedTLNs.remove(id)) {
+            return;
+        }
         //Remove id
         int idx = this.topNode2idxMapping.remove(id);
-        //Decrement count
-        this.topNodeCount--;
+        //The -1 check must precede the decrement: a phantom remove that first corrupts the count
+        //and then throws leaves the swap-remove index space desynced from the GPU buffer
         if (idx == -1) {
             throw new IllegalStateException();
         }
+        //Decrement count
+        this.topNodeCount--;
 
         //Count has already been decremented so is an exact match
         //If we are at the end of the array we dont need to do anything
@@ -235,20 +255,14 @@ public class HierarchicalOcclusionTraverser {
 
         //Perspective-stretch compensation for the subdivision metric. Equal nodes project to LARGER
         //areas at the screen edges than at the centre (planar-projection stretch, ~(1+tan^2)^1.5),
-        //so the area test starves the middle of the screen (centre mushy, edges sharp - worse at
-        //high FOV). The shader boosts each node's area by maxStretch/stretch(nodePos), lifting the
-        //centre to parity with the screen's most favourable position; edges get boost~1. These are
-        //the tan-space scale factors of the projection (1/P00, 1/P11).
+        //so a raw area test starves the middle of the screen (centre mushy, edges sharp - worse at
+        //high FOV). The shader divides each node's area by its own stretch, judging every screen
+        //position by the same angular size with minSSS calibrated to centre-of-screen quality.
+        //These are the tan-space scale factors of the projection (1/P00, 1/P11).
         float p00 = Math.max(0.0001f, viewport.vanillaProjection.m00());
         float p11 = Math.max(0.0001f, viewport.vanillaProjection.m11());
-        float invP00 = 1.0f / p00;
-        float invP11 = 1.0f / p11;
-        MemoryUtil.memPutFloat(ptr, invP00);ptr += 4;
-        MemoryUtil.memPutFloat(ptr, invP11);ptr += 4;
-        //stretchMax = stretch() evaluated at the screen edge (tan = 1/P00,1/P11): a frame constant the
-        //shader divided into every node's stretch. Precompute it here so shouldDecend drops a per-node
-        //pow() and just reads this uniform.
-        MemoryUtil.memPutFloat(ptr, (float) Math.pow(1.0 + (double) invP00 * invP00 + (double) invP11 * invP11, 1.5));ptr += 4;
+        MemoryUtil.memPutFloat(ptr, 1.0f / p00);ptr += 4;
+        MemoryUtil.memPutFloat(ptr, 1.0f / p11);ptr += 4;
     }
 
     private void bindings(Viewport<?> viewport) {
@@ -418,9 +432,9 @@ public class HierarchicalOcclusionTraverser {
     private static final long SCRATCH = MemoryUtil.nmemAlloc(32);//32 bytes of scratch memory
 
     public void addDebug(List<String> debug) {
-        //Conditionally add debug
-        if (this.topNodeCount>this.idx2topNodeMapping.length/2) {
-            debug.add("TLN#: " + this.topNodeCount);
-        }
+        //Unconditional: this one number distinguishes "the ring never shrank" from "the ring is
+        //fine, look elsewhere" in a single glance - gating it behind a near-capacity threshold
+        //hid it in exactly the investigations that needed it
+        debug.add("TLN#: " + this.topNodeCount);
     }
 }

@@ -26,7 +26,15 @@ import net.minecraft.world.level.chunk.SingleValuePalette;
 import java.util.WeakHashMap;
 
 public class WorldConversionFactory {
-    private static final boolean LITHIUM_INSTALLED = ModList.get().isLoaded("lithium");
+    //LoadingModList, not ModList: this class is initialized from the RenderSystem-init hook (the
+    //snow remapper registration references it), which runs before ModList.get() exists.
+    //LoadingModList is populated earlier and stays valid for the whole session.
+    private static final boolean LITHIUM_INSTALLED = isLoadedEarly("lithium");
+
+    private static boolean isLoadedEarly(String modId) {
+        var list = net.neoforged.fml.loading.LoadingModList.get();
+        return list != null && list.getModFileById(modId) != null;
+    }
 
     private static final class Cache {
         private final int[] biomeCache = new int[4*4*4];
@@ -126,6 +134,17 @@ public class WorldConversionFactory {
         return c;
     }
 
+    //Optional per-voxel block-id remapper (seasonal snow LOD). Must stay a direct static-field
+    //call with a primitive signature: any boxing bridge on this path costs 4096 allocations per
+    //converted section on the hottest ingest loop in the mod, whether or not the feature is on.
+    //beginSection runs once per converted section so the impl can hoist its per-section
+    //invariants out of the voxel loop.
+    public interface BlockIdRemapper {
+        void beginSection(VoxelizedSection section, Mapper mapper, ILightingSupplier lightSupplier);
+        int remap(int blockId, int voxelIdx, int biomeId);
+    }
+    public static volatile BlockIdRemapper blockIdRemapper = null;
+
     public static VoxelizedSection convert(VoxelizedSection section,
                                            Mapper stateMapper,
                                            PalettedContainer<BlockState> blockContainer,
@@ -202,6 +221,10 @@ public class WorldConversionFactory {
         final int[] domumIds = DomumOrnamentumCompat.activeSectionIds();
         final int[] copycatIds = me.cortex.voxy.commonImpl.compat.CreateCopycatCompat.activeSectionIds();
         final boolean hasDomumSectionMappings = domumIds != null || copycatIds != null;
+        final var remapper = blockIdRemapper;
+        if (remapper != null) {
+            remapper.beginSection(section, stateMapper, lightSupplier);
+        }
         var blockStorage = blockDataAccessor.voxy$getStorage();
         if (blockStorage instanceof SimpleBitStorage bStor) {
             var bDat = bStor.getRaw();
@@ -240,7 +263,11 @@ public class WorldConversionFactory {
 
                 byte light = lightSupplier.supply(i&0xF, (i>>8)&0xF, (i>>4)&0xF);
                 nonZeroCnt += (bId != 0)?1:0;
-                data[i] = Mapper.composeMappingId(light, bId, biomes[Integer.compress(i,0b1100_1100_1100)]);
+                int biomeId = biomes[Integer.compress(i,0b1100_1100_1100)];
+                if (remapper != null) {
+                    bId = remapper.remap(bId, i, biomeId);
+                }
+                data[i] = Mapper.composeMappingId(light, bId, biomeId);
             }
         } else {
             if (!(blockStorage instanceof ZeroBitStorage)) {
@@ -264,7 +291,11 @@ public class WorldConversionFactory {
                         if (domumIds != null) { int m = domumIds[i]; if (m != 0) mappedBlockId = m; }
                         if (copycatIds != null) { int m = copycatIds[i]; if (m != 0) mappedBlockId = m; }
                     }
-                    data[i] = Mapper.composeMappingId(light, mappedBlockId, biomes[Integer.compress(i,0b1100_1100_1100)]);
+                    int biomeId = biomes[Integer.compress(i,0b1100_1100_1100)];
+                    if (remapper != null) {
+                        mappedBlockId = remapper.remap(mappedBlockId, i, biomeId);
+                    }
+                    data[i] = Mapper.composeMappingId(light, mappedBlockId, biomeId);
                 }
             }
         }

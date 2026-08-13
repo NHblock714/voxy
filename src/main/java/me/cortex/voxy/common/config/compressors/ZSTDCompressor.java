@@ -48,7 +48,13 @@ public class ZSTDCompressor implements StorageCompressor {
     public MemoryBuffer decompress(MemoryBuffer saveData) {
         var decompressed = SCRATCH.get().createUntrackedUnfreeableReference();
         long size = nZSTD_decompressDCtx(DECOMPRESSION_CTX.get().ptr, decompressed.address, decompressed.size, saveData.address, saveData.size);
-        //TODO:FIXME: DONT ASSUME IT DOESNT FAIL
+        if (ZSTD_isError(size)) {
+            //An error code fed into subSize used to surface as an IllegalArgumentException from
+            //MemoryBuffer deep inside the section loader; null routes it to the adaptor's
+            //corrupt-entry handling instead
+            me.cortex.voxy.common.Logger.error("ZSTD decompression failed: " + ZSTD_getErrorName(size));
+            return null;
+        }
         return decompressed.subSize(size);
     }
 

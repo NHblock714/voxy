@@ -72,7 +72,12 @@ uvec3 makeRemainingAttributes(const in BlockModel model, const in Quad quad, uin
     uint tintColour = model.colourTint;
 
     if (modelHasBiomeLUT(model)) {
-        tintColour = colourData[tintColour + extractBiomeId(quad)];
+        //A quad flagged for the blend palette carries a box-blended border colour instead of a raw
+        //biome id; both live in colourData, blends in the reserved top region (the base must match
+        //BiomeBlendPalette.PALETTE_BASE)
+        tintColour = quadUsesBlendPalette(quad) != 0u
+                ? colourData[57344u + extractBlendIdx(quad)]
+                : colourData[tintColour + extractBiomeId(quad)];
     }
 
     #ifdef PATCHED_SHADER
@@ -150,24 +155,6 @@ void setupQuad(out QuadData quad, const in Quad rawQuad, uvec2 sPos, bool genera
     uint faceData = model.faceData[face];
     ivec2 quadSize = extractSize(rawQuad);
 
-    if (generateAttributes) {
-        quad.attributeData.x = makeQuadFlags(faceData, modelId, quadSize, model, face);
-        //Bit 7 (unused by the packed fragment flags) marks an LOD lava quad sitting inside the circular
-        //transition band, for quads.frag to discard. The vanilla lava under it owns that pixel there;
-        //outside the band the flag is not set and the LOD lava draws.
-        if (circularLodBoundaryEnabled > 0.5
-                && modelIsLava(model)
-                && length((quad.basePoint - cameraSubPos).xz) < lodBoundaryFadeEnd) {
-            quad.attributeData.x |= 1u << 7u;
-        }
-        quad.attributeData.yzw = makeRemainingAttributes(model, rawQuad, lodLevel, face);
-        if (modelUsesBalancedLeafCutout(model)) {
-            // Bits 16..31 are otherwise unused. The fragment shader combines this
-            // stable world seed with the tile coordinate of merged leaf quads.
-            quad.attributeData.w |= makeBalancedLeafSeed(rawQuad, lodPos, lodLevel, face) << 16u;
-        }
-    }
-
     vec4 faceSize = getFaceSize(faceData);
     #ifdef USE_SINGLE_TRI
     faceSize *= 2;
@@ -186,6 +173,27 @@ void setupQuad(out QuadData quad, const in Quad rawQuad, uvec2 sPos, bool genera
     quad.quadSizeAddin = faceSize.yw + quadSize - 1;
     #endif
     quad.uvCorner = faceSize.xz;
+
+    //Attributes must come AFTER the geometry fields: the lava band test below reads
+    //quad.basePoint, an out-parameter field that holds undefined data until assigned above -
+    //reading it early discards every distant lava quad or no-ops the band, depending on driver
+    if (generateAttributes) {
+        quad.attributeData.x = makeQuadFlags(faceData, modelId, quadSize, model, face);
+        //Bit 7 (unused by the packed fragment flags) marks an LOD lava quad sitting inside the circular
+        //transition band, for quads.frag to discard. The vanilla lava under it owns that pixel there;
+        //outside the band the flag is not set and the LOD lava draws.
+        if (circularLodBoundaryEnabled > 0.5
+                && modelIsLava(model)
+                && length((quad.basePoint - cameraSubPos).xz) < lodBoundaryFadeEnd) {
+            quad.attributeData.x |= 1u << 7u;
+        }
+        quad.attributeData.yzw = makeRemainingAttributes(model, rawQuad, lodLevel, face);
+        if (modelUsesBalancedLeafCutout(model)) {
+            // Bits 16..31 are otherwise unused. The fragment shader combines this
+            // stable world seed with the tile coordinate of merged leaf quads.
+            quad.attributeData.w |= makeBalancedLeafSeed(rawQuad, lodPos, lodLevel, face) << 16u;
+        }
+    }
 }
 
 vec4 getQuadCornerPos(in QuadData quad, uint cornerId) {

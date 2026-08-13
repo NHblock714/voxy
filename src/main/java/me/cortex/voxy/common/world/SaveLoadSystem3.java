@@ -80,11 +80,14 @@ public class SaveLoadSystem3 {
             throw new IllegalStateException();
         }
 
-        //TODO: note! can actually have the first (last?) byte of metadata be the storage version!
         long metadata = 0;
         metadata |= Integer.toUnsignedLong(LUT.size());//Bottom 2 bytes
         metadata |= Byte.toUnsignedLong(section.getNonEmptyChildren())<<16;//Next byte
-        //5 bytes free
+        //Version byte gates deserialization: every existing save has zero here, so version 0 IS
+        //the current format and old stores load unchanged - but a future format bump makes stale
+        //sections regenerate instead of being misparsed as native reads
+        metadata |= ((long) (STORAGE_VERSION & 0xFF))<<24;
+        //4 bytes free
 
         MemoryUtil.memPutLong(metadataPtr, metadata);
         //TODO: do hash
@@ -103,6 +106,23 @@ public class SaveLoadSystem3 {
         }
 
         final long metadata = MemoryUtil.memGetLong(ptr); ptr += 8;
+
+        //Everything below is raw native reads driven by on-disk values. A blob that echoes the
+        //right key but carries a bad body must fail HERE, into the caller's delete-and-regenerate
+        //path - an unchecked LUT index reaches ~64KiB past the scratch buffer (garbage LOD at
+        //best, a JVM-level crash with no Java stack at worst).
+        final int version = (int) ((metadata>>>24)&0xFF);
+        if (version != STORAGE_VERSION) {
+            Logger.error("Section blob version mismatch for " + section.key + ": got " + version + ", expected " + STORAGE_VERSION);
+            return false;
+        }
+        final int lutCount = (int) (metadata & 0xFFFF);
+        final long required = 16L + WorldSection.SECTION_VOLUME * 2L + lutCount * 8L;
+        if (lutCount == 0 || data.size < required) {
+            Logger.error("Corrupt section blob for " + section.key + ": lut=" + lutCount + " size=" + data.size + " required=" + required);
+            return false;
+        }
+
         section.nonEmptyChildren = (byte) ((metadata>>>16)&0xFF);
         final long lutBasePtr = ptr + WorldSection.SECTION_VOLUME * 2;
 
@@ -111,8 +131,7 @@ public class SaveLoadSystem3 {
         //entry expansion, no rescan. Existing saves benefit immediately; the on-disk format is
         //untouched. nonEmptyChildren still comes from metadata above (it cannot be derived from the
         //value - uniform stone and uniform air both need to express their own child mask).
-        final int lutSize = (int) (metadata & 0xFFFF);
-        if (lutSize == 1) {
+        if (lutCount == 1) {
             long value = MemoryUtil.memGetLong(lutBasePtr);
             section.setUniform(value);
             if (section.lvl == 0) {
@@ -124,7 +143,12 @@ public class SaveLoadSystem3 {
 
         final var blockData = section.materialize();
         for (int i = 0; i < WorldSection.SECTION_VOLUME; i++) {
-            blockData[i] = MemoryUtil.memGetLong(lutBasePtr + Short.toUnsignedLong(MemoryUtil.memGetShort(ptr)) * 8L);ptr += 2;
+            int lutIdx = Short.toUnsignedInt(MemoryUtil.memGetShort(ptr)); ptr += 2;
+            if (lutIdx >= lutCount) {
+                Logger.error("Corrupt section blob for " + section.key + ": lut index " + lutIdx + " >= " + lutCount);
+                return false;
+            }
+            blockData[i] = MemoryUtil.memGetLong(lutBasePtr + lutIdx * 8L);
         }
 
         if (section.lvl == 0) {

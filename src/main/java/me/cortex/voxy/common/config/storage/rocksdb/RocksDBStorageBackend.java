@@ -36,6 +36,27 @@ public class RocksDBStorageBackend extends StorageBackend {
     //NOTE: closes in order
     private final List<AbstractImmutableNativeReference> closeList = new ArrayList<>();
 
+    //One block cache for every open store, not one per store: this pack hops mirror/boss/sable
+    //dimensions constantly, and per-store 128MiB caches stack native memory during every transit
+    //(and for as long as a leaked ref pins an engine). Shared, the total is a flat 128MiB - identical
+    //to upstream with one store open, strictly smaller with several. Never in a closeList: the JVM
+    //reclaims it at exit, and closing it under a still-open sibling store would be a use-after-free.
+    private static volatile HyperClockCache SHARED_BLOCK_CACHE;
+
+    private static HyperClockCache sharedBlockCache() {
+        var cache = SHARED_BLOCK_CACHE;
+        if (cache == null) {
+            synchronized (RocksDBStorageBackend.class) {
+                cache = SHARED_BLOCK_CACHE;
+                if (cache == null) {
+                    cache = new HyperClockCache(128 * 1024L * 1024L, 0, 4, false);
+                    SHARED_BLOCK_CACHE = cache;
+                }
+            }
+        }
+        return cache;
+    }
+
     public RocksDBStorageBackend(String path) {
         /*
         var lockPath = new File(path).toPath().resolve("LOCK");
@@ -72,9 +93,16 @@ public class RocksDBStorageBackend extends StorageBackend {
                 .setLevelCompactionDynamicLevelBytes(true)
                 .optimizeForPointLookup(128);
 
-        var bCache = new HyperClockCache(128*1024L*1024L,0, 4, false);
+        var bCache = sharedBlockCache();
         var filter = new BloomFilter(10);
         cfWorldSecOpts.setTableFormatConfig(new BlockBasedTableConfig()
+                //Without cacheIndexAndFilterBlocks the high-priority flag below is inert, and every
+                //SST's index plus its 10-bit/key bloom sits in table-reader memory that grows with
+                //store size for as long as the store is open - the one allocation that never
+                //plateaus. In-cache they are bounded by the shared 128MiB and evict data blocks
+                //first (high priority); the pinned top level keeps lookups O(1) per file.
+                .setCacheIndexAndFilterBlocks(true)
+                .setPinTopLevelIndexAndFilter(true)
                 .setCacheIndexAndFilterBlocksWithHighPriority(true)
                 .setBlockCache(bCache)
                 .setDataBlockHashTableUtilRatio(0.75)
@@ -101,6 +129,10 @@ public class RocksDBStorageBackend extends StorageBackend {
                 .setIncreaseParallelism(2)
                 .setCreateIfMissing(true)
                 .setCreateMissingColumnFamilies(true)
+                //Bounds per-store table-reader bookkeeping (default is unlimited); 512 SSTs covers a
+                //multi-GB store, and a cold read past the cap re-opens through the cache - acceptable
+                //for a regenerable LOD store
+                .setMaxOpenFiles(512)
                 .setMaxTotalWalSize(1024*1024*128);//128 mb max WAL size
 
         List<ColumnFamilyHandle> handles = new ArrayList<>();
@@ -127,7 +159,7 @@ public class RocksDBStorageBackend extends StorageBackend {
             this.closeList.add(this.sectionReadOps);
             this.closeList.add(this.sectionWriteOps);
             this.closeList.add(filter);
-            this.closeList.add(bCache);
+            //bCache is the shared cache - never per-store closed
             this.closeList.addAll(handles);
 
             //Handles come back positionally against cfDescriptors, and the two we use are added there

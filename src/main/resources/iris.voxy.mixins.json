@@ -4,6 +4,7 @@
   "compatibilityLevel": "JAVA_21",
   "client": [
     "iris.CustomUniformsAccessor",
+    "iris.IrisRenderSystemAccessor",
     "iris.IrisRenderingPipelineAccessor",
     "iris.MixinIris",
     "iris.MixinIrisRenderingPipeline",

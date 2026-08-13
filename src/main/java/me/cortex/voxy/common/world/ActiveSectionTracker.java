@@ -197,7 +197,24 @@ public class ActiveSectionTracker {
                         WorldEngine.getZ(key),
                         this);
 
-                status = this.loader.load(section);
+                try {
+                    status = this.loader.load(section);
+                } catch (Exception e) {
+                    //A storage-layer throw (RocksDB error, corrupt blob) must not escape this
+                    //branch: the holder would sit in the cache with obj==null forever, every later
+                    //acquire of the key spins unbounded on it and the region never renders again.
+                    //Collapse to the air fallback a negative status already takes; re-ingest heals
+                    //it. The partial section may hold a pool array in an undefined state - abandon
+                    //it to GC (the pool refills with a fresh allocation) rather than returning
+                    //garbage to the pool.
+                    Logger.error("Exception loading section " + section.key + ", replacing with air", e);
+                    section = new WorldSection(WorldEngine.getLevel(key),
+                            WorldEngine.getX(key),
+                            WorldEngine.getY(key),
+                            WorldEngine.getZ(key),
+                            this);
+                    status = 1;
+                }
 
                 if (status < 0) {
                     //TODO: Instead if throwing an exception do something better, like attempting to regen
@@ -408,6 +425,23 @@ public class ActiveSectionTracker {
 
     public int getLoadedCacheCount() {
         return this.loadedSections.get();
+    }
+
+    //Engine-close path only (isLive is already false, so no acquire can race). LRU residents are
+    //freed sections still holding their 256KiB arrays; without this their reclaim waits for the
+    //engine object to become GC-garbage, which can be well past the dimension-hop window. Arrays
+    //return through the normal capped reuse pool - overflow is dropped for GC exactly like eviction.
+    public void clearSecondaryCache() {
+        long stamp = this.lruLock.writeLock();
+        try {
+            me.cortex.voxy.commonImpl.PerfStats.trackerCacheDumped.add(this.lruSecondaryCache.size());
+            for (var section : this.lruSecondaryCache.values()) {
+                section._releaseArray();
+            }
+            this.lruSecondaryCache.clear();
+        } finally {
+            this.lruLock.unlockWrite(stamp);
+        }
     }
 
     public int getSecondaryCacheSize() {

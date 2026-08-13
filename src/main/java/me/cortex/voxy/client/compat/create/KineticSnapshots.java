@@ -30,6 +30,10 @@ public final class KineticSnapshots {
     private KineticSnapshots() {}
 
     private static final int CAPTURES_PER_TICK = 64;
+    //Wall-clock ceiling for a single tick's capture + rebake work; the count budgets bound work
+    //units, this bounds what the frame actually pays when the units run dense (a capture is a full
+    //BER pass, a rebake a whole-bucket re-mesh and upload).
+    private static final long TICK_BUDGET_NANOS = 2_000_000;
     //Shared by the queue drain and the sweep: a capture is a full BER pass plus light sampling, and an
     //unbounded batch of them (first sweep contact with a dense factory) is a frame hitch. The queue
     //drains first; the sweep spends the remainder.
@@ -55,7 +59,8 @@ public final class KineticSnapshots {
                 net.minecraft.core.Direction.Axis axis, float angleRad, int sky, int block,
                 boolean bakeJson, net.minecraft.core.Direction shaftHalfFacing,
                 net.minecraft.core.Direction bearingFacing, float bearingTopAngleRad, boolean woodenTop,
-                float[][] chains, float[] bnbChain, float[] generic, boolean gantryCarriage) {
+                float[][] chains, float[] bnbChain, float[] generic, boolean gantryCarriage,
+                long captureGameTime) {
 
         //A snap with no geometry sources is a negative-capture record: this state at this position
         //yields nothing to bake. Only the SKIP path stores these - a real capture always carries at
@@ -266,6 +271,7 @@ public final class KineticSnapshots {
             resident -= bucket.mesh == null ? 0 : bucket.mesh.gpuByteSize();
             for (BlockPos snapPos : bucket.geoms.keySet()) {
                 BEARING_POSITIONS.remove(snapPos);
+                ANCHOR_RECAPTURED.remove(snapPos);
             }
             bucket.close();
             me.cortex.voxy.commonImpl.PerfStats.kineticSnapshotEvicted.increment();
@@ -322,6 +328,7 @@ public final class KineticSnapshots {
                     PRIORITY_REBAKE.add(sectionKey(pos));
             }
                 BEARING_POSITIONS.remove(pos);
+                ANCHOR_RECAPTURED.remove(pos);
             }
 
 
@@ -330,10 +337,18 @@ public final class KineticSnapshots {
             double reachSq = reach * reach;
             KineticCull.cachedReachSq = reachSq;
             captureBudget = CAPTURES_PER_TICK;
+            //Wall-clock cap over the count budgets: this runs on the thread that must produce the
+            //next frame, and the count budgets alone let one tick absorb 64 full BER passes plus 4
+            //bucket uploads - a visible hitch that recurs at the sweep period whenever the reach
+            //boundary is crossing machinery. Progress is still guaranteed: the deadline is tested
+            //before each unit of work, never after, so the first capture and the first rebake of a
+            //tick always run.
+            long deadline = System.nanoTime() + TICK_BUDGET_NANOS;
             //The queue leaves the sweep a floor of the budget: a busy factory refills the queue every
             //tick, and a sweep that never gets a slot parks its cursor on the same chunk forever (the
             //mid-slice rewind) - ghost reclaim and recapture both stall behind it.
-            while (captureBudget > 16 && (pos = CAPTURE_QUEUE.poll()) != null) {
+            while (captureBudget > 16 && System.nanoTime() < deadline
+                    && (pos = CAPTURE_QUEUE.poll()) != null) {
                 //Raced back inside the live path between the queue and this tick: the visual draws it
                 if (pos.distToCenterSqr(cam.x, cam.y, cam.z) < reachSq) {
                     continue;
@@ -344,11 +359,12 @@ public final class KineticSnapshots {
             }
             }
 
-            sweep(mc, level, cam.x, cam.y, cam.z, reachSq);
+            sweep(mc, level, cam.x, cam.y, cam.z, reachSq, deadline);
 
             int rebaked = 0;
             var prio = PRIORITY_REBAKE.iterator();
-            while (prio.hasNext() && rebaked < REBAKES_PER_TICK) {
+            while (prio.hasNext() && rebaked < REBAKES_PER_TICK
+                    && (rebaked == 0 || System.nanoTime() < deadline)) {
                 Bucket bucket = SECTIONS.get(prio.nextLong());
                 prio.remove();
                 if (bucket != null && bucket.dirty) {
@@ -358,12 +374,16 @@ public final class KineticSnapshots {
                 }
             }
             for (Bucket bucket : SECTIONS.values()) {
-                if (!bucket.dirty || rebaked >= REBAKES_PER_TICK) {
+                if (!bucket.dirty || rebaked >= REBAKES_PER_TICK
+                        || (rebaked > 0 && System.nanoTime() >= deadline)) {
                     continue;
             }
                 bucket.dirty = false;
                 rebake(bucket);
                 rebaked++;
+            }
+            if (rebaked > 0) {
+                recountSnapshots();
             }
             //Distance-bound the snapshot store. Leave-behinds in unloaded chunks are kept frozen on
             //purpose, but the sweep only visits LOADED chunks, so without this a long session across a
@@ -383,6 +403,7 @@ public final class KineticSnapshots {
                     Bucket bucket = entry.getValue();
                     for (BlockPos snapPos : bucket.geoms.keySet()) {
                         BEARING_POSITIONS.remove(snapPos);
+                        ANCHOR_RECAPTURED.remove(snapPos);
                     }
                     bucket.close();
                     me.cortex.voxy.commonImpl.PerfStats.kineticSnapshotEvicted.increment();
@@ -412,7 +433,7 @@ public final class KineticSnapshots {
         private static int sweepCursor;
         private static final int SWEEP_CHUNKS_PER_TICK = 48;
 
-        private static void sweep(Minecraft mc, ClientLevel level, double camX, double camY, double camZ, double reachSq) {
+        private static void sweep(Minecraft mc, ClientLevel level, double camX, double camY, double camZ, double reachSq, long deadline) {
             int radius = mc.options.getEffectiveRenderDistance() + 2;
             int diameter = radius * 2 + 1;
             int total = diameter * diameter;
@@ -455,6 +476,7 @@ public final class KineticSnapshots {
                         }
                         bucket.dirty = true;
                         BEARING_POSITIONS.remove(snapPos);
+                        ANCHOR_RECAPTURED.remove(snapPos);
                         return true;
                     });
                     //A ghost dropped here floats over loaded terrain until the rebake lands
@@ -489,16 +511,22 @@ public final class KineticSnapshots {
                                 PRIORITY_REBAKE.add(sectionKey(bePos));
                             }
                             BEARING_POSITIONS.remove(bePos);
+                            ANCHOR_RECAPTURED.remove(bePos);
                         }
                     }
                     continue;
                 }
-                if (hasCurrentSnap(bePos, kbe.getBlockState())) {
+                if (hasCurrentSweepSnap(level, bePos, kbe.getBlockState())) {
                     continue;
                 }
-                if (captureBudget <= 0) {
+                //Deadline gates only the captures, never the reclaim scans above - reclaim is cheap
+                //and the ghost fixes depend on it staying live every tick.
+                if (captureBudget <= 0 || System.nanoTime() >= deadline) {
                     //Budget spent mid-slice: re-run this chunk next tick instead of waiting out a full
                     //pass. Already-captured positions dedup on re-entry, so the redo is cheap.
+                    if (captureBudget > 0) {
+                        me.cortex.voxy.commonImpl.PerfStats.kineticDeadlineCut.increment();
+                    }
                     sweepCursor--;
                     return;
                 }
@@ -529,6 +557,37 @@ public final class KineticSnapshots {
         }
         Snap prior = bucket.geoms.get(pos);
         return prior != null && prior.state() == state;
+    }
+
+    //The sweep's variant adds a cooldown for same-block state flips: a redstone-clocked machine
+    //(gearshift POWERED, sequenced gearshift STATE) beyond the reach changes state every clock edge,
+    //and the strict identity test would re-capture and re-bake it on every sweep pass - a permanent
+    //once-per-second work generator per flickering machine. Same block at a different state defers
+    //recapture until the snap is old enough; a different BLOCK recaptures immediately, because the
+    //stored state is a hollow record's retry key. The frozen angle is offset-only (t=0), independent
+    //of when the capture runs, so deferral cannot break drivetrain phase. The unload path keeps the
+    //strict test: last chance before the BE vanishes, freshness wins there.
+    private static final long STATE_FLIP_COOLDOWN_TICKS = 100;
+
+    private static boolean hasCurrentSweepSnap(ClientLevel level, BlockPos pos,
+                                               net.minecraft.world.level.block.state.BlockState state) {
+        Bucket bucket = SECTIONS.get(sectionKey(pos));
+        if (bucket == null) {
+            return false;
+        }
+        Snap prior = bucket.geoms.get(pos);
+        if (prior == null) {
+            return false;
+        }
+        if (prior.state() == state) {
+            return true;
+        }
+        if (prior.state().getBlock() == state.getBlock()
+                && level.getGameTime() - prior.captureGameTime() < STATE_FLIP_COOLDOWN_TICKS) {
+            me.cortex.voxy.commonImpl.PerfStats.kineticStateRecaptureDeferred.increment();
+            return true;
+        }
+        return false;
     }
 
     //Horizontal path: the chunk is unloading and its BEs are about to vanish - capture immediately.
@@ -677,7 +736,8 @@ public final class KineticSnapshots {
                 //the retry key: a different block at this position re-evaluates.
                 Bucket bucket = SECTIONS.computeIfAbsent(sectionKey(pos), k -> new Bucket());
                 Snap prior = bucket.geoms.put(pos.immutable(),
-                        new Snap(state, null, 0.0f, 0, 0, false, null, null, 0.0f, false, null, null, null, false));
+                        new Snap(state, null, 0.0f, 0, 0, false, null, null, 0.0f, false, null, null, null, false,
+                                level.getGameTime()));
                 if (prior != null && !prior.hollow()) {
                     bucket.dirty = true; //the old state had geometry; rebuild the mesh without it
                 }
@@ -705,7 +765,7 @@ public final class KineticSnapshots {
             bucket.geoms.put(pos.immutable(), new Snap(state, axis, angle,
                     skyLight, blockLight,
                     bakeJson, shaftHalfFacing, bearingFacing, bearingTopAngle, woodenTop, chains, bnbChain, generic,
-                    gantryCarriage));
+                    gantryCarriage, level.getGameTime()));
             bucket.dirty = true;
             if (bearingFacing != null) {
                 BEARING_POSITIONS.add(pos.immutable());
@@ -994,6 +1054,12 @@ public final class KineticSnapshots {
         } catch (Throwable e) {
             builder.discard();
         }
+    }
+
+    //Diagnostics only. Once per tick after the rebake loop, not per rebake: the walk is O(every snap
+    //in every bucket), and four of them a tick was a measurable slice of the tick budget for a number
+    //nothing but the debug overlay reads.
+    private static void recountSnapshots() {
         int count = 0;
         for (Bucket b : SECTIONS.values()) {
             for (Snap s2 : b.geoms.values()) {

@@ -24,6 +24,12 @@ public class RenderResourceReuse {
     private static final ArrayList<GlTexture> MODEL_TEXTURE_CACHE = new ArrayList<>();
     private static final ArrayList<GlBuffer> GEOMETRY_BUFFER_CACHE = new ArrayList<>();
 
+    //atlas/geometry cache depths for the memory report; "0/0" while in-world means both giants are
+    //checked out (healthy), anything held here while a system is live is a stranded copy
+    public static synchronized String cacheDepths() {
+        return MODEL_TEXTURE_CACHE.size() + "/" + GEOMETRY_BUFFER_CACHE.size();
+    }
+
     //Clears and frees any cached resources (used when the entire instance is shutdown)
     public static void clearResources() {
         MODEL_TEXTURE_CACHE.forEach(TrackedObject::free);

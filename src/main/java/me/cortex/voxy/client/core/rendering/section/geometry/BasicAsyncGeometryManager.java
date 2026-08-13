@@ -138,6 +138,16 @@ public class BasicAsyncGeometryManager implements IGeometryManager {
         return this.heapRemoveUploads;
     }
 
+    //Stop-path only: buffers the worker staged after the render thread's last merge tick are
+    //otherwise never freed. Caller must have joined the worker thread first.
+    public void freePendingUploads() {
+        for (var buf : this.heapUploads.values()) {
+            buf.free();
+        }
+        this.heapUploads.clear();
+        this.heapRemoveUploads.clear();
+    }
+
     public int getSectionCount() {
         return this.allocationSet.getCount();
     }

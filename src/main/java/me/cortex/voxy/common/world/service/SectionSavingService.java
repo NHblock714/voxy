@@ -29,6 +29,11 @@ public class SectionSavingService {
     //world import piles hundreds of MB of native memory into one write.
     private static final int MAX_BATCH_SECTIONS = 64;
     private static final long MAX_BATCH_BYTES = 4L << 20;
+    //One processJob call handles at most this many sections. Without the bound a single call
+    //drains the whole backlog synchronously on whatever thread enqueued past the soft cap - a
+    //5000-section stall measured in seconds - and the self-help loop in enqueueSave loses its
+    //between-rounds threshold re-check. Every caller that needs more loops around processJob.
+    private static final int MAX_SECTIONS_PER_CALL = MAX_BATCH_SECTIONS * 4;
 
     //Set while this thread is inside processJob. finishBatch releases the sections it just wrote, and a
     //release can run the section straight back through tryUnload -> saveSection -> enqueueSave; without
@@ -60,6 +65,7 @@ public class SectionSavingService {
             if (outermost) {
                 DRAINING.set(Boolean.TRUE);
             }
+            int handled = 0;
             while (true) {
                 //A batch may only ever hold one engine's sections: the queue is shared across worlds,
                 //and a mixed batch would write one dimension's sections into another's database.
@@ -75,6 +81,9 @@ public class SectionSavingService {
                 this.stageSection(batch, staged, task.section());
                 if (staged.size() >= MAX_BATCH_SECTIONS || batch.dataSize() >= MAX_BATCH_BYTES) {
                     this.finishBatch(batch, staged);
+                }
+                if (++handled >= MAX_SECTIONS_PER_CALL) {
+                    break;
                 }
                 //Every extra entry consumed must take its permit with it, or the queue length and the
                 //service's job count drift apart (blockTillEmpty would then hang on shutdown)
@@ -133,19 +142,37 @@ public class SectionSavingService {
             batch.commit();
             me.cortex.voxy.commonImpl.PerfStats.saveBatchCommits.increment();
             me.cortex.voxy.commonImpl.PerfStats.saveBatchSections.add(staged.size());
+            this.consecutiveCommitFailures = 0;
         } catch (Exception e) {
             committed = false;
-            Logger.error("Voxy saver failed to commit a batch of " + staged.size() + " sections", e);
+            long failures = ++this.consecutiveCommitFailures;
+            me.cortex.voxy.commonImpl.PerfStats.saveCommitFailed.increment();
+            //A failing store re-queues every section it could not write, which comes straight back
+            //here - on a full disk that is an unbounded retry loop with one log line per pass. Log
+            //on a widening schedule instead of every batch.
+            if (failures == 1 || failures == 10 || failures == 100 || failures % 1000 == 0) {
+                Logger.error("Voxy saver failed to commit a batch of " + staged.size()
+                        + " sections (consecutive failure " + failures + ")", e);
+            }
         }
+        //Past this many consecutive failures the store is not coming back on its own, and holding
+        //the sections costs 256KiB each while the retry accomplishes nothing. LOD data is
+        //regenerable - dropping it is the same bargain the ingest overflow fuse makes.
+        boolean giveUp = !committed && this.consecutiveCommitFailures > 3;
         for (var section : staged) {
-            if (!committed) {
+            if (!committed && !giveUp) {
                 //Dirty was already cleared, so re-mark it: tryUnload's save branch will requeue it
                 section.markDirty();
             }
             section.release();
         }
+        if (giveUp) {
+            me.cortex.voxy.commonImpl.PerfStats.saveDroppedAfterRetries.add(staged.size());
+        }
         staged.clear();
     }
+
+    private volatile long consecutiveCommitFailures;
 
     /*
     public void enqueueSave(WorldSection section) {
@@ -161,6 +188,13 @@ public class SectionSavingService {
         if (section.exchangeIsInSaveQueue(true)) {
             if (!sectionAlreadyAcquired) {
                 section.acquire(); //Acquire the section for use
+            }
+
+            if (nonBlocking) {
+                //Caller holds a lock and cannot drain here. Bounded by the distinct-live-dirty
+                //section count (exchangeIsInSaveQueue admits each section once), but counted so the
+                //size of that bypass is a number rather than a guess.
+                me.cortex.voxy.commonImpl.PerfStats.saveEnqueuedNonBlocking.increment();
             }
 
             //Hard limit the save count to prevent OOM. Skipped while this thread is already draining -

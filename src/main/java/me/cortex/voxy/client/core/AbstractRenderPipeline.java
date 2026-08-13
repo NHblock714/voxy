@@ -3,6 +3,7 @@ package me.cortex.voxy.client.core;
 import me.cortex.voxy.client.RenderStatistics;
 import me.cortex.voxy.client.TimingStatistics;
 import me.cortex.voxy.client.VoxyClient;
+import me.cortex.voxy.client.config.VoxyConfig;
 import me.cortex.voxy.client.core.model.ModelBakerySubsystem;
 import me.cortex.voxy.client.core.rendering.Viewport;
 import me.cortex.voxy.client.core.rendering.hierachical.AsyncNodeManager;
@@ -54,6 +55,15 @@ public abstract class AbstractRenderPipeline extends TrackedObject {
 
     protected AbstractSectionRenderer<?,?> sectionRenderer;
 
+    //Command-list hold state (experimentalCmdListHold). lastBuildMVP is the camera matrix the
+    //current command lists were built for; holds are only legal while the live MVP still equals it
+    //exactly. hasBuiltCommandLists guards the first frame - the identity-initialised matrix must
+    //never pass the compare on its own.
+    private final Matrix4f lastBuildMVP = new Matrix4f();
+    private boolean hasBuiltCommandLists;
+    private int consecutiveHolds;
+    private long heldFrameCount, builtFrameCount;
+
     private final FullscreenBlit depthStencilSetup;
     private final FullscreenBlit sentinelRestore;
 
@@ -84,6 +94,28 @@ public abstract class AbstractRenderPipeline extends TrackedObject {
         this.sentinelRestore = new FullscreenBlit(properties, "voxy:post/fullscreen2.vert", "voxy:post/depth0.frag");
     }
 
+    //Clears texture units and sampler bindings after a voxy pass. Pipeline-virtual because clearing
+    //the GL state alone is not enough under iris: it tracks sampler bindings in its own array, and a
+    //stale entry there makes it skip the rebind next pass - the iris pipeline override also zeroes
+    //that array.
+    public void clearTextureAndSamplerBindings(int count) {
+        for (int i = 0; i < count; i++) {
+            com.mojang.blaze3d.platform.GlStateManager._activeTexture(com.mojang.blaze3d.platform.GlConst.GL_TEXTURE0 + i);
+            com.mojang.blaze3d.platform.GlStateManager._bindTexture(0);
+            org.lwjgl.opengl.GL33.glBindSampler(i, 0);
+        }
+    }
+
+    //Ctor-failure teardown for subclasses: everything the super ctor and the fb field initializer
+    //allocated, minus the section renderer - no subclass has set one by any ctor throw point, so
+    //free0() proper would fail on it. Marks the tracked ref freed so the leak cleaner stays quiet.
+    protected final void freeConstructorAllocated() {
+        this.fb.free();
+        this.depthStencilSetup.delete();
+        this.sentinelRestore.delete();
+        super.free0();
+    }
+
     //Allows pipelines to configure model baking system
     public void setupExtraModelBakeryData(ModelBakerySubsystem modelService) {}
 
@@ -111,20 +143,42 @@ public abstract class AbstractRenderPipeline extends TrackedObject {
         GPUTiming.INSTANCE.marker("RO");
         rs.renderOpaque(viewport);
         var occlusionDebug = VoxyClient.getOcclusionDebugState();
+        //Defaults true so the occlusion-debug paths (which bypass innerPrimaryWork by design, and
+        //already freeze frameId upstream) keep their existing behaviour untouched
+        boolean built = true;
         if (occlusionDebug==0) {
             GPUTiming.INSTANCE.marker("I");
-            this.innerPrimaryWork(viewport, depthTexture);
+            built = this.innerPrimaryWork(viewport, depthTexture);
             GPUTiming.INSTANCE.marker();
         }
 
-        if (occlusionDebug<=1) {
-            TimingStatistics.G.start();
-            rs.buildDrawCalls(viewport);
-            TimingStatistics.G.stop();
-        }
+        if (built) {
+            if (occlusionDebug<=1) {
+                TimingStatistics.G.start();
+                rs.buildDrawCalls(viewport);
+                TimingStatistics.G.stop();
+            }
 
-        GPUTiming.INSTANCE.marker("TP");
-        rs.renderTemporal(viewport);
+            GPUTiming.INSTANCE.marker("TP");
+            rs.renderTemporal(viewport);
+
+            //Advanced only after buildDrawCalls consumed the old value: the occlusion raster inside
+            //it compares visibility stamps against the PREVIOUS build's frameId, then restamps with
+            //the current one - which becomes the baseline for the next build.
+            viewport.prevBuildFrameId = viewport.frameId;
+            this.lastBuildMVP.set(viewport.MVP);
+            this.hasBuiltCommandLists = true;
+            this.consecutiveHolds = 0;
+            this.builtFrameCount++;
+        } else {
+            //Held frame: renderOpaque above already replayed the previous command lists (they draw
+            //the identical scene - same camera, same geometry), and the translucent draw below
+            //replays its lane the same way. The temporal pass is skipped outright: it exists to
+            //paper over sections whose visibility CHANGED this frame, and on a held frame nothing
+            //did.
+            this.consecutiveHolds++;
+            this.heldFrameCount++;
+        }
 
         rs.postOpaquePreperation(viewport);
 
@@ -267,11 +321,25 @@ public abstract class AbstractRenderPipeline extends TrackedObject {
         glDisable(GL_DEPTH_TEST);
     }
 
-    protected void innerPrimaryWork(Viewport<?> viewport, int depthBuffer) {
+    //Runs the per-frame dynamic work and returns whether the command lists must be rebuilt this
+    //frame. With the experimental command-list hold enabled, a frame where the camera has not
+    //moved since the last build and no worker results were consumed skips the hi-z rebuild, the
+    //traversal dispatches and (in the caller) command generation + the temporal pass, reusing the
+    //previous build's command lists verbatim. Everything that feeds the workers still ticks every
+    //frame - only the GPU-side rebuild is elided. Returns true (build) unless every hold condition
+    //passes, so the failure direction is always the ordinary per-frame path.
+    protected boolean innerPrimaryWork(Viewport<?> viewport, int depthBuffer) {
+        //All hold conditions are evaluated against the LAST BUILD, not the last frame: the command
+        //lists being reused are the last build's, so drift accumulates against that baseline.
+        //The MVP compare is exact - any camera motion, fov change or shader-pack jitter fails it
+        //and forces a build, which is the safe direction.
+        boolean holdEligible = VoxyConfig.CONFIG.experimentalCmdListHold
+                && this.hasBuiltCommandLists
+                && this.consecutiveHolds < VoxyConfig.CONFIG.cmdListHoldMaxFrames - 1
+                && viewport.MVP.equals(this.lastBuildMVP);
 
-        //Compute the mip chain
-        viewport.hiZBuffer.buildMipChain(depthBuffer, viewport.width, viewport.height);
-
+        boolean built = false;
+        boolean mipChainBuilt = false;
         do {
             TimingStatistics.main.stop();
             TimingStatistics.dynamic.start();
@@ -281,24 +349,50 @@ public abstract class AbstractRenderPipeline extends TrackedObject {
             DownloadStream.INSTANCE.tick();
             TimingStatistics.D.stop();
 
-            this.nodeManager.tick(this.traversal.getNodeBuffer(), this.nodeCleaner);
+            //Ticked on held frames too - this drains worker results and issues the geometry
+            //uploads. Consuming ANY result set is a hard build trigger, not a heuristic: commands
+            //bake baseVertex offsets into the geometry arena, and the moves/frees in a consumed
+            //batch leave held command lists pointing at stale memory.
+            if (this.nodeManager.tick(this.traversal.getNodeBuffer(), this.nodeCleaner)) {
+                holdEligible = false;
+            }
             //glFlush();
 
-            this.nodeCleaner.tick(this.traversal.getNodeBuffer());//Probably do this here??
+            if (!holdEligible) {
+                //The cleaner evicts resident geometry, which invalidates commands the same way -
+                //it only runs on frames that rebuild them.
+                this.nodeCleaner.tick(this.traversal.getNodeBuffer());//Probably do this here??
+            }
 
             TimingStatistics.dynamic.stop();
             TimingStatistics.main.start();
 
-            glMemoryBarrier(GL_FRAMEBUFFER_BARRIER_BIT | GL_PIXEL_BUFFER_BARRIER_BIT);
+            if (!holdEligible) {
+                if (!mipChainBuilt) {
+                    //Compute the mip chain
+                    viewport.hiZBuffer.buildMipChain(depthBuffer, viewport.width, viewport.height);
+                    mipChainBuilt = true;
+                }
 
-            TimingStatistics.F.start();
-            this.traversal.doTraversal(viewport);
-            TimingStatistics.F.stop();
-        } while (this.frexStillHasWork.getAsBoolean());
+                glMemoryBarrier(GL_FRAMEBUFFER_BARRIER_BIT | GL_PIXEL_BUFFER_BARRIER_BIT);
+
+                TimingStatistics.F.start();
+                this.traversal.doTraversal(viewport);
+                TimingStatistics.F.stop();
+                built = true;
+            }
+
+            if (!this.frexStillHasWork.getAsBoolean()) break;
+            //frex signals it needs further traversal passes; a held frame never traverses, so
+            //honouring the hold here would spin this loop with no way for that work to finish
+            holdEligible = false;
+        } while (true);
+        return built;
     }
 
     @Override
     protected void free0() {
+        me.cortex.voxy.client.compat.create.DistantShaders.onPipelineFreed(this);
         this.fb.free();
         this.sectionRenderer.free();
         this.depthStencilSetup.delete();
@@ -310,6 +404,10 @@ public abstract class AbstractRenderPipeline extends TrackedObject {
         this.sectionRenderer.addDebug(debug);
         this.traversal.addDebug(debug);
         RenderStatistics.addDebug(debug);
+        if (VoxyConfig.CONFIG.experimentalCmdListHold) {
+            debug.add("cmdHold: held " + this.heldFrameCount + " built " + this.builtFrameCount
+                    + " run " + this.consecutiveHolds);
+        }
     }
 
     //Binds the framebuffer and any other bindings needed for rendering

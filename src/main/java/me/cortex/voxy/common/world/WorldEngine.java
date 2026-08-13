@@ -153,6 +153,10 @@ public class WorldEngine {
         return this.sectionTracker.getLoadedCacheCount();
     }
 
+    public int getSecondaryCacheCount() {
+        return this.sectionTracker.getSecondaryCacheSize();
+    }
+
     public void free() {
         if (!this.isLive) throw new IllegalStateException();
         this.isLive = false;
@@ -160,6 +164,12 @@ public class WorldEngine {
         //Cannot free while there are loaded sections
         if (this.sectionTracker.getLoadedCacheCount() != 0) {
             throw new IllegalStateException();
+        }
+
+        try {
+            this.sectionTracker.clearSecondaryCache();
+        } catch (Exception e) {
+            Logger.error(e);
         }
 
         this.thisTracker.free();

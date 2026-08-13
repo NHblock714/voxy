@@ -23,6 +23,12 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 public abstract class MixinLevelRenderer implements IGetVoxyRenderSystem {
     @Shadow private @Nullable ClientLevel level;
     @Unique private VoxyRenderSystem renderer;
+    //True while a VoxyRenderSystem is being constructed on this stack. Iris can call allChanged()
+    //synchronously from inside that construction when LOD-pipeline creation trips its shader
+    //fallback - without the guard the re-entry builds a complete second render system and one of
+    //the two is orphaned: an acquired world ref that never releases (world exit hangs) and the
+    //engine's single dirty-callback slot stolen from the live renderer (LOD stops re-meshing).
+    @Unique private boolean voxy$creatingRenderer;
 
     @Override
     public VoxyRenderSystem voxy$getRenderSystem() {
@@ -66,6 +72,10 @@ public abstract class MixinLevelRenderer implements IGetVoxyRenderSystem {
 
     @Override
     public void voxy$createRenderer() {
+        if (this.voxy$creatingRenderer) {
+            Logger.warn("Suppressed re-entrant voxy renderer creation");
+            return;
+        }
         if (this.renderer != null) throw new IllegalStateException("Cannot have multiple renderers");
         if (!VoxyConfig.CONFIG.enabled) {
             Logger.info("Not creating renderer due to disabled");
@@ -89,14 +99,23 @@ public abstract class MixinLevelRenderer implements IGetVoxyRenderSystem {
             Logger.error("Null world selected");
             return;
         }
+        boolean fallbackToNoShaders = false;
+        this.voxy$creatingRenderer = true;
         try {
             this.renderer = new VoxyRenderSystem(world, instance.getServiceManager());
         } catch (RuntimeException e) {
             if (IrisUtil.irisShaderPackEnabled()) {
-                IrisUtil.disableIrisShaders();
+                fallbackToNoShaders = true;
             } else {
                 throw e;
             }
+        } finally {
+            this.voxy$creatingRenderer = false;
+        }
+        if (fallbackToNoShaders) {
+            //After the flag clears: the allChanged this triggers is the load-bearing re-entry
+            //that builds the shaderless fallback renderer
+            IrisUtil.disableIrisShaders();
         }
         instance.updateDedicatedThreads();
     }

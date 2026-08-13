@@ -52,7 +52,9 @@ void main() {
 
     //Me when data race condition between visibilityData in the vert shader and frag shader
     uint previous = visibilityData[sid]&0x7fffffffu;
-    bool wasVisibleLastFrame = previous==(frameId-1);
+    //Compared against the previous BUILD frame, not frameId-1: the command-list hold lets frames
+    //pass without builds, and the stamp in visibilityData is from whenever the last build ran
+    bool wasVisibleLastFrame = previous==prevBuildFrameId;
     value = (frameId&0x7fffffffu)|(uint(wasVisibleLastFrame)<<31);//Encode if it was visible last frame
 }
 

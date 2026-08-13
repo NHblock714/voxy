@@ -3,34 +3,52 @@ package me.cortex.voxy.client.core.model.bakery;
 import net.caffeinemc.mods.sodium.api.util.ColorMixer;
 import org.joml.Matrix4f;
 import org.joml.Vector3f;
+import org.joml.Vector3i;
 import org.joml.Vector4f;
 import org.lwjgl.system.MemoryUtil;
 
 import java.util.Arrays;
 
+//Rasterizes in integer fixed point rather than float. A quad is two triangles sharing a diagonal,
+//and float edge functions can disagree about pixels on that shared edge between the two passes -
+//seam pixels that are missed or double-covered, differently per CPU/JIT. Integer edges make the
+//coverage test exact: the strict >0 first triangle plus the >=0 second cover the diagonal exactly
+//once, and the bake output is bit-identical everywhere.
 public class SoftwareRasterizer {
+    //9 integer bits = +-512 of screen-space COORDINATE range, which is what a projected vertex has
+    //to fit in: a model reaches well past its own block, so the headroom over targetSize is the
+    //point of the setting. Edge products are computed in long precisely so that they never have to
+    //fit here - an int product wraps at a ~23px span and flips the area's sign, which culls both
+    //triangles and bakes the quad as nothing.
+    private static final int INTEGER_BITS = 9;
+    private static final int TOTAL_INTEGER_BITS = INTEGER_BITS + 1;
+    private static final int FIXED_POINT_BITS = 32 - TOTAL_INTEGER_BITS;
+    private static final long FIXED_POINT_BIT_SCALE = (1 << FIXED_POINT_BITS) - 1;
+
     private final Vector4f scratch = new Vector4f();
 
     private final Vector3f scratch1 = new Vector3f();
     private final Vector3f scratch2 = new Vector3f();
     private final Vector3f scratch3 = new Vector3f();
     private final Vector3f scratch4 = new Vector3f();
+    //quad meta uv
     private final Vector3f qmuv1 = new Vector3f();
     private final Vector3f qmuv2 = new Vector3f();
     private final Vector3f qmuv3 = new Vector3f();
     private final Vector3f qmuv4 = new Vector3f();
 
 
-    private final Vector3f scratchR1 = new Vector3f();
-    private final Vector3f scratchR2 = new Vector3f();
-    private final Vector3f scratchR3 = new Vector3f();
+    private final Vector3i scratchR1 = new Vector3i();
+    private final Vector3i scratchR2 = new Vector3i();
+    private final Vector3i scratchR3 = new Vector3i();
+    //Attributes (meta, u, v)
     private final Vector3f a1 = new Vector3f();
     private final Vector3f a2 = new Vector3f();
     private final Vector3f a3 = new Vector3f();
     private int quadColour;
 
     private static final long DEPTH_MASK = ((1L<<24)-1)<<(64-24);
-    private static final long CLEAR_VALUE = DEPTH_MASK;
+    private static final long CLEAR_VALUE = DEPTH_MASK;//set the depth to max value and rest of bits to 0
 
     private final int targetSize;
     private final long[] framebuffer;
@@ -44,6 +62,11 @@ public class SoftwareRasterizer {
     private int[] samplerTexture;
 
     public SoftwareRasterizer(int targetSize) {
+        int testExpect = targetSize*targetSize;
+        int testGot = fromFixed2Int(toFixed(targetSize*targetSize));
+        if (testExpect != testGot) {
+            throw new IllegalStateException("Target resolution not supported, not enough precision bits. got: " + testGot + ", expect: " + testExpect);
+        }
         this.targetSize = targetSize;
         this.framebuffer = new long[targetSize*targetSize];
     }
@@ -99,16 +122,16 @@ public class SoftwareRasterizer {
 
 
         // Split the quad into triangles 0-1-2 and 2-3-0.
-        this.scratchR1.set(this.scratch1);
-        this.scratchR2.set(this.scratch2);
-        this.scratchR3.set(this.scratch3);
+        toFixed(this.scratchR1, this.scratch1);
+        toFixed(this.scratchR2, this.scratch2);
+        toFixed(this.scratchR3, this.scratch3);
         this.a1.set(this.qmuv1);
         this.a2.set(this.qmuv2);
         this.a3.set(this.qmuv3);
         this.rasterTriangle(false);
-        this.scratchR1.set(this.scratch3);
-        this.scratchR2.set(this.scratch4);
-        this.scratchR3.set(this.scratch1);
+        toFixed(this.scratchR1, this.scratch3);
+        toFixed(this.scratchR2, this.scratch4);
+        toFixed(this.scratchR3, this.scratch1);
         this.a1.set(this.qmuv3);
         this.a2.set(this.qmuv4);
         this.a3.set(this.qmuv1);
@@ -116,12 +139,11 @@ public class SoftwareRasterizer {
     }
 
     private void rasterTriangle(boolean orZero) {
-        Vector3f v1 = this.scratchR1;
-        Vector3f v2 = this.scratchR2;
-        Vector3f v3 = this.scratchR3;
+        Vector3i v1 = this.scratchR1;
+        Vector3i v2 = this.scratchR2;
+        Vector3i v3 = this.scratchR3;
 
-
-        float area = edge(v1, v2, v3);
+        long area = edge(v1, v2, v3);
 
         // Alpha-cutout cross quads are two-sided during offline model baking.
         int meta = Float.floatToRawIntBits(this.a1.x);
@@ -129,32 +151,37 @@ public class SoftwareRasterizer {
             return;
         }
 
-        if (Math.abs(area)<0.001) {
+        if (Math.abs(fromFixed(area))<0.001) {
             return;//Degenerate triangle
         }
 
-        int minX = Math.max((int) Math.floor(Math.min(Math.min(v1.x, v2.x), v3.x)), 0);
-        int maxX = Math.min((int) Math.ceil(Math.max(Math.max(v1.x, v2.x), v3.x)), this.targetSize-1);
-        int minY = Math.max((int) Math.floor(Math.min(Math.min(v1.y, v2.y), v3.y)), 0);
-        int maxY = Math.min((int) Math.ceil(Math.max(Math.max(v1.y, v2.y), v3.y)), this.targetSize-1);
+        int minX = fromFixed2Int(Math.max(Math.min(Math.min(v1.x, v2.x), v3.x), 0));
+        int maxX = fromFixed2Int(Math.min(Math.max(Math.max(v1.x, v2.x), v3.x), toFixed(this.targetSize-1)));
+        int minY = fromFixed2Int(Math.max(Math.min(Math.min(v1.y, v2.y), v3.y), 0));
+        int maxY = fromFixed2Int(Math.min(Math.max(Math.max(v1.y, v2.y), v3.y), toFixed(this.targetSize-1)));
 
-        float invArea = 1.0f/area;
         for (int py = minY; py<=maxY; py++) {
             for (int px = minX; px<=maxX; px++) {
-                float cx = px+0.5f;
-                float cy = py+0.5f;
-                float w1 = edge(v2, v3, cx, cy)*invArea;
-                float w2 = edge(v3, v1, cx, cy)*invArea;
-                float w3 = 1.0f-w1-w2;
-                if (w1>=0.0f&&w2>=0.0f&&w3>=0.0f) {
-                    this.rasterPixel(px+py*this.targetSize, w1, w2, w3);
+                int cx = toFixed(px)+toFixed(0.5f);
+                int cy = toFixed(py)+toFixed(0.5f);
+                int w1 = fixedDiv(edge(v2, v3, cx, cy), area);
+                int w2 = fixedDiv(edge(v3, v1, cx, cy), area);
+                int w3 = toFixed(1.0f)-w1-w2;
+                //Strict >0 for the first triangle, >=0 for the second: pixels exactly on the shared
+                //diagonal belong to one triangle only, which is what a float epsilon can never
+                //guarantee
+                if ((w1>0&&w2>0&&w3>0)||(orZero&&w1>=0&&w2>=0&&w3>=0)) {
+                    float b1 = fromFixed(w1);
+                    float b2 = fromFixed(w2);
+                    float b3 = fromFixed(w3);
+                    float z = Math.fma(b1, fromFixed(this.scratchR1.z), Math.fma(b2, fromFixed(this.scratchR2.z), b3 * fromFixed(this.scratchR3.z)));
+                    this.rasterPixel(px+py*this.targetSize, b1, b2, b3, z);
                 }
             }
         }
     }
 
-    private void rasterPixel(int index, float b1, float b2, float b3) {
-        float z = Math.fma(b1, this.scratchR1.z, Math.fma(b2, this.scratchR2.z, b3 * this.scratchR3.z));
+    private void rasterPixel(int index, float b1, float b2, float b3, float z) {
         z = Math.fma(z,0.5f,0.5f);
         if (z < 0.0f && -0.000001f <= z) {
             z = 0;
@@ -227,12 +254,50 @@ public class SoftwareRasterizer {
         return (a << 24) | (b << 16) | (g << 8) | r;
     }
 
-    private static float edge(Vector3f a, Vector3f b, Vector3f c) {
-        return (c.x-a.x)*(b.y-a.y) - (c.y-a.y) * (b.x-a.x);
+    //Edges are computed and kept in long. A model is not confined to its block: a quad spanning more
+    //than ~23 target pixels makes the fixed-point product exceed int, and the wrap flips the area's
+    //sign - both triangles then fail the winding gate and the whole quad bakes as nothing. Only the
+    //COORDINATE range has to fit int (that is what INTEGER_BITS bounds); the products must not.
+    private static long edge(Vector3i a, Vector3i b, Vector3i c) {
+        return fixedMul(c.x-a.x,b.y-a.y) - fixedMul(c.y-a.y, b.x-a.x);
     }
 
-    private static float edge(Vector3f a, Vector3f b, float cx, float cy) {
-        return (cx-a.x)*(b.y-a.y) - (cy-a.y) * (b.x-a.x);
+    private static long edge(Vector3i a, Vector3i b, int cx, int cy) {
+        return fixedMul(cx-a.x,b.y-a.y) - fixedMul(cy-a.y, b.x-a.x);
+    }
+
+
+    private static int toFixed(float a) {
+        return (int) (((double)a)*(double) FIXED_POINT_BIT_SCALE);
+    }
+
+    private static int toFixed(int a) {
+        return (int) (a*FIXED_POINT_BIT_SCALE);
+    }
+
+    private static void toFixed(Vector3i dst, Vector3f src) {
+        dst.set(toFixed(src.x), toFixed(src.y), toFixed(src.z));
+    }
+
+    private static float fromFixed(long a) {
+        return (float) (((double)a)/(double)FIXED_POINT_BIT_SCALE);
+    }
+
+    private static int fromFixed2Int(int a) {
+        return (int) (a/FIXED_POINT_BIT_SCALE);
+    }
+
+    private static long fixedMul(int a, int b) {
+        return (((long)a) * ((long)b))/FIXED_POINT_BIT_SCALE;
+    }
+
+    //Barycentric weight: an edge over the area, both long. Near-degenerate slivers can push the
+    //ratio past int range, and a plain cast would wrap the sign - saturate instead. The bound is
+    //loose enough that any genuinely-inside pixel (weights in [0, toFixed(1)]) is untouched, and
+    //tight enough that toFixed(1)-w1-w2 cannot overflow int either.
+    private static int fixedDiv(long a, long b) {
+        long q = (a*FIXED_POINT_BIT_SCALE)/b;
+        return (int) Math.clamp(q, -(1L << 28), 1L << 28);
     }
 
 

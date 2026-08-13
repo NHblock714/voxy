@@ -26,8 +26,17 @@ import java.util.concurrent.ConcurrentHashMap;
 public final class FarEntityService {
     private static final int UPDATE_INTERVAL_TICKS = 10;
     private static final int MAX_DISTANCE_BLOCKS = 32768;
+    //Server-admin ceiling (voxy-server.toml), applied per send so a config reload takes effect
+    //without clients re-subscribing. Defaults match the spec defaults for the config-absent case.
+    private static volatile boolean serverEnabled = true;
+    private static volatile int serverMaxDistanceBlocks = 8192;
     private final Map<UUID, ClientSettings> subscribers = new ConcurrentHashMap<>();
     private int tickCounter;
+
+    public static void updateServerConfig(boolean enabled, int maxDistanceBlocks) {
+        serverEnabled = enabled;
+        serverMaxDistanceBlocks = Math.clamp(maxDistanceBlocks, 0, MAX_DISTANCE_BLOCKS);
+    }
 
     public void handleHello(ServerPlayer player, Hello hello) {
         if (hello.version() != FarEntityProtocol.VERSION) {
@@ -50,6 +59,9 @@ public final class FarEntityService {
     }
 
     private void tick(MinecraftServer server) {
+        if (!serverEnabled || serverMaxDistanceBlocks <= 0) {
+            return;
+        }
         if (this.subscribers.isEmpty() || ++this.tickCounter < UPDATE_INTERVAL_TICKS) {
             return;
         }
@@ -59,7 +71,9 @@ public final class FarEntityService {
         for (ServerPlayer viewer : players) {
             ClientSettings settings = this.subscribers.get(viewer.getUUID());
             if (settings != null && settings.enabled()) {
-                this.sendSnapshot(viewer, players, settings.maximumDistanceBlocks(), snapshotCache);
+                //The admin ceiling wins over whatever radius the client asked for
+                int distance = Math.min(settings.maximumDistanceBlocks(), serverMaxDistanceBlocks);
+                this.sendSnapshot(viewer, players, distance, snapshotCache);
             }
         }
     }

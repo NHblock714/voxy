@@ -7,7 +7,11 @@ layout(binding = 0, std140) uniform SceneUniform {
     float circularLodBoundaryEnabled;
     float lodBoundaryFadeStart;
     float lodBoundaryFadeEnd;
-    float _scenePadding;
+    //frameId of the previous command-list BUILD. The visibility raster compares against this, not
+    //frameId-1: with the command-list hold, frames keep counting while builds do not, and an
+    //assumed -1 would misclassify the entire stable set as newly-visible on the first build after
+    //a hold - flooding the temporal lane with a duplicate of the whole scene.
+    uint prevBuildFrameId;
 };
 
 //TODO: see if making the stride 2*4*4 bytes or something cause you get that 16 byte write
