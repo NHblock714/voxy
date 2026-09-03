@@ -76,7 +76,15 @@ public abstract class MixinLevelRenderer implements IGetVoxyRenderSystem {
             Logger.warn("Suppressed re-entrant voxy renderer creation");
             return;
         }
-        if (this.renderer != null) throw new IllegalStateException("Cannot have multiple renderers");
+        if (this.renderer != null) {
+            //Already built, by whoever got here first. Turning rendering back on in the config screen
+            //raises the iris reload flag, and reload flags run before the option's post-change runner:
+            //iris rebuilds its pipeline -> allChanged -> voxy$reloadVoxyRenderer builds the renderer,
+            //and only then does the runner ask for one. Both want the same single renderer, so the
+            //second request is satisfied by the first.
+            Logger.info("Renderer already exists, skipping creation");
+            return;
+        }
         if (!VoxyConfig.CONFIG.enabled) {
             Logger.info("Not creating renderer due to disabled");
             return;
