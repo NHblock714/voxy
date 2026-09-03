@@ -8,6 +8,7 @@ import com.mojang.blaze3d.vertex.VertexConsumer;
 import me.cortex.voxy.client.core.model.ModelFactory;
 import me.cortex.voxy.common.util.UnsafeUtil;
 import me.cortex.voxy.common.world.other.Mapper;
+import me.cortex.voxy.common.world.other.SeasonalIdSpace;
 import me.cortex.voxy.commonImpl.compat.DomumOrnamentumCompat;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.renderer.ItemBlockRenderTypes;
@@ -137,43 +138,93 @@ public class SoftwareModelTextureBakery {
         this.opaqueVC.setFallbackTintColour(plan.fallbackTintAbgr()).setForcedTintColour(forcedTint);
         this.translucentVC.setFallbackTintColour(plan.fallbackTintAbgr()).setForcedTintColour(forcedTint);
 
+        BakedModel[] bakeModels = { model };
+        if (this.seasonalModelId != null) {
+            var seasonal = me.cortex.voxy.client.core.compat.eclipticseasons.SeasonalLod.view
+                    .resolveSeasonalModel(modelState, this.seasonalModelId);
+            if (seasonal != null) {
+                //replace() swaps the whole model; otherwise the seasonal parts stack on top of the
+                //original ones (the blockstate itself is untouched either way - opacity, culling
+                //and tint stay the original block's)
+                bakeModels = seasonal.replace()
+                        ? new BakedModel[]{ seasonal.model() }
+                        : new BakedModel[]{ model, seasonal.model() };
+            }
+        }
+
         boolean crossCandidate = true;
         int diagonalFamilies = 0;
         int unculledQuads = 0;
 
-        //Copycat wrapper models gate per-layer queries on the MATERIAL model's declared render type
-        //set, which for the copycat base skeleton does not contain the layer the block maps to - the
-        //null-layer query skips that gate entirely (same shape as the contraption mesh path, which
-        //renders every copycat correctly)
-        RenderType quadQueryLayer = me.cortex.voxy.commonImpl.compat.CreateCopycatCompat.isCopycatState(state)
-                ? null : resolveQueryLayer(model, modelState, modelData, layer);
+        for (BakedModel bakeModel : bakeModels) {
+            //Copycat wrapper models gate per-layer queries on the MATERIAL model's declared render type
+            //set, which for the copycat base skeleton does not contain the layer the block maps to - the
+            //null-layer query skips that gate entirely (same shape as the contraption mesh path, which
+            //renders every copycat correctly)
+            RenderType quadQueryLayer = me.cortex.voxy.commonImpl.compat.CreateCopycatCompat.isCopycatState(state)
+                    ? null : resolveQueryLayer(bakeModel, modelState, modelData, layer);
 
-        for (Direction direction : new Direction[] { Direction.DOWN, Direction.UP, Direction.NORTH, Direction.SOUTH,
-                Direction.WEST, Direction.EAST, null }) {
-            var random = new SingleThreadedRandomSource(42L);
-            var quads = model.getQuads(modelState, direction, random, modelData, quadQueryLayer);
+            for (Direction direction : new Direction[] { Direction.DOWN, Direction.UP, Direction.NORTH, Direction.SOUTH,
+                    Direction.WEST, Direction.EAST, null }) {
+                var random = new SingleThreadedRandomSource(42L);
+                var quads = bakeModel.getQuads(modelState, direction, random, modelData, quadQueryLayer);
 
-            if (direction != null && !quads.isEmpty()) {
-                crossCandidate = false;
-            }
-
-            for (var quad : quads) {
-                if (direction == null && crossCandidate) {
-                    int family = classifyGroundCrossQuad(quad.getVertices());
-                    if (family == 0) {
-                        crossCandidate = false;
-                    } else {
-                        diagonalFamilies |= family;
-                        unculledQuads++;
-                    }
+                if (direction != null && !quads.isEmpty()) {
+                    crossCandidate = false;
                 }
 
-                (layer == RenderType.translucent() ? this.translucentVC : this.opaqueVC)
-                        .quad(quad, forceSolidLeaves, layer, modelState);
+                for (var quad : quads) {
+                    if (direction == null && crossCandidate) {
+                        int family = classifyGroundCrossQuad(quad.getVertices());
+                        if (family == 0) {
+                            crossCandidate = false;
+                        } else {
+                            diagonalFamilies |= family;
+                            unculledQuads++;
+                        }
+                    }
+
+                    (layer == RenderType.translucent() ? this.translucentVC : this.opaqueVC)
+                            .quad(quad, forceSolidLeaves, layer, modelState);
+                }
             }
         }
 
+        if (this.renderSnowOverlay) {
+            me.cortex.voxy.client.core.compat.eclipticseasons.SeasonalLod.view
+                    .renderSnowOverlay(state, layer, this.translucentVC, this.opaqueVC);
+        }
+
         return crossCandidate && unculledQuads >= 2 && diagonalFamilies == 0b11;
+    }
+
+    private boolean renderSnowOverlay;
+    private net.minecraft.resources.ResourceLocation seasonalModelId;
+
+    //Derives the bake decorations from a render-only id. Only ever arms them while the seasonal
+    //view is installed: without the mod, a legacy complement id still resolves and bakes as its
+    //plain original state.
+    public void beginRenderOnlyBake(int blockId) {
+        this.renderSnowOverlay = false;
+        this.seasonalModelId = null;
+        if (me.cortex.voxy.client.core.compat.eclipticseasons.SeasonalLod.view == null
+                || blockId < this.mapper.getBlockStateCount()
+                || blockId == SeasonalIdSpace.VIRTUAL_ICE_ID) {
+            return;
+        }
+        var seasonal = SeasonalIdSpace.get(blockId);
+        if (seasonal != null) {
+            this.seasonalModelId = seasonal.modelId();
+            this.renderSnowOverlay = seasonal.snowy();
+            return;
+        }
+        int complement = SeasonalIdSpace.MAX_BLOCK_ID - blockId;
+        this.renderSnowOverlay = complement >= 0 && complement < this.mapper.getBlockStateCount();
+    }
+
+    public void endRenderOnlyBake() {
+        this.renderSnowOverlay = false;
+        this.seasonalModelId = null;
     }
 
     private static int classifyGroundCrossQuad(int[] vertices) {

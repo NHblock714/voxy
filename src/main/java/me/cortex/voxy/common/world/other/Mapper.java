@@ -256,7 +256,31 @@ public class Mapper {
     }
 
     public BlockState getBlockStateFromBlockId(int blockId) {
-        return this.blockId2stateEntry.get(blockId).state;
+        return this.stateEntryForRenderId(blockId).state;
+    }
+
+    //Stored voxel data outlives the compat that wrote it: archives ingested with the seasonal
+    //snow remapper hold complement ids forever (WorldUpdater only heals revisited chunks), so
+    //this decode is unconditional, not gated on the mod being present.
+    private StateEntry stateEntryForRenderId(int blockId) {
+        if (blockId < this.blockId2stateEntry.size()) {
+            return this.blockId2stateEntry.get(blockId);
+        }
+        if (blockId == SeasonalIdSpace.VIRTUAL_ICE_ID) {
+            return SeasonalIdSpace.virtualIceEntry();
+        }
+        int real = SeasonalIdSpace.decode(this, blockId);
+        return this.blockId2stateEntry.get(real);//An unresolvable id throws here like any unknown id
+    }
+
+    public BiomeEntry getBiomeEntry(int biomeId) {
+        this.biomeLock.lock();
+        try {
+            return biomeId >= 0 && biomeId < this.biomeId2biomeEntry.size()
+                    ? this.biomeId2biomeEntry.get(biomeId) : null;
+        } finally {
+            this.biomeLock.unlock();
+        }
     }
 
     public int getIdForBlockState(BlockState state) {
@@ -312,7 +336,7 @@ public class Mapper {
     }
 
     public int getBlockStateOpacity(int blockId) {
-        return this.blockId2stateEntry.get(blockId).opacity;
+        return this.stateEntryForRenderId(blockId).opacity;
     }
 
     public int getIdForBiome(Holder<Biome> biome) {

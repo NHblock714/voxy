@@ -304,6 +304,17 @@ public class ModelFactory {
     private boolean processModelResult() {
         var bake = this.blockBakeQueue.poll();
         if (bake == null) return false;
+        //Flags derived from a render-only id must be cleared on every exit path - a bake that
+        //throws must not leak its snow overlay or seasonal model into the next block's bake
+        this.bakery2.beginRenderOnlyBake(bake.blockId);
+        try {
+            return this.processModelResult0(bake);
+        } finally {
+            this.bakery2.endRenderOnlyBake();
+        }
+    }
+
+    private boolean processModelResult0(BlockBake bake) {
         ColourDepthTextureData[] textureData = new ColourDepthTextureData[6];
 
         //Baking runs someone else's model code on our worker thread. A model that throws used to take
@@ -545,6 +556,15 @@ public class ModelFactory {
         boolean isBiomeColourDependent = false;
         if (colourProvider != null) {
             isBiomeColourDependent = isBiomeDependentColour(colourProvider, colourState);
+            if (!isBiomeColourDependent) {
+                var seasonalView = me.cortex.voxy.client.core.compat.eclipticseasons.SeasonalLod.view;
+                //A seasonal constant tint never calls getBlockTint, so the probe above reads it as
+                //a fixed colour and captureColourConstant below would freeze the bake-day season
+                //into the model. Forcing it onto the per-biome colour rows keeps the colour in
+                //colourData, where a renderer rebuild can re-capture it without re-identifying
+                //the model.
+                isBiomeColourDependent = seasonalView != null && seasonalView.isSeasonalConstantTint(colourState, colourProvider);
+            }
         }
 
         ModelEntry entry;

@@ -44,6 +44,19 @@ versionRange="[1.8.12,)"
 ordering="AFTER"
 side="CLIENT"
 
+# Seasonal LOD (EclipticSeasons snow/vegetation) is built into this fork. The external compat mod
+# targets official voxy 0.2.16-beta internals by hard class name - several of those classes do
+# not exist in this fork (GeometryCache among them) while its version gate accepts any voxy >= 0.2.14
+# with required mixins, so co-installing is a guaranteed mixin-bootstrap crash with an unreadable
+# error. Declaring it incompatible turns that into a readable load-screen message naming both mods.
+[[dependencies.voxy]]
+modId="eclipticseasons_voxycompact"
+type="incompatible"
+versionRange="[0,)"
+ordering="NONE"
+side="CLIENT"
+reason="This voxy fork has EclipticSeasons seasonal-LOD support built in. Ecliptic Seasons: Voxy Compact targets the official voxy's internal classes, which this fork no longer has - loading both crashes the game. Remove eclipticseasons_voxycompact. / 本 voxy 分支已内置节气季节 LOD 支持;外置兼容模组指向官方 voxy 的内部类,与本分支同装必定崩溃,请删除 eclipticseasons_voxycompact。"
+
 [[mixins]]
 config="client.voxy.mixins.json"
 

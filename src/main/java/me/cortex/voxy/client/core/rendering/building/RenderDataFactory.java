@@ -1998,6 +1998,19 @@ public class RenderDataFactory {
 
         //Prepare everything
         long[] rawSection = section.materialize();
+        var seasonalView = me.cortex.voxy.client.core.compat.eclipticseasons.SeasonalLod.view;
+        if (seasonalView != null) {
+            try {
+                //materialize() returns the section's shared backing array; the view either hands it
+                //back untouched or returns a private copy - it never writes through
+                rawSection = seasonalView.substituteSection(this.world, section, rawSection);
+            } catch (LinkageError e) {
+                //An ES build the version gate lets through can still lack a symbol the view only
+                //touches mid-mesh; the throw leaves rawSection at the season-neutral original
+                me.cortex.voxy.client.core.compat.eclipticseasons.SeasonalLod.disarm(e);
+                seasonalView = null;
+            }
+        }
         int neighborMskAndFlags = this.prepareSectionData(rawSection);
         if ((neighborMskAndFlags&(1<<31))!=0) {//We failed to get everything so throw exception
             throw new IdNotYetComputedException(neighborMskAndFlags&((1<<20)-1), true);
@@ -2006,6 +2019,18 @@ public class RenderDataFactory {
         int flags = neighborMskAndFlags>>>6;
         if (CHECK_NEIGHBOR_FACE_OCCLUSION) {
             this.acquireNeighborData(section, neighborMsk);
+            if (seasonalView != null) {
+                try {
+                    //Same substitution on the pulled lateral slices, so the same-id translucent cull
+                    //(shouldMeshNonOpaqueBlockFace) does not leave an ice/water wall on the section
+                    //border of a frozen lake
+                    seasonalView.substituteLateralSlices(this.world, section, this.neighboringFaces, neighborMsk);
+                } catch (LinkageError e) {
+                    //Partially substituted slices only carry render-only ids, which degrade
+                    //per block at bake; the next remesh runs season neutral after the disarm
+                    me.cortex.voxy.client.core.compat.eclipticseasons.SeasonalLod.disarm(e);
+                }
+            }
         }
 
         try {

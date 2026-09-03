@@ -20,13 +20,18 @@ import net.minecraft.world.level.biome.Biome;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.levelgen.Heightmap;
 
-//Re-decides seasonal snow over LOD that is already in the store.
+//Re-decides seasonal snow over LOD that is already in the store, writing complement ids back
+//into the voxels. SeasonalMeshView is the mesh-time path: it judges the season per remesh and
+//never writes the store. This walker exists to normalise archives that still carry ingest-time
+//complement ids, and running it puts CURRENT-season complements into storage that the mesh view
+//then has to decode past (harmless, decode is idempotent, but storage is then not season
+//neutral).
+//TODO: make this decode-only - strip complements instead of re-deciding them
 //
-//Snow is not a property of the model - it is decided during ingest, where a snow-covered block is
-//written as the complement of its own id (VoxyTool.changeBlockId) and that sentinel goes into the
-//voxel itself. Distant LOD is never re-ingested, so it keeps whichever season it was stored under.
-//Walking the store is what reaches it: region files exist only in singleplayer, so anything that reads
-//those is dead weight on a server.
+//In those archives a snow-covered block is stored as the complement of its own id - the sentinel
+//is in the voxel itself; distant LOD is never re-ingested, so it keeps whichever season it was
+//stored under. Walking the store is what reaches it: region files exist
+//only in singleplayer, so anything that reads those is dead weight on a server.
 //
 //The write is kept narrow: only the 20-bit block id, and only between a state and its own complement.
 //Light, biome and air-ness are never touched, so nothing structural changes and a block-level dirty

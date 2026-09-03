@@ -56,27 +56,15 @@ public class VoxyClient {
 
             VoxyCommon.setInstanceFactory(VoxyClientInstance::new);
 
-            //Seasonal snow LOD: direct primitive-signature hook into the convert loop. VoxyTool's
-            //method bodies reference EclipticSeasons classes, so the registration only forms behind
-            //the mod-presence gate (linking is lazy until first call, which this guarantees).
-            //LoadingModList, not ModList: this runs from the RenderSystem init mixin, before
-            //ModList.get() exists - the mixin plugin gates on the same early list.
-            var loadingList = net.neoforged.fml.loading.LoadingModList.get();
-            if (loadingList != null && loadingList.getModFileById("eclipticseasons") != null) {
-                me.cortex.voxy.common.voxelization.WorldConversionFactory.blockIdRemapper =
-                        new me.cortex.voxy.common.voxelization.WorldConversionFactory.BlockIdRemapper() {
-                            @Override
-                            public void beginSection(me.cortex.voxy.common.voxelization.VoxelizedSection section,
-                                                     me.cortex.voxy.common.world.other.Mapper mapper,
-                                                     me.cortex.voxy.common.voxelization.ILightingSupplier lightSupplier) {
-                                me.cortex.voxy.client.core.compat.eclipticseasons.VoxyTool.beginSection(section, mapper, lightSupplier);
-                            }
-
-                            @Override
-                            public int remap(int blockId, int voxelIdx, int biomeId) {
-                                return me.cortex.voxy.client.core.compat.eclipticseasons.VoxyTool.changeBlockId(blockId, voxelIdx, biomeId);
-                            }
-                        };
+            //Seasonal LOD is a mesh-time view: stored voxels stay season neutral and the season is
+            //applied when a section is meshed (SeasonalMeshView). SeasonalMeshView's method bodies
+            //reference EclipticSeasons classes, so the assignment only forms behind the
+            //presence-and-version gate (linking is lazy until first call, which this guarantees;
+            //the gate reads LoadingModList because this runs from the RenderSystem init mixin,
+            //before ModList.get() exists).
+            if (me.cortex.voxy.client.core.compat.eclipticseasons.EsCompatGate.shouldArm()) {
+                me.cortex.voxy.client.core.compat.eclipticseasons.SeasonalLod.view =
+                        new me.cortex.voxy.client.core.compat.eclipticseasons.SeasonalMeshView();
             }
 
             if (!Capabilities.INSTANCE.subgroup) {

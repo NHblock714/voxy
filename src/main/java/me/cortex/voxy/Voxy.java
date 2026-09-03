@@ -60,9 +60,10 @@ public class Voxy {
             // Voxy's Sodium video-settings page is registered by VoxyConfigMenu (@ConfigEntryPointForge,
             // Sodium 0.8 native config API), not here.
 
-            // EclipticSeasons compat: rebuild the LOD renderer on season change. Gated on the mod being present
-            // so the snow-LOD code (which references EclipticSeasons client classes) never loads without it.
-            if (ModList.get().isLoaded("eclipticseasons")) {
+            // EclipticSeasons compat: rebuild the LOD renderer on season change. Gated on the same
+            // presence-and-version check as the mesh view (the handler references EclipticSeasons
+            // client classes, and a handler without a view would rebuild for nothing).
+            if (me.cortex.voxy.client.core.compat.eclipticseasons.EsCompatGate.shouldArm()) {
                 NeoForge.EVENT_BUS.register(me.cortex.voxy.client.core.compat.eclipticseasons.VoxyEsHandler.INSTANCE);
             }
 

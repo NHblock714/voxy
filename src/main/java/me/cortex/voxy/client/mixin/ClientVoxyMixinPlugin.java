@@ -30,8 +30,24 @@ public class ClientVoxyMixinPlugin implements IMixinConfigPlugin {
         nvidiumInstalled = isLoadedEarly("nvidium");
         connectorInstalled = isLoadedEarly("connector");
         sableInstalled = isLoadedEarly("sable");
-        eclipticSeasonsInstalled = isLoadedEarly("eclipticseasons");
+        //Version-floored, not presence: the ClientLevel poll drives the stored-snow refresher,
+        //whose store writes only render once the mesh view is armed - same gate as the view itself
+        eclipticSeasonsInstalled =
+                me.cortex.voxy.client.core.compat.eclipticseasons.EsCompatGate.shouldArm();
         createInstalled = isLoadedEarly("create");
+
+        //Second line of defence behind the mods.toml incompatible declaration: if load ordering
+        //ever lets that mod's mixins prepare before FML's dependency check fires, the crash report
+        //blames voxy internals ("@Mixin target was not found: ...GeometryCache") with no hint of
+        //the real culprit - this log line is the hint. The LoadingModList probe is safe this
+        //early on either dist.
+        if (isLoadedEarly("eclipticseasons_voxycompact")) {
+            org.slf4j.LoggerFactory.getLogger("voxy").error(
+                    "eclipticseasons_voxycompact detected: it targets the OFFICIAL voxy's internal"
+                    + " classes, several of which do not exist in this fork, and its mixins are"
+                    + " required - the game WILL crash during mixin bootstrap. Seasonal LOD support"
+                    + " is built into this fork; remove eclipticseasons_voxycompact.");
+        }
     }
 
     @Override
@@ -104,17 +120,13 @@ public class ClientVoxyMixinPlugin implements IMixinConfigPlugin {
             mixins.add("create.MixinAnimationTickHolder");
         }
 
-        // EclipticSeasons snow-LOD compat: client-gated even for the common-class targets, because the shared
-        // VoxyTool references EclipticSeasons client classes (ClientCon) and our delta-sync server also runs ingest.
+        // EclipticSeasons seasonal LOD: the mesh-time view, id decode and bake hooks are direct
+        // code in Mapper/ModelFactory/SoftwareModelTextureBakery/RenderDataFactory, formed behind
+        // SeasonalLod.view. The only mixin here is the ClientLevel tick poll that drives the
+        // stored-snow refresher (config-gated, off by default). Client-gated because
+        // VoxyTool references EclipticSeasons client classes (ClientCon).
         if (eclipticSeasonsInstalled && FMLLoader.getDist() == Dist.CLIENT) {
             mixins.add("eclipticseasons.MixinClientLevel");
-            mixins.add("eclipticseasons.MixinMapping");
-            mixins.add("eclipticseasons.MixinModelBakerySubsystem");
-            mixins.add("eclipticseasons.MixinModelFactory");
-            mixins.add("eclipticseasons.MixinModelTextureBakery");
-            //The convert() snow hook is a direct BlockIdRemapper registration in VoxyClient now,
-            //not a mixin - the WrapOperation bridge boxed three args + the return per voxel
-            mixins.add("eclipticseasons.MixinWorldImporter");
         }
 
         return mixins;
