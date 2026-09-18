@@ -1,11 +1,15 @@
 #version 460 core
 
-#extension GL_KHR_shader_subgroup_arithmetic: require
-#extension GL_KHR_shader_subgroup_basic : require
-#extension GL_KHR_shader_subgroup_clustered : require
+#import <voxy:util/depthutils.glsl>
 
-
-//64x64 reduction
+//One workgroup folds a 64x64 tile of the source level into up to six coarser levels. The folds
+//above the per-thread 4x4 go through shared memory: nothing here depends on how the driver maps
+//invocations onto subgroups, so the chain is exact on every GL 4.6 implementation.
+//
+//Level 0 of the chain is produced by blit.fsh, which the draw chain re-runs for EVERY level while
+//this shader only ever reads its output. That is only equivalent because blit.fsh's FAR/NEAR
+//"hole patch" is value-neutral (FAR absorbs the farthest-reduction); should it ever stop being
+//so, the two chains diverge above level 0.
 layout(local_size_x=256) in;
 
 const uint spread[64] = {
@@ -20,13 +24,15 @@ const uint spread[64] = {
 };
 
 uint swizzleId(uint id) {
-    //swizzel to z curve
+    //z-order over the 16x16 thread grid: 4 consecutive ids form a 2x2 block, 16 a 4x4 block
     return bitfieldExtract(spread[id>>2], (int(id)&3)*8, 8);
 }
 
-layout(location = 0) uniform vec2 invImSize;
+layout(location = 0) uniform int srcLevel;
+//Levels written by this dispatch (1..6); image units above it are unbound
+layout(location = 1) uniform int outLevels;
 
-layout(binding = 0) uniform sampler2D mip_0;
+layout(binding = 0) uniform sampler2D src;
 layout(binding = 1, r32f) uniform restrict writeonly image2D mip_1;
 layout(binding = 2, r32f) uniform restrict writeonly image2D mip_2;
 layout(binding = 3, r32f) uniform restrict writeonly image2D mip_3;
@@ -34,60 +40,90 @@ layout(binding = 4, r32f) uniform restrict writeonly image2D mip_4;
 layout(binding = 5, r32f) uniform restrict writeonly image2D mip_5;
 layout(binding = 6, r32f) uniform restrict writeonly image2D mip_6;
 
-float getReduce2x2(ivec2 pos) {//w.r.t mip_1
-    vec4 data = textureGather(mip_0, vec2(pos*2+1)*invImSize);
-    float ret = max(max(data.x,data.y),max(data.z,data.w));
+ivec2 srcMax;
+vec2 invSrcSize;
+
+//The 2x2 source block whose top-left texel is p. Clamping duplicates the edge texel wherever the
+//footprint runs past the source level (a level narrower than the tile, or already 1 texel
+//high/wide) - the same texels a CLAMP_TO_EDGE gather reads. A duplicate never changes a min/max,
+//so missing texels are ignored rather than counted as far. Gather has no level argument and reads
+//the base level, so it serves the level-0 dispatch only; the sizes are powers of two, so the uv of
+//the block's shared corner is exact.
+vec4 fetch2x2(ivec2 p) {
+    if (srcLevel == 0) {
+        return textureGather(src, vec2(p + 1) * invSrcSize, 0);
+    }
+    return vec4(
+        texelFetch(src, min(p, srcMax), srcLevel).r,
+        texelFetch(src, min(p + ivec2(1, 0), srcMax), srcLevel).r,
+        texelFetch(src, min(p + ivec2(0, 1), srcMax), srcLevel).r,
+        texelFetch(src, min(p + ivec2(1, 1), srcMax), srcLevel).r);
+}
+
+float reduce2x2(ivec2 pos) {//w.r.t mip_1
+    vec4 d = fetch2x2(pos*2);
+    float ret = REDUCTION(REDUCTION(d.x, d.y), REDUCTION(d.z, d.w));
     imageStore(mip_1, pos, vec4(ret));
     return ret;
 }
 
-float getReduce4x4(ivec2 pos) {//w.r.t mip_2
-    ivec2 pos2 = pos*2;
-    float ret = max(max(getReduce2x2(pos2+ivec2(0,0)),getReduce2x2(pos2+ivec2(0,1))),
-                    max(getReduce2x2(pos2+ivec2(1,0)),getReduce2x2(pos2+ivec2(1,1))));
-    imageStore(mip_2, pos, vec4(ret));
+float reduce4x4(ivec2 pos) {//w.r.t mip_2
+    ivec2 p = pos*2;
+    float ret = REDUCTION(REDUCTION(reduce2x2(p), reduce2x2(p+ivec2(1,0))), REDUCTION(reduce2x2(p+ivec2(0,1)), reduce2x2(p+ivec2(1,1))));
+    if (outLevels >= 2) {
+        imageStore(mip_2, pos, vec4(ret));
+    }
     return ret;
 }
 
-//This is where the funny happens
-// since we swizzeled the id when getting the value, our ordering within the subgroup should be z ordered
-// we sadly cannot use the full subgroup reduction as wave size is 32 and we need a square pow2 values, so 16, sad beep
-float getReduceWave(ivec2 pos, float value) {
-    float reduced;
-    subgroupBarrier();//Wait for active threads in subgroup
-    //Now do clustered reduction, with exploiting dropout
-    reduced = subgroupClusteredMax(value, 4);
-    if ((gl_SubgroupInvocationID&0x3)==0) {//root writes
-        imageStore(mip_3, pos>>1, vec4(reduced));
-    }
-    //could exit 3/4 of the threads here if wanted
-    subgroupBarrier();//Wait for active threads in subgroup
-    reduced = subgroupClusteredMax(value, 16);
-    if ((gl_SubgroupInvocationID&0xF)==0) {//root writes
-        imageStore(mip_4, pos>>2, vec4(reduced));
-    }
-    return reduced;
-}
-shared float values[16];
+//Stores whose coordinates fall outside a level are dropped by GL, which is what lets a tile
+//larger than the source level run with every thread active (the folds below need that). The
+//shared arrays hold the tile's mip_2 / mip_3 / mip_4 texels in z-order, so every fold reads four
+//consecutive entries. Only the image stores are gated by outLevels - the folds and shared writes
+//run unconditionally so each barrier() sits in uniform control flow.
+shared float l2[256];
+shared float l3[64];
+shared float l4[16];
 void main() {
-    uint id = swizzleId(gl_LocalInvocationID.x);
-    //(ivec2(gl_WorkGroupID.xy)*64+ivec2(id&0xFU, id>>4)*4)/4;
-    ivec2 wavePos = ivec2(gl_WorkGroupID.xy)*16+ivec2(id&0xFU, id>>4);
-    float value = getReduce4x4(wavePos);
-    value = getReduceWave(wavePos, value);//Reduced to 4x4 across all threads and warps
-    if ((gl_LocalInvocationID.x&0xFU)==0) {
-        values[gl_LocalInvocationID.x>>4] = value;
+    srcMax = textureSize(src, srcLevel) - 1;
+    invSrcSize = 1.0f / vec2(srcMax + 1);
+    uint lid = gl_LocalInvocationID.x;
+    uint id = swizzleId(lid);
+    ivec2 pos = ivec2(gl_WorkGroupID.xy)*16 + ivec2(id&0xFu, id>>4);//w.r.t mip_2
+    l2[lid] = reduce4x4(pos);
+    barrier();
+
+    if ((lid&3u) == 0u) {
+        float r = REDUCTION(REDUCTION(l2[lid], l2[lid+1u]), REDUCTION(l2[lid+2u], l2[lid+3u]));
+        if (outLevels >= 3) {
+            imageStore(mip_3, pos>>1, vec4(r));
+        }
+        l3[lid>>2] = r;
     }
-    barrier();//Wait for all
-    if ((gl_LocalInvocationID.x>>2)!=0) {
-        return;//Discard all but 4 threads
+    barrier();
+
+    if ((lid&15u) == 0u) {
+        uint i = lid>>2;
+        float r = REDUCTION(REDUCTION(l3[i], l3[i+1u]), REDUCTION(l3[i+2u], l3[i+3u]));
+        if (outLevels >= 4) {
+            imageStore(mip_4, pos>>2, vec4(r));
+        }
+        l4[lid>>4] = r;
     }
-    uint i = gl_LocalInvocationID.x*4;
-    value = max(max(values[i],values[i+1]),max(values[i+2],values[i+3]));//Is funny is already in spread order
-    imageStore(mip_5, ivec2(gl_WorkGroupID.xy)*2+ivec2(gl_LocalInvocationID.x&1u,gl_LocalInvocationID.x>>1), vec4(value));
-    subgroupBarrier();
-    value = subgroupMax(value);
-    if (gl_LocalInvocationID.x==0) {
+    barrier();
+
+    if (lid >= 4u) {
+        return;
+    }
+    uint i = lid*4u;
+    float value = REDUCTION(REDUCTION(l4[i], l4[i+1u]), REDUCTION(l4[i+2u], l4[i+3u]));
+    if (outLevels >= 5) {
+        imageStore(mip_5, ivec2(gl_WorkGroupID.xy)*2 + ivec2(lid&1u, lid>>1), vec4(value));
+    }
+    if (outLevels >= 6 && lid == 0u) {
+        for (uint j = 4u; j < 16u; j++) {
+            value = REDUCTION(value, l4[j]);
+        }
         imageStore(mip_6, ivec2(gl_WorkGroupID.xy), vec4(value));
     }
 }

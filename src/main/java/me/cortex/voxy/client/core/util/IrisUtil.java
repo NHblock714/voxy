@@ -18,6 +18,11 @@ public class IrisUtil {
         }
     }
 
+    //Set by the iris pipeline the moment it applies the captured parameters, consumed by the
+    //terrain-pass hook one frame at a time. "Shader pack enabled" is not proof that the iris
+    //pipeline ran this frame; only this flag is, and without it the hook would reuse a viewport
+    //that was never set up for this frame.
+    public static boolean USED_IRIS_VIEWPORT;
     public static CapturedViewportParameters CAPTURED_VIEWPORT_PARAMETERS;
 
     public static final boolean IRIS_INSTALLED = ModList.get().isLoaded("iris");

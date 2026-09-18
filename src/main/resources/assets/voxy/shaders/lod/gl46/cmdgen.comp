@@ -53,11 +53,13 @@ void main() {
         return;
     }
     #ifdef OPAQUE_NEAR_FIRST
-    //The traversal appends the render list coarse-to-fine, and coarse nodes are the FAR ones (near
-    //nodes descend deepest and enqueue last) - so list order is systematically far-to-near, the
-    //worst case for overdraw. Walking it backwards emits near sections' commands first and early-z
-    //rejects the far fill hidden behind them. Order is a heuristic only; the depth test owns
-    //correctness, and command slots still come from the same atomic so every lane stays dense.
+    //The traversal appends the render list one LOD level per dispatch through a single atomic
+    //counter, so the list is far-to-near BY LEVEL BLOCK (coarse nodes are the far ones; a leaf
+    //without children yet, or a region drawn at child level while its own mesh is pending, blurs
+    //that). Within a block the order is atomic-arrival and the reversal leaves it arbitrary.
+    //Walking the list backwards emits the near blocks' commands first so depth rejection drops
+    //the far fill hidden behind them. Order is a heuristic only; the depth test owns correctness,
+    //and command slots still come from the same atomic so every lane stays dense.
     uint listIdx = (sectionCount - 1u) - gl_GlobalInvocationID.x;
     #else
     uint listIdx = gl_GlobalInvocationID.x;
@@ -79,8 +81,9 @@ void main() {
     //would otherwise vanish for a whole hold period at a time under the command-list hold:
     //per-frame flips were invisible when every frame rebuilt (the temporal lane papered over
     //them the same frame), held replays turn them into multi-frame blinking. The one stale build
-    //of presence is overdraw the depth test eats, never a correctness change.
-    bool shouldRender = stamp == frameId || (stamp == prevBuildFrameId && stamp != 0u);
+    //of presence is overdraw the depth test eats, never a correctness change. The host uploads
+    //visibilityGraceId = 0 while the hold is off, which turns the clause off with it.
+    bool shouldRender = stamp == frameId || (stamp == visibilityGraceId && stamp != 0u);
     bool renderTemporally = (dat&0x80000000u)==0;// means, if it was not visible last frame
 
 

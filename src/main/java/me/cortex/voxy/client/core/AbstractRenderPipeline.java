@@ -55,11 +55,17 @@ public abstract class AbstractRenderPipeline extends TrackedObject {
 
     protected AbstractSectionRenderer<?,?> sectionRenderer;
 
-    //Command-list hold state (experimentalCmdListHold). lastBuildMVP is the camera matrix the
-    //current command lists were built for; holds are only legal while the live MVP still equals it
-    //exactly. hasBuiltCommandLists guards the first frame - the identity-initialised matrix must
-    //never pass the compare on its own.
+    //Command-list hold state (experimentalCmdListHold). lastBuildMVP and lastBuildCam* are the
+    //camera the current command lists were built for. The MVP carries rotation and projection
+    //only - the translation lives in viewport.section/innerTranslation - so the position must be
+    //keyed separately or a straight-line flight would count as a still camera. hasBuiltCommandLists
+    //guards the first frame - the identity-initialised matrix must never pass the compare on its own.
     private final Matrix4f lastBuildMVP = new Matrix4f();
+    private double lastBuildCamX, lastBuildCamY, lastBuildCamZ;
+    //Vanilla folds the decaying view bob into the projection for ~10 s after the player stops, so a
+    //bit-exact MVP compare would keep the hold off for that long. The tolerance is far below a
+    //pixel and the baseline is the last BUILD, so drift cannot accumulate past it.
+    private static final float HOLD_MVP_TOLERANCE = 1.0e-6f;
     private boolean hasBuiltCommandLists;
     private int consecutiveHolds;
     private long heldFrameCount, builtFrameCount;
@@ -167,6 +173,9 @@ public abstract class AbstractRenderPipeline extends TrackedObject {
             //the current one - which becomes the baseline for the next build.
             viewport.prevBuildFrameId = viewport.frameId;
             this.lastBuildMVP.set(viewport.MVP);
+            this.lastBuildCamX = viewport.cameraX;
+            this.lastBuildCamY = viewport.cameraY;
+            this.lastBuildCamZ = viewport.cameraZ;
             this.hasBuiltCommandLists = true;
             this.consecutiveHolds = 0;
             this.builtFrameCount++;
@@ -178,6 +187,7 @@ public abstract class AbstractRenderPipeline extends TrackedObject {
             //did.
             this.consecutiveHolds++;
             this.heldFrameCount++;
+            rs.onCommandListsHeld(viewport);
         }
 
         rs.postOpaquePreperation(viewport);
@@ -331,12 +341,16 @@ public abstract class AbstractRenderPipeline extends TrackedObject {
     protected boolean innerPrimaryWork(Viewport<?> viewport, int depthBuffer) {
         //All hold conditions are evaluated against the LAST BUILD, not the last frame: the command
         //lists being reused are the last build's, so drift accumulates against that baseline.
-        //The MVP compare is exact - any camera motion, fov change or shader-pack jitter fails it
-        //and forces a build, which is the safe direction.
+        //Camera position is compared exactly (a still entity lerps to the identical value); any
+        //translation, rotation, fov change or projection-jittering shader pack fails the key and
+        //forces a build, which is the safe direction.
         boolean holdEligible = VoxyConfig.CONFIG.experimentalCmdListHold
                 && this.hasBuiltCommandLists
                 && this.consecutiveHolds < VoxyConfig.CONFIG.cmdListHoldMaxFrames - 1
-                && viewport.MVP.equals(this.lastBuildMVP);
+                && viewport.cameraX == this.lastBuildCamX
+                && viewport.cameraY == this.lastBuildCamY
+                && viewport.cameraZ == this.lastBuildCamZ
+                && viewport.MVP.equals(this.lastBuildMVP, HOLD_MVP_TOLERANCE);
 
         boolean built = false;
         boolean mipChainBuilt = false;
@@ -358,9 +372,12 @@ public abstract class AbstractRenderPipeline extends TrackedObject {
             }
             //glFlush();
 
+            this.traversal.tickRequestClock();
             if (!holdEligible) {
-                //The cleaner evicts resident geometry, which invalidates commands the same way -
-                //it only runs on frames that rebuild them.
+                //The cleaner's visibilityId is the LRU clock the traversal stamps rendered nodes
+                //with; a held frame renders the same nodes again, so the clock only ticks on
+                //frames that traverse. The eviction it queues lands through nodeManager.tick,
+                //which forces a build by itself.
                 this.nodeCleaner.tick(this.traversal.getNodeBuffer());//Probably do this here??
             }
 
@@ -370,9 +387,11 @@ public abstract class AbstractRenderPipeline extends TrackedObject {
             if (!holdEligible) {
                 if (!mipChainBuilt) {
                     //Compute the mip chain
+                    GPUTiming.INSTANCE.marker("HZ");
                     viewport.hiZBuffer.buildMipChain(depthBuffer, viewport.width, viewport.height);
                     mipChainBuilt = true;
                 }
+                GPUTiming.INSTANCE.marker("TV");
 
                 glMemoryBarrier(GL_FRAMEBUFFER_BARRIER_BIT | GL_PIXEL_BUFFER_BARRIER_BIT);
 

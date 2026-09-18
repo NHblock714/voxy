@@ -158,7 +158,9 @@ public class RenderDataFactory {
             //quadCount is rolled back with the drop: the two counts have to agree, or the last bucket's
             //reported size covers quads that were never written and the GPU draws whatever was in the
             //buffer.
-            if (RenderDataFactory.this.quadCounters[bufferIdx] >= (1<<16)) {
+            //Checked before the increment: a bucket may hold at most 65535, the largest count the
+            //16-bit packing can carry
+            if (RenderDataFactory.this.quadCounters[bufferIdx] >= (1<<16)-1) {
                 RenderDataFactory.this.quadCount--;
                 RenderDataFactory.this.bucketOverflowed = true;
                 return;
@@ -368,8 +370,22 @@ public class RenderDataFactory {
         }
     }
 
+    private static final java.util.concurrent.atomic.AtomicInteger SEASONAL_SPLICE_FAILURES = new java.util.concurrent.atomic.AtomicInteger();
+
+    //Logged for the first few only: a broken season definition would otherwise print once per
+    //remeshed section
+    private static void noteSeasonalSpliceFailure(RuntimeException e) {
+        if (SEASONAL_SPLICE_FAILURES.incrementAndGet() <= 5) {
+            Logger.error("Seasonal LOD judgement threw; section built season neutral", e);
+        }
+    }
+
     private int prepareSectionData(final long[] rawSectionData) {
         final var sectionData = this.sectionData;
+        //Length guards plus the index masks in the loop give the JIT provable bounds, so the
+        //32768-iteration body carries no per-voxel range checks on either array
+        if (sectionData.length != 32*32*32*2) throw new IllegalStateException();
+        if (rawSectionData.length != 32*32*32) throw new IllegalStateException();
         final var rawModelIds = this.modelMan._unsafeRawAccess();
         long opaque = 0;
         long notEmpty = 0;
@@ -380,25 +396,28 @@ public class RenderDataFactory {
         int i = 0;
         for (int q = 0; q < 512; q++) {
             for (int j = 0; j < 64; i++, j++) {
+                i &= 32*32*32-1;
                 long block = rawSectionData[i];//Get the block mapping
+                int i2 = i * 2;
+                i2 &= (32*32*32*2-1)^1;
                 if (Mapper.isAir(block)) {//If it is air, just emit lighting
-                    sectionData[i * 2] = (block & (0xFFL << 56)) >>> 1;
-                    sectionData[i * 2 + 1] = 0;
+                    sectionData[i2] = (block & (0xFFL << 56)) >>> 1;
+                    sectionData[i2 + 1] = 0;
                 } else {
                     int modelId = rawModelIds[Mapper.getBlockId(block)];
                     if (modelId == -1) {//Failed, so just return error
                         return Mapper.getBlockId(block) | (1 << 31);
                     }
                     if (modelId == 0) {//modelId == 0, its basicly air so set it as air
-                        sectionData[i * 2] = (block & (0xFFL << 56)) >>> 1;
-                        sectionData[i * 2 + 1] = 0;
+                        sectionData[i2] = (block & (0xFFL << 56)) >>> 1;
+                        sectionData[i2 + 1] = 0;
                     } else {
                         //TODO: cache the results of this, then link it to `block` do same optimization as SaveLoadSystem3
 
                         long modelMetadata = this.modelMan.getModelMetadataFromClientId(modelId);
 
-                        sectionData[i * 2] = packPartialQuadData(modelId, block, modelMetadata);
-                        sectionData[i * 2 + 1] = modelMetadata;
+                        sectionData[i2] = packPartialQuadData(modelId, block, modelMetadata);
+                        sectionData[i2 + 1] = modelMetadata;
 
                         notEmpty |= 1L << j;
                         opaque |= ModelQueries._isFullyOpaque(modelMetadata)<<j;
@@ -408,22 +427,22 @@ public class RenderDataFactory {
                 }
             }
             if (notEmpty != 0) {
-                long nonOpaque = (notEmpty^opaque)&~pureFluid;
-                long fluid = pureFluid|partialFluid;
-                this.opaqueMasks[(i >> 5) - 2] = (int) opaque;
-                this.opaqueMasks[(i >> 5) - 1] = (int) (opaque>>>32);
-                this.nonOpaqueMasks[(i >> 5) - 2] = (int) nonOpaque;
-                this.nonOpaqueMasks[(i >> 5) - 1] = (int) (nonOpaque>>>32);
-                this.fluidMasks[(i >> 5) - 2] = (int) fluid;
-                this.fluidMasks[(i >> 5) - 1] = (int) (fluid>>>32);
-
+                //Accumulators are consumed and reset as early as possible so their registers free
+                //up across the mask stores
                 neighborAcquireMskAndFlags |= getNeighborMsk(notEmpty, i);
                 neighborAcquireMskAndFlags |= opaque!=0?(1<<6):0;
-
-                opaque = 0;
+                this.opaqueMasks[(i >> 5) - 2] = (int) opaque;
+                this.opaqueMasks[(i >> 5) - 1] = (int) (opaque>>>32);
+                long nonOpaque = (notEmpty^opaque)&~pureFluid;
                 notEmpty = 0;
+                opaque = 0;
+                this.nonOpaqueMasks[(i >> 5) - 2] = (int) nonOpaque;
+                this.nonOpaqueMasks[(i >> 5) - 1] = (int) (nonOpaque>>>32);
+                long fluid = pureFluid|partialFluid;
                 pureFluid = 0;
                 partialFluid = 0;
+                this.fluidMasks[(i >> 5) - 2] = (int) fluid;
+                this.fluidMasks[(i >> 5) - 1] = (int) (fluid>>>32);
             }
         }
         return neighborAcquireMskAndFlags;
@@ -2009,6 +2028,11 @@ public class RenderDataFactory {
                 //touches mid-mesh; the throw leaves rawSection at the season-neutral original
                 me.cortex.voxy.client.core.compat.eclipticseasons.SeasonalLod.disarm(e);
                 seasonalView = null;
+            } catch (RuntimeException e) {
+                //ES data code running on a mesh worker; a throw here is that section's problem,
+                //not the view's - build it season neutral and keep the view armed
+                seasonalView = null;
+                noteSeasonalSpliceFailure(e);
             }
         }
         int neighborMskAndFlags = this.prepareSectionData(rawSection);
@@ -2029,6 +2053,8 @@ public class RenderDataFactory {
                     //Partially substituted slices only carry render-only ids, which degrade
                     //per block at bake; the next remesh runs season neutral after the disarm
                     me.cortex.voxy.client.core.compat.eclipticseasons.SeasonalLod.disarm(e);
+                } catch (RuntimeException e) {
+                    noteSeasonalSpliceFailure(e);
                 }
             }
         }
@@ -2058,8 +2084,9 @@ public class RenderDataFactory {
             return BuiltSection.emptyWithChildren(section.key, section.getNonEmptyChildren());
         }
 
-        if (this.quadCount >= 1<<16) {
-            Logger.warn("Large quad count for section " + WorldEngine.pprintPos(section.key) + " is " + this.quadCount);
+        if (this.bucketOverflowed) {
+            //The total is not the limit (eight buckets each carry 65535); a dropped quad is
+            Logger.warn("Quad bucket overflow in section " + WorldEngine.pprintPos(section.key) + ", geometry dropped (" + this.quadCount + " kept)");
         }
 
         if (this.minX<0 || this.minY<0 || this.minZ<0 || 32<this.maxX || 32<this.maxY || 32<this.maxZ) {

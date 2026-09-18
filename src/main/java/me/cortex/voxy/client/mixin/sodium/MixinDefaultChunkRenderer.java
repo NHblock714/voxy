@@ -49,8 +49,11 @@ public abstract class MixinDefaultChunkRenderer extends ShaderChunkRenderer {
             var renderer = ((IGetVoxyRenderSystem) Minecraft.getInstance().levelRenderer).voxy$getRenderSystem();
             if (renderer != null) {
                 Viewport<?> viewport = null;
-                if (IrisUtil.irisShaderPackEnabled()) {
+                if (IrisUtil.USED_IRIS_VIEWPORT) {
                     viewport = renderer.getViewport();
+                    //The shadow pass comes through here first and gets null; the flag has to
+                    //survive it for the main pass that follows in the same frame
+                    if (viewport != null) IrisUtil.USED_IRIS_VIEWPORT = false;
                 } else {
                     viewport = renderer.setupViewport(matrices.projection(), matrices.modelView(), camera.x, camera.y, camera.z);
                 }

@@ -42,12 +42,27 @@ public final class WorldSection {
     //Pool cap in arrays (256KiB each; 400 = 100MiB). Mutable via the setter below, NOT read from
     //client config here: this class runs on dedicated servers too, and touching a client config
     //class from common code is a dist crash. The client pushes its configured budget in each frame.
-    private static volatile int ARRAY_REUSE_CACHE_SIZE = 400;//500;//32*32*32*8*ARRAY_REUSE_CACHE_SIZE == number of bytes
+    public static final int DEFAULT_ARRAY_POOL_ARRAYS = 400;
+    private static volatile int ARRAY_REUSE_CACHE_SIZE = DEFAULT_ARRAY_POOL_ARRAYS;//500;//32*32*32*8*ARRAY_REUSE_CACHE_SIZE == number of bytes
 
     public static void setArrayPoolCapMiB(int miB) {
         int arrays = Math.max(miB, 0) * 4;//4 arrays per MiB
         if (arrays != ARRAY_REUSE_CACHE_SIZE) {
             ARRAY_REUSE_CACHE_SIZE = arrays;
+            //A shrink has to release the excess itself: returns above the cap are discarded, but
+            //nothing takes from the pool while the camera is still, so it would stay full
+            trimArrayPool(arrays);
+        }
+    }
+
+    //Drops pooled arrays until at most `keep` remain. Poll-then-decrement, the same order as
+    //materialize(), so the count invariant holds against concurrent releasers.
+    public static void trimArrayPool(int keep) {
+        while (ARRAY_REUSE_CACHE_COUNT.get() > keep) {
+            if (ARRAY_REUSE_CACHE.poll() == null) {
+                break;
+            }
+            ARRAY_REUSE_CACHE_COUNT.decrementAndGet();
         }
     }
     //TODO: maybe just swap this to a ConcurrentLinkedDeque

@@ -101,5 +101,20 @@
   "voxy.config.compat.farPlayerNames": "远景玩家名牌",
   "voxy.config.compat.farPlayerNames.tooltip": "为远景玩家显示名牌",
   "voxy.config.compat.shareFarPlayerPosition": "共享我的位置",
-  "voxy.config.compat.shareFarPlayerPosition.tooltip": "允许服务端转发你的位置，让其他玩家在渲染距离外也能看到你"
+  "voxy.config.compat.shareFarPlayerPosition.tooltip": "允许服务端转发你的位置，让其他玩家在渲染距离外也能看到你",
+  "voxy.config.experimental": "实验性",
+  "voxy.config.experimental.cmdListHold": "静止时冻结命令列表",
+  "voxy.config.experimental.cmdListHold.tooltip": "相机静止且 LOD 几何无变化时，直接复用上一帧的 LOD 绘制命令而不重建（冻结帧跳过 hi-z、遍历、命令生成与时序 pass）。任何移动或几何变化都会强制完整重建。静止时约省 0.5 ms/帧。可热生效。",
+  "voxy.config.experimental.cmdListHoldMaxFrames": "最长冻结帧数",
+  "voxy.config.experimental.cmdListHoldMaxFrames.tooltip": "两次重建之间的最长间隔（帧）：无论如何每 N 帧至少强制重建一次，用来限制 LOD 请求与 hi-z 陈旧的最大延迟。",
+  "voxy.config.experimental.chunkMaskReuse": "静止时复用区块掩膜",
+  "voxy.config.experimental.chunkMaskReuse.tooltip": "可见区块集合、相机与投影都没变时，沿用上一帧的区块边界掩膜。开启带 TAA 的光影包时自动不生效——那种情况下掩膜必须每帧带当帧抖动重新光栅，接缝才稳定。可热生效。",
+  "voxy.config.experimental.sectionArrayPoolMiB": "区段数组池",
+  "voxy.config.experimental.sectionArrayPoolMiB.tooltip": "摄取与网格构建共用的 256 KiB 区段数组池预算。快速飞行时若 F3 或完整报告里的 array pool miss 计数持续上涨，就调大。填满后会以堆内存常驻到该预算；调低滑条或离开世界即释放多余部分。可热生效。",
+  "voxy.config.experimental.opaqueNearFirst": "不透明近→远绘制顺序",
+  "voxy.config.experimental.opaqueNearFirst.tooltip": "不透明 LOD 绘制命令按由近到远发出，让早期深度拒绝丢掉被近处地形挡住的填充。只是绘制顺序启发，正确性仍由深度测试保证。会重建渲染器。",
+  "voxy.config.experimental.chunkMaskHalfRes": "半分辨率区块掩膜",
+  "voxy.config.experimental.chunkMaskHalfRes.tooltip": "区块边界掩膜按半分辨率光栅：每个盒外扩半个掩膜像素，并把深度按斜率向相机拉近一个掩膜像素，保证粗掩膜不会裁掉全分辨率掩膜会保留的 LOD。CB pass 开销降到约四分之一。请盯 LOD 与原版地形的接缝（尤其开 TAA 光影包时）有无像素级裂缝或闪动。会重建渲染器。",
+  "voxy.config.experimental.hiZCompute": "计算着色器构建 hi-z",
+  "voxy.config.experimental.hiZCompute.tooltip": "用计算着色器批量构建 hi-z 深度 mip 链，取代逐级一次全屏绘制。若本机驱动编译计算着色器失败则自动回落到绘制链（日志提示一次，F3 显示当前链路）。只有重建帧受益。会重建渲染器。"
 }

@@ -835,7 +835,9 @@ public class ModelFactory {
                 uploadResult.biomeUploadIndex = biomeIndex;
                 long clrUploadPtr = (uploadResult.biomeUpload = new MemoryBuffer(4L * this.biomes.size())).address;
                 for (var biome : this.biomes) {
-                    MemoryUtil.memPutInt(clrUploadPtr, captureColourConstant(colourProvider, colourState, biome) | 0xFF000000); clrUploadPtr += 4;
+                    //A hole in the table (an id registered but not yet delivered) keeps its slot:
+                    //the row stride is the biome count, and a null reaches the vanilla resolvers as NPE
+                    MemoryUtil.memPutInt(clrUploadPtr, captureColourConstant(colourProvider, colourState, biome == null ? DEFAULT_BIOME : biome) | 0xFF000000); clrUploadPtr += 4;
                 }
                 this.blendPalette.mirrorRow(modelId, biomeIndex, uploadResult.biomeUpload.address, this.biomes.size());
             }
@@ -960,7 +962,8 @@ public class ModelFactory {
             throw new IllegalStateException("Biome was put in an id that was not null");
         }
         if (oldBiome == biome) {
-            Logger.error("Biome added was a duplicate: " + id);
+            //Expected: the renderer registers its callback before replaying the mapper's table,
+            //so a biome registered in between arrives twice
             return null;
         }
 
@@ -980,10 +983,9 @@ public class ModelFactory {
             MemoryUtil.memPutLong(modelUpPtr, Integer.toUnsignedLong(entry.left())|(Integer.toUnsignedLong(biomeIndex)<<32));modelUpPtr+=8;
             long clrUploadPtr = result.biomeColourBuffer.address + biomeIndex * 4L;
             for (var biomeE : this.biomes) {
-                if (biomeE == null) {
-                    continue;//If null, ignore
-                }
-                MemoryUtil.memPutInt(clrUploadPtr, captureColourConstant(colourProvider, entry.right(), biomeE)|0xFF000000); clrUploadPtr += 4;
+                //Holes keep their slot (see the row build in processTextureBakeResult): skipping
+                //one shifts every later colour one column left
+                MemoryUtil.memPutInt(clrUploadPtr, captureColourConstant(colourProvider, entry.right(), biomeE == null ? DEFAULT_BIOME : biomeE)|0xFF000000); clrUploadPtr += 4;
             }
         }
 

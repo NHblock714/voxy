@@ -1,5 +1,6 @@
 package me.cortex.voxy.client.core.util;
 
+import it.unimi.dsi.fastutil.ints.Int2ObjectOpenHashMap;
 import it.unimi.dsi.fastutil.ints.IntArrayFIFOQueue;
 import it.unimi.dsi.fastutil.objects.ObjectArrayFIFOQueue;
 import me.cortex.voxy.common.util.TrackedObject;
@@ -19,10 +20,30 @@ public class GPUTiming {
 
     private final GlTimestampQuerySet<String> timingSet = new GlTimestampQuerySet(String.class);
 
-    private float[] timings = new float[0];
-    private String[] lables = new String[0];
+    //One rolling set per marker count. Frames do not all emit the same markers (a held command-list
+    //frame skips the rebuild passes), and a single positional array would be thrown away and
+    //restarted from zero at every switch between the two shapes.
+    private static final class Layout {
+        final float[] timings;
+        final String[] lables;
+        long lastTick;
+        Layout(int length) {
+            this.timings = new float[length];
+            this.lables = new String[length];
+        }
+    }
+    private static final int MAX_LAYOUTS = 8;
+    private static final long LAYOUT_STALE_TICKS = 240;
+    private final Int2ObjectOpenHashMap<Layout> layouts = new Int2ObjectOpenHashMap<>();
+    private long tickCounter;
 
     private boolean enabled = false;
+
+    //Timing has several independent consumers (the F3 line, a frame capture, a profile run) that
+    //start and stop at different times; a single boolean let whichever stopped last switch the
+    //others off, or left it running after all of them were gone
+    public static final int OWNER_F3 = 1, OWNER_CAPTURE = 2, OWNER_PROFILE = 4;
+    private int owners;
 
     public void marker() {
         this.marker(null);
@@ -34,25 +55,41 @@ public class GPUTiming {
         }
     }
 
-    public void setEnabled(boolean enable) {
-        if (this.enabled != enable) {
-            this.enabled = enable;
-        }
+    public void enableFor(int owner) {
+        this.owners |= owner;
+        this.enabled = true;
+    }
+
+    public void disableFor(int owner) {
+        this.owners &= ~owner;
+        this.enabled = this.owners != 0;
     }
 
     public String getDebug() {
         if (!this.enabled) {
             return "";
         }
-        StringBuilder str = new StringBuilder("GpuTime: [");
-        for (int i = 0; i < this.timings.length; i++) {
-            if (this.lables[i] != null) {
-                str.append(this.lables[i]+":"+String.format("%.2f", this.timings[i]));
-            } else {
-                str.append(String.format("%.2f", this.timings[i]));
+        //The fullest recently-fed layout: it carries every pass the shorter ones do
+        Layout shown = null;
+        for (Layout layout : this.layouts.values()) {
+            if (this.tickCounter - layout.lastTick > LAYOUT_STALE_TICKS) {
+                continue;
             }
-            if (i!=this.timings.length-1) {
-                str.append(", ");
+            if (shown == null || layout.timings.length > shown.timings.length) {
+                shown = layout;
+            }
+        }
+        StringBuilder str = new StringBuilder("GpuTime: [");
+        if (shown != null) {
+            for (int i = 0; i < shown.timings.length; i++) {
+                if (shown.lables[i] != null) {
+                    str.append(shown.lables[i]+":"+String.format("%.2f", shown.timings[i]));
+                } else {
+                    str.append(String.format("%.2f", shown.timings[i]));
+                }
+                if (i!=shown.timings.length-1) {
+                    str.append(", ");
+                }
             }
         }
         str.append(']');
@@ -60,21 +97,27 @@ public class GPUTiming {
     }
 
     public void tick() {
+        this.tickCounter++;
         this.timingSet.download((meta,data)->{
             long current = data[0];
 
-            if (data.length-1!=this.timings.length) {
-                this.timings = new float[data.length-1];
-                this.lables = new String[meta.length-1];
+            Layout layout = this.layouts.get(data.length-1);
+            if (layout == null) {
+                if (this.layouts.size() >= MAX_LAYOUTS) {
+                    this.layouts.clear();
+                }
+                layout = new Layout(data.length-1);
+                this.layouts.put(data.length-1, layout);
             }
+            layout.lastTick = this.tickCounter;
 
-            Arrays.fill(this.lables, null);
+            Arrays.fill(layout.lables, null);
             for (int i = 1; i < meta.length; i++) {
                 long next = data[i];
                 long delta = next - current;
                 float time = (float) (((double)delta)/1_000_000);
-                this.timings[i-1] = Math.max(this.timings[i-1]*0.99f+time*0.01f, time);
-                this.lables[i-1] = meta[i-1];
+                layout.timings[i-1] = Math.max(layout.timings[i-1]*0.99f+time*0.01f, time);
+                layout.lables[i-1] = meta[i-1];
                 //Raw per-pass time to the profiler, not the rolling max kept above: a window wants the
                 //average over its frames, and the rolling value never comes back down after a spike
                 me.cortex.voxy.commonImpl.VoxyProfile.recordGpuMillis(
@@ -123,7 +166,7 @@ public class GPUTiming {
         }
 
         public void capture(T metadata) {
-            if (this.index > this.metadata.length) {
+            if (this.index >= this.metadata.length) {
                 throw new IllegalStateException();
             }
             int slot = this.index++;

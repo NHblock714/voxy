@@ -77,6 +77,7 @@ public class WorldEngine {
 
     //See ActiveSectionTracker.acquireIfCached - safe from the render thread, misses instead of loading
     public WorldSection acquireIfCached(int lvl, int x, int y, int z) {
+        if (!this.isLive) return null;
         return this.sectionTracker.acquireIfCached(getWorldSectionId(lvl, x, y, z));
     }
 
@@ -161,8 +162,12 @@ public class WorldEngine {
         if (!this.isLive) throw new IllegalStateException();
         this.isLive = false;
         VarHandle.fullFence();
-        //Cannot free while there are loaded sections
+        //Cannot free while there are loaded sections. Back to live before throwing: the idle
+        //cleaner keeps an engine whose free() threw, and a dead-but-registered engine stalls its
+        //dimension for the rest of the session.
         if (this.sectionTracker.getLoadedCacheCount() != 0) {
+            this.isLive = true;
+            VarHandle.fullFence();
             throw new IllegalStateException();
         }
 

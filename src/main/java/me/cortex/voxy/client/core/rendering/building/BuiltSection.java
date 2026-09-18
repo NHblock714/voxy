@@ -32,7 +32,9 @@ public final class BuiltSection {
         this.aabb = aabb;
         this.geometryBuffer = geometryBuffer;
         this.offsets = offsets;
-        if (offsets != null && VERIFY_BUILT_SECTION_OFFSETS) {
+        //Always on: seven int subtractions per section against a failure that is otherwise a
+        //silent 16-bit wrap in the geometry manager
+        if (offsets != null) {
             for (int i = 0; i < offsets.length-1; i++) {
                 int delta = offsets[i+1] - offsets[i];
                 if (delta<0||delta>=(1<<16)) {

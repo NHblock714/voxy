@@ -1,5 +1,6 @@
 package me.cortex.voxy.client.core.rendering;
 
+import com.mojang.blaze3d.platform.GlStateManager;
 import me.cortex.voxy.client.config.VoxyConfig;
 import me.cortex.voxy.client.core.AbstractRenderPipeline;
 import me.cortex.voxy.client.core.RenderProperties;
@@ -45,11 +46,19 @@ public class ChunkBoundRenderer {
     private final RenderProperties properties;
 
     //CPU-side stream of visible section positions (2 ints each), mirrored to the gpu buffer when
-    //it changes. Sodium 0.8 re-streams this every frame even for an identical set - `changed`
-    //means "re-streamed", and only the content hash above knows whether anything really moved.
+    //it changes. Sodium re-streams whenever its graph is dirty (camera moved, a build changed a
+    //section's flags, sections with pending updates in view) even when the visited set is
+    //identical - `changed` means "re-streamed", and only the compare against the uploaded shadow
+    //below knows whether anything really moved.
     private int[] visibleSections = new int[INIT_MAX_SECTION_COUNT*2];
     private int count;
     private boolean changed;
+
+    //Half-res mask: box dilation in mask pixels (a half-res texel's sample point sits up to half a
+    //viewport pixel from the pixels it covers) and the slope-scaled depth offset, also in mask
+    //pixels, that keeps the dilated faces' depth from sliding deeper
+    private static final float HALF_RES_DILATION = 0.5f;
+    private static final float HALF_RES_DEPTH_SLOPE_OFFSET = 1.0f;
 
     private final AbstractRenderPipeline pipeline;
     public ChunkBoundRenderer(AbstractRenderPipeline pipeline) {
@@ -74,23 +83,26 @@ public class ChunkBoundRenderer {
                 .ssbo(1, this.chunkPosBuffer);
     }
 
-    //Called from sodium's section-list traversal for every visible built section
+    //Called from sodium's section-list traversal for every visible built section. Also reached
+    //outside a traversal: sodium presents a freshly built section immediately by visiting it on
+    //the previous frame's collector with no reset() in between, so the append has to mark the
+    //stream dirty itself or the draw covers slots that were never uploaded.
     public void put(long pos) {
         this.visibleSections[this.count++] = (int) pos;
         this.visibleSections[this.count++] = (int) (pos >>> 32);
+        this.changed = true;
         if (this.count >= this.visibleSections.length - 2) {
             this.visibleSections = Arrays.copyOf(this.visibleSections, (int) (this.visibleSections.length * 1.25));
         }
     }
 
-    //Sodium 0.8 restarts this stream EVERY frame (async occlusion culling re-collects the list),
-    //so "the stream restarted" carries no information about the set actually changing. Reuse keys
-    //on content instead: the streamed positions are hashed, and only a hash/count change advances
-    //the generation - which is also what gates the GPU upload, so an unchanged set skips both the
-    //re-raster and the re-upload. Not keyed on `changed` either way: that flag is consumed by the
-    //first viewport to upload, so a second viewport the same frame would wrongly keep a mask built
-    //from the previous section set.
-    private long uploadedHash;
+    //A restarted stream carries no information about the set actually changing, so reuse keys on
+    //content instead: the streamed positions are compared against a CPU shadow of what the GPU
+    //buffer holds, and only a difference advances the generation - which is also what gates the
+    //GPU upload, so an unchanged set skips both the re-raster and the re-upload. Not keyed on
+    //`changed` either way: that flag is consumed by the first viewport to upload, so a second
+    //viewport the same frame would wrongly keep a mask built from the previous section set.
+    private int[] uploadedSections = new int[0];
     private int uploadedCount = -1;
     private int contentGeneration;
 
@@ -119,6 +131,9 @@ public class ChunkBoundRenderer {
     public long getRasterisedMaskFrames() { return this.rasterisedMaskFrames; }
 
     public String describeReuseState() {
+        if (this.pipeline != null) {
+            return "off (shader TAA)";
+        }
         return "kept " + this.reusedMaskFrames + " raster " + this.rasterisedMaskFrames
                 + " gen " + this.contentGeneration
                 + " fail[set=" + this.reuseFail[0] + ",inv=" + this.reuseFail[1]
@@ -130,18 +145,23 @@ public class ChunkBoundRenderer {
     public void render(Viewport<?> viewport) {
         final float renderDistance = Minecraft.getInstance().options.getEffectiveRenderDistance()*16;//In blocks
 
-        if (VoxyConfig.CONFIG.experimentalChunkMaskReuse && this.changed) {
-            //Resolve whether the re-streamed set actually differs. Order-dependent FNV over the raw
-            //stream: sodium's traversal order is deterministic for an unchanged graph+camera, and a
-            //differing order merely hashes as "changed" - a wasted rebuild, never a stale mask.
-            long h = 0xcbf29ce484222325L;
-            for (int i = 0; i < this.count; i++) {
-                h = (h ^ this.visibleSections[i]) * 0x100000001b3L;
-            }
-            if (h == this.uploadedHash && this.count == this.uploadedCount) {
+        if (this.changed) {
+            //Resolve whether the re-streamed set actually differs: an exact, order-dependent compare
+            //against the shadow of the uploaded stream (vectorised, exits at the first difference).
+            //Sodium's traversal order is deterministic for an unchanged graph+camera, and a
+            //differing order merely compares as "changed" - a wasted rebuild, never a stale mask.
+            //Independent of the reuse flag: this is what keeps an unchanged re-streamed set from
+            //re-uploading tens of KB. Phase-independent, so it holds under shader-pack TAA where
+            //reuse itself does not.
+            boolean same = this.count == this.uploadedCount
+                    && Arrays.mismatch(this.visibleSections, 0, this.count, this.uploadedSections, 0, this.count) < 0;
+            if (same) {
                 this.changed = false;//Identical bytes are already on the GPU - nothing to upload
             } else {
-                this.uploadedHash = h;
+                if (this.uploadedSections.length < this.count) {
+                    this.uploadedSections = new int[this.visibleSections.length];
+                }
+                System.arraycopy(this.visibleSections, 0, this.uploadedSections, 0, this.count);
                 this.uploadedCount = this.count;
                 this.contentGeneration++;//Real set change - invalidates every held mask
             }
@@ -149,18 +169,12 @@ public class ChunkBoundRenderer {
 
         //The buffer already holds the mask for exactly these inputs - keep it. The content
         //generation covers the section set, the camera/MVP/distance keys cover every uniform the
-        //raster reads, and chunkMaskValid covers external clears/resizes. Shader-pack TAA is
-        //deliberately NOT a key: a held mask freezes one jitter phase, but the mask is the
-        //conservative silhouette of whole section AABBs in the far-field overlap band - the frozen
-        //phase steps forward on every rebuild and the pack's TAA resolve absorbs the sub-pixel
-        //nudge. (Keying on it locks reuse out entirely under packs that declare TAA - every raster
-        //jitters, so no two frames ever match.) Evaluated key-by-key so a failed frame is
-        //attributed to what actually broke it.
+        //raster reads, and chunkMaskValid covers external clears/resizes. Evaluated key-by-key so
+        //a failed frame is attributed to what actually broke it.
         //Under shader-pack TAA (this.pipeline != null) the mask is never reused: the seam is only
         //stable when the mask re-rasterises every frame with THAT frame's jitter. Both cheats fail
         //in the field - a reused jittered mask freezes its phase and flickers on every re-raster
         //jump, and an unjittered mask shimmers per frame against the jittered terrain around it.
-        //The content-hash upload squash above stays active either way; it is phase-independent.
         if (VoxyConfig.CONFIG.experimentalChunkMaskReuse && this.pipeline == null) {
             if (viewport.chunkMaskContentGen != this.contentGeneration) {
                 this.reuseFail[0]++;
@@ -230,6 +244,23 @@ public class ChunkBoundRenderer {
             negInnerBlock.getToAddress(ptr); ptr += 4*3;
             viewport.MVP.translate(negInnerBlock.negate(), new Matrix4f()).getToAddress(matPtr);
             MemoryUtil.memPutFloat(ptr, renderDistance); ptr += 4;
+
+            //maskPixel (std140 offset 96): xy = NDC size of one mask pixel, z = box dilation in mask
+            //pixels. The dilation keeps the coarser mask a superset of the full-resolution one - a
+            //half-res texel's sample point sits up to half a viewport pixel from the pixels it
+            //covers, so an undilated box silhouette would give ground there. Zero dilation at full
+            //resolution: the boxes then rasterise exactly as they are.
+            MemoryUtil.memPutFloat(ptr, 2.0f / viewport.chunkMaskWidth); ptr += 4;
+            MemoryUtil.memPutFloat(ptr, 2.0f / viewport.chunkMaskHeight); ptr += 4;
+            MemoryUtil.memPutFloat(ptr, viewport.chunkMaskHalfRes ? HALF_RES_DILATION : 0.0f); ptr += 4;
+            MemoryUtil.memPutFloat(ptr, 0.0f); ptr += 4;
+            //maskScale (offset 112): a mask rounded up from an odd viewport size spans one viewport
+            //pixel more than the LOD pass, so the raster's NDC is rescaled by width/(2*maskWidth) to
+            //keep mask texel i over viewport pixels 2i,2i+1. z flags the half-res path.
+            MemoryUtil.memPutFloat(ptr, viewport.chunkMaskHalfRes ? viewport.width / (2.0f * viewport.chunkMaskWidth) : 1.0f); ptr += 4;
+            MemoryUtil.memPutFloat(ptr, viewport.chunkMaskHalfRes ? viewport.height / (2.0f * viewport.chunkMaskHeight) : 1.0f); ptr += 4;
+            MemoryUtil.memPutFloat(ptr, viewport.chunkMaskHalfRes ? 1.0f : 0.0f); ptr += 4;
+            MemoryUtil.memPutFloat(ptr, 0.0f); ptr += 4;
         }
         UploadStream.INSTANCE.commit();
 
@@ -251,12 +282,39 @@ public class ChunkBoundRenderer {
         glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, SharedIndexBuffer.INSTANCE_BB_BYTE.id());
         if (this.pipeline != null) this.pipeline.bindUniforms();//shader TAA
 
+        //The raster covers the mask texture, which is smaller than the viewport when the mask is
+        //half resolution. The caller holds the GL viewport at (0,0,width,height) and every pass
+        //after this one relies on it, so it is put back once the boxes are drawn.
+        boolean maskViewport = viewport.chunkMaskWidth != viewport.width || viewport.chunkMaskHeight != viewport.height;
+        if (maskViewport) {
+            glViewport(0, 0, viewport.chunkMaskWidth, viewport.chunkMaskHeight);
+        }
+        //Half-res only: the dilation moves a face's silhouette but not its depth plane, so on a
+        //face seen at a grazing angle a mask texel holds the depth the face had a pixel further
+        //in - deeper - and LOD ground that abuts that face reads as inside the box and is cut out.
+        //A slope-scaled polygon offset of one mask pixel pulls every face's depth toward the
+        //camera by about as much as its silhouette moved, erring toward LOD drawn where vanilla
+        //drew nothing (which the stencil already resolves) instead of toward cracks. Through
+        //GlStateManager so its cache stays truthful for vanilla's own users of the state.
+        if (viewport.chunkMaskHalfRes) {
+            GlStateManager._enablePolygonOffset();
+            GlStateManager._polygonOffset(this.properties.isReverseZ() ? HALF_RES_DEPTH_SLOPE_OFFSET : -HALF_RES_DEPTH_SLOPE_OFFSET, 0.0f);
+        }
+
         //Batch the draws into groups of size 32
         if (sectionCount >= 32) {
             glDrawElementsInstanced(GL_TRIANGLES, 6 * 2 * 3 * 32, GL_UNSIGNED_BYTE, 0, sectionCount/32);
         }
         if (sectionCount%32 != 0) {
             glDrawElementsInstancedBaseInstance(GL_TRIANGLES, 6 * 2 * 3 * (sectionCount%32), GL_UNSIGNED_BYTE, 0, 1, (sectionCount/32)*32);
+        }
+
+        if (viewport.chunkMaskHalfRes) {
+            GlStateManager._polygonOffset(0.0f, 0.0f);
+            GlStateManager._disablePolygonOffset();
+        }
+        if (maskViewport) {
+            glViewport(0, 0, viewport.width, viewport.height);
         }
 
         {
@@ -283,6 +341,11 @@ public class ChunkBoundRenderer {
     }
 
     public void free() {
+        //The sink is only re-pointed when sodium rebuilds its list; a stream into a freed renderer
+        //must not be possible in between
+        if (ChunkBoundMaskSink.active == this) {
+            ChunkBoundMaskSink.active = null;
+        }
         this.rasterShader.free();
         this.uniformBuffer.free();
         this.chunkPosBuffer.free();

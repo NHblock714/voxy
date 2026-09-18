@@ -101,5 +101,20 @@
   "voxy.config.compat.farPlayerNames": "Far player names",
   "voxy.config.compat.farPlayerNames.tooltip": "Show name tags on far players",
   "voxy.config.compat.shareFarPlayerPosition": "Share my position",
-  "voxy.config.compat.shareFarPlayerPosition.tooltip": "Let the server relay your position so others can see you beyond their render distance"
+  "voxy.config.compat.shareFarPlayerPosition.tooltip": "Let the server relay your position so others can see you beyond their render distance",
+  "voxy.config.experimental": "Experimental",
+  "voxy.config.experimental.cmdListHold": "Hold command lists while still",
+  "voxy.config.experimental.cmdListHold.tooltip": "While the camera is still and no LOD geometry changed, reuse the previous frame's LOD draw commands instead of rebuilding them (held frames skip hi-z, traversal, command generation and the temporal pass). Any movement or geometry change forces a full rebuild. About 0.5 ms per frame at rest. Hot-reloadable.",
+  "voxy.config.experimental.cmdListHoldMaxFrames": "Max held frames",
+  "voxy.config.experimental.cmdListHoldMaxFrames.tooltip": "Longest stretch between two rebuilds, in frames: a rebuild is forced at least every N frames regardless. Bounds how long LOD requests and hi-z age can lag behind.",
+  "voxy.config.experimental.chunkMaskReuse": "Reuse chunk mask while still",
+  "voxy.config.experimental.chunkMaskReuse.tooltip": "Keep the previous frame's chunk-bound mask when the visible section set, camera and projection are unchanged. Automatically inactive under shader packs with TAA, where the mask has to re-rasterise with each frame's jitter to keep the seam stable. Hot-reloadable.",
+  "voxy.config.experimental.sectionArrayPoolMiB": "Section array pool",
+  "voxy.config.experimental.sectionArrayPoolMiB.tooltip": "Budget for the pooled 256 KiB section arrays shared by ingest and meshing. Raise it when the array pool miss counter in F3 or a full report keeps climbing during fast flight. Once filled the pool holds this much heap; lowering the slider or leaving the world releases the excess. Hot-reloadable.",
+  "voxy.config.experimental.opaqueNearFirst": "Near-first opaque draw order",
+  "voxy.config.experimental.opaqueNearFirst.tooltip": "Issue the opaque LOD draw commands near to far so early depth rejection discards fill hidden behind closer terrain. A draw-order heuristic only; the depth test owns correctness. Rebuilds the renderer.",
+  "voxy.config.experimental.chunkMaskHalfRes": "Half-resolution chunk mask",
+  "voxy.config.experimental.chunkMaskHalfRes.tooltip": "Rasterise the chunk-bound mask at half resolution; each box is dilated by half a mask pixel and its depth pulled one mask pixel of slope toward the camera, so the coarser mask never cuts LOD the full-resolution one would keep. Cuts the CB pass to about a quarter. Watch the LOD/vanilla seam, especially under TAA shader packs, for pixel-level cracks or flicker. Rebuilds the renderer.",
+  "voxy.config.experimental.hiZCompute": "Compute hi-z chain",
+  "voxy.config.experimental.hiZCompute.tooltip": "Build the hi-z depth mip chain with compute dispatches instead of one draw per level. Falls back to the draw chain if the compute shaders fail to compile on this driver (logged once; F3 shows which chain is live). Only rebuild frames benefit. Rebuilds the renderer."
 }

@@ -55,6 +55,10 @@ public class MDICSectionRenderer extends AbstractSectionRenderer<MDICViewport, B
     private final Shader terrainShader;
     private final Shader translucentTerrainShader;
 
+    //Read at renderer construction - toggling the option needs a renderer recreation. Kept as a
+    //snapshot so the debug line reports what this renderer compiled, not the live field.
+    private final boolean opaqueNearFirst = me.cortex.voxy.client.config.VoxyConfig.CONFIG.experimentalOpaqueNearFirst;
+
     private final Shader commandGenShader = Shader.make()
             .define("TRANSLUCENT_WRITE_BASE", 1024)
             .define("TEMPORAL_OFFSET", TEMPORAL_OFFSET)
@@ -64,8 +68,7 @@ public class MDICSectionRenderer extends AbstractSectionRenderer<MDICViewport, B
             .define("HAS_STATISTICS")
             .define("STATISTICS_BUFFER_BINDING", STATISTICS_BUFFER_BINDING)
 
-            //Read at renderer construction - toggling the option needs a renderer recreation
-            .defineIf("OPAQUE_NEAR_FIRST", me.cortex.voxy.client.config.VoxyConfig.CONFIG.experimentalOpaqueNearFirst)
+            .defineIf("OPAQUE_NEAR_FIRST", this.opaqueNearFirst)
 
             .add(ShaderType.COMPUTE, "voxy:lod/gl46/cmdgen.comp")
             .compile();
@@ -101,6 +104,13 @@ public class MDICSectionRenderer extends AbstractSectionRenderer<MDICViewport, B
     private final AbstractRenderPipeline pipeline;
     private final float fluidDatumY;
     private final Matrix4f uniformMatrix = new Matrix4f();
+
+    //Read at renderer construction - the fragment shader's mask-coordinate shift is a compile-time
+    //define, so toggling the option needs a renderer recreation. This one snapshot also seeds every
+    //viewport this renderer creates: the mask buffer size and the shift can then never disagree,
+    //whatever the live config field says in between.
+    private final boolean chunkMaskHalfRes = me.cortex.voxy.client.config.VoxyConfig.CONFIG.experimentalChunkMaskHalfRes;
+
     public MDICSectionRenderer(AbstractRenderPipeline pipeline, ModelStore modelStore, BasicSectionGeometryData geometryData) {
         super(pipeline.properties, modelStore, geometryData);
         this.pipeline = pipeline;
@@ -117,6 +127,9 @@ public class MDICSectionRenderer extends AbstractSectionRenderer<MDICViewport, B
                 .apply(this.properties::apply)
                 .defineIf("TAA_PATCH", taa != null)
                 .defineIf("DEBUG_RENDER", false)
+                //On the shared builder so the clone in tryCompilePatchedOrNormal carries it into
+                //the plain AND the shader-pack-patched fragment programs, opaque and translucent
+                .defineIf("CHUNK_MASK_HALF_RES", this.chunkMaskHalfRes)
 
                 //.defineIf("USE_NV_JANK", Capabilities.INSTANCE.isNvidia)//TODO: fix use capability to try compile the jank thing to see if it can be and use that
 
@@ -172,14 +185,18 @@ public class MDICSectionRenderer extends AbstractSectionRenderer<MDICViewport, B
         MemoryUtil.memPutInt(ptr, viewport.frameId&0x7fffffff); ptr += 4;
         viewport.innerTranslation.getToAddress(ptr); ptr += 4*3;
         MemoryUtil.memPutFloat(ptr, this.fluidDatumY); ptr += 4;
-        //std140: these follow fluidDatumY at 96/100/104/108 and round the block to 112. Must stay in
-        //lockstep with SceneUniform in gl46/bindings.glsl - a short write feeds garbage into the enable
-        //flag, which silently toggles the chunk-bounds mask.
+        //std140: these follow fluidDatumY at 96/100/104/108/112 and round the block to 128. Must stay
+        //in lockstep with SceneUniform in gl46/bindings.glsl - a short write feeds garbage into the
+        //enable flag, which silently toggles the chunk-bounds mask.
         var boundary = me.cortex.voxy.client.core.rendering.LodBoundaryFade.getDistances();
         MemoryUtil.memPutFloat(ptr, boundary.enabled() ? 1.0f : 0.0f); ptr += 4;
         MemoryUtil.memPutFloat(ptr, boundary.fadeStart()); ptr += 4;
         MemoryUtil.memPutFloat(ptr, boundary.fadeEnd()); ptr += 4;
         MemoryUtil.memPutInt(ptr, viewport.prevBuildFrameId & 0x7fffffff); ptr += 4;
+        //The visibility grace exists for held replays; without the hold every frame builds and a
+        //section renders only when visible this build
+        MemoryUtil.memPutInt(ptr, me.cortex.voxy.client.config.VoxyConfig.CONFIG.experimentalCmdListHold
+                ? (viewport.prevBuildFrameId & 0x7fffffff) : 0); ptr += 4;
 
         UploadStream.INSTANCE.commit();
     }
@@ -276,7 +293,19 @@ public class MDICSectionRenderer extends AbstractSectionRenderer<MDICViewport, B
         return formula;
     }
 
+    private int lastOpaqueCount, lastTranslucentCount, lastTemporalCount;
+
+    //A held frame replays the last build's commands, so its counts are the last readback's; feeding
+    //them keeps the clamp window ticking once per frame instead of once per build
+    @Override
+    public void onCommandListsHeld(MDICViewport viewport) {
+        this.onDrawCountsRead(this.lastOpaqueCount, this.lastTranslucentCount, this.lastTemporalCount);
+    }
+
     private void onDrawCountsRead(int opaque, int translucent, int temporal) {
+        this.lastOpaqueCount = opaque;
+        this.lastTranslucentCount = translucent;
+        this.lastTemporalCount = temporal;
         int[] counts = {opaque, translucent, temporal};
         for (int lane = 0; lane < 3; lane++) {
             int c = counts[lane];
@@ -480,12 +509,13 @@ public class MDICSectionRenderer extends AbstractSectionRenderer<MDICViewport, B
         //whether the resident-scaling draw cost is bounded this session or back on the formula
         lines.add("drawClamp: " + (this.drawClampDisabled[0] ? "R" : "a") + (this.drawClampDisabled[1] ? "R" : "a") + (this.drawClampDisabled[2] ? "R" : "a")
                 + " lastWin[" + this.drawCountLastWindowMax[0] + "," + this.drawCountLastWindowMax[1] + "," + this.drawCountLastWindowMax[2] + "]"
-                + " strikes[" + this.truncationStrikes[0] + "," + this.truncationStrikes[1] + "," + this.truncationStrikes[2] + "]");
+                + " strikes[" + this.truncationStrikes[0] + "," + this.truncationStrikes[1] + "," + this.truncationStrikes[2] + "]"
+                + " nearFirst=" + this.opaqueNearFirst);
     }
 
     @Override
     public MDICViewport createViewport() {
-        return new MDICViewport(this.properties, this.geometryManager.getMaxSectionCount());
+        return new MDICViewport(this.properties, this.geometryManager.getMaxSectionCount(), this.chunkMaskHalfRes);
     }
 
     @Override

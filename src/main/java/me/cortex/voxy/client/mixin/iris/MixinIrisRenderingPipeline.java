@@ -47,6 +47,9 @@ public class MixinIrisRenderingPipeline implements IGetVoxyPatchData, IGetIrisVo
             var renderer = ((IGetVoxyRenderSystem) Minecraft.getInstance().levelRenderer).voxy$getRenderSystem();
             if (renderer != null) {
                 IrisUtil.CAPTURED_VIEWPORT_PARAMETERS.apply(renderer);
+                //Applied once per capture; the level renderer captures again each frame
+                IrisUtil.CAPTURED_VIEWPORT_PARAMETERS = null;
+                IrisUtil.USED_IRIS_VIEWPORT = true;
             }
         }
     }

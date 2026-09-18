@@ -45,6 +45,9 @@ public class Service {
             return false;
         }
         if (!this.executor.run()) {//Run the job
+            //run() reports false once the executor is shut down; a job racing the shutdown is
+            //dropped, not a fault
+            if (this.isStopping || !this.isLive) return false;
             throw new IllegalStateException("Executor failed to run");
         }
         return true;

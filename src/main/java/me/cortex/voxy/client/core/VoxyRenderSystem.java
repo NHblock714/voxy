@@ -153,8 +153,11 @@ public class VoxyRenderSystem {
                     me.cortex.voxy.client.core.beacon.BeaconBeamTracker.onSectionDirty(s, flags);
                 });
 
-                Arrays.stream(world.getMapper().getBiomeEntries()).forEach(this.modelService::addBiome);
+                //Callback before the replay: a biome registered between the two would otherwise
+                //never reach the factory, and every later biome id leaves a permanent hole in its
+                //colour table. The replay may then hand the factory a duplicate, which it drops.
                 world.getMapper().setBiomeCallback(this.modelService::addBiome);
+                Arrays.stream(world.getMapper().getBiomeEntries()).forEach(this.modelService::addBiome);
 
                 this.nodeManager.start();
             }
@@ -440,101 +443,105 @@ public class VoxyRenderSystem {
 
         glViewport(0, 0, viewport.width, viewport.height);
 
-        if (boundFB == 0) {
-            throw new IllegalStateException("Cannot use the default framebuffer as cannot source from it");
-        }
-
-        this.pipeline.preSetup(viewport);
-
-        TimingStatistics.E.start();
-        //"CB": the hole-punch mask rasterises one AABB per sodium-visible section at full viewport
-        //resolution, so its cost tracks how many chunk meshes are loaded rather than anything voxy
-        //controls. TimingStatistics.E only measures the submission, which reads ~0 no matter how
-        //expensive the fill is - this GPU marker is the only way to see the real number.
-        GPUTiming.INSTANCE.marker("CB");
-        if (!VoxyClient.disableSodiumChunkRender() && !IrisUtil.irisShadowActive()) {
-            this.chunkBoundRenderer.render(viewport);
-        } else {
-            viewport.depthBoundingBuffer.clear(this.properties.inverseClearDepth());
-            //The clear wipes content the reuse-keys can't see changing
-            viewport.invalidateChunkMask();
-        }
-        TimingStatistics.E.stop();
-
-
-        GPUTiming.INSTANCE.marker();
-        //Before the pipeline uploads and draws this frame's geometry: sections built off-thread can
-        //carry blend-palette indices whose colours are still only queued
-        this.modelService.drainBlendPalette();
-        // Run the LOD pipeline.
-        this.pipeline.runPipeline(viewport, boundFB, this.viewportDimensions[2], this.viewportDimensions[3]);
-        GPUTiming.INSTANCE.marker();
-
-
-        TimingStatistics.main.stop();
-        TimingStatistics.postDynamic.start();
-
-        PrintfDebugUtil.tick();
-
-        //As much dynamic runtime stuff here
-        {
-            //Tick upload stream (this is ok to do here as upload ticking is just memory management)
-            UploadStream.INSTANCE.tick();
-
-            this.renderDistanceTracker.setProcessRate(this.getTopLevelNodeProcessRate());
-            //Hot-follow the config field every frame (the tracker early-exits when unchanged, one
-            //int compare): only two call sites push a distance change into the live ring - the ctor
-            //and the GUI slider - so a change written by any other path (NeoForge Mods->Config
-            //Reloading, commands, another mod) leaves the ring at the old radius until renderer
-            //recreation. Following the field here makes every write converge within a frame.
-            this.setRenderDistance(VoxyConfig.CONFIG.sectionRenderDistance);
-            //Same hot-follow treatment for the array pool budget (the setter early-exits when
-            //unchanged; WorldSection is common code and cannot read client config itself)
-            me.cortex.voxy.common.world.WorldSection.setArrayPoolCapMiB(VoxyConfig.CONFIG.sectionArrayPoolMiB);
-            while (this.renderDistanceTracker.setCenterAndProcess(viewport.cameraX, viewport.cameraZ)
-                    && VoxyClient.isFrexActive()) {
-            }
-            TimingStatistics.H.start();
-            // Done here as it allows less GL state resetup. The budget is read from config every
-            // frame, so changing the LOD build pressure option is hot-reloadable and does not need
-            // renderer recreation.
-            long modelBakeBudget = this.getModelBakeBudgetNanos();
-            this.modelService.tick(modelBakeBudget);
-            TimingStatistics.H.stop();
-        }
-        GPUTiming.INSTANCE.marker();
-        TimingStatistics.postDynamic.stop();
-
-        GPUTiming.INSTANCE.tick();
-
-        glBindFramebuffer(GlConst.GL_FRAMEBUFFER, oldFB);
-        glViewport(this.viewportDimensions[0], this.viewportDimensions[1],
-                this.viewportDimensions[2], this.viewportDimensions[3]);
-
-        {//Reset state manager stuffs
-            glUseProgram(0);
-            glEnable(GL_DEPTH_TEST);
-            glDisable(GL_STENCIL_TEST);
-
-            GlStateManager._glBindVertexArray(0);//Clear binding
-
-            //One pass over the units, iris' own tracking array included via the pipeline override -
-            //the separate 16-unit bindSamplerToUnit loop this replaces existed only because clearing
-            //GL state alone leaves iris' cached bindings stale
-            this.pipeline.clearTextureAndSamplerBindings(CLEARED_TEXTURE_BINDING_COUNT);
-
-            // Restore the shader-storage bindings captured before the LOD pass.
-        for (int i = 0; i < this.savedBufferBindings.length; i++) {
-            glBindBufferBase(GL_SHADER_STORAGE_BUFFER, i, this.savedBufferBindings[i]);
+        //From here on the restore block, the samplers and the profiler's in-frame flag run in
+        //finally: a throw mid-pass otherwise leaves a foreign framebuffer/viewport bound for the
+        //rest of the frame and FrameProfiler attributing the next stall to voxy
+        try {
+            if (boundFB == 0) {
+                throw new IllegalStateException("Cannot use the default framebuffer as cannot source from it");
             }
 
+            this.pipeline.preSetup(viewport);
+
+            TimingStatistics.E.start();
+            //"CB": the hole-punch mask rasterises one AABB per sodium-visible section at the mask
+            //resolution (the viewport, or half of it under experimentalChunkMaskHalfRes), so its cost
+            //tracks how many chunk meshes are loaded rather than anything voxy controls.
+            //TimingStatistics.E only measures the submission, which reads ~0 no matter how
+            //expensive the fill is - this GPU marker is the only way to see the real number.
+            GPUTiming.INSTANCE.marker("CB");
+            if (!VoxyClient.disableSodiumChunkRender() && !IrisUtil.irisShadowActive()) {
+                this.chunkBoundRenderer.render(viewport);
+            } else {
+                viewport.depthBoundingBuffer.clear(this.properties.inverseClearDepth());
+                //The clear wipes content the reuse-keys can't see changing
+                viewport.invalidateChunkMask();
+            }
+            TimingStatistics.E.stop();
+
+
+            GPUTiming.INSTANCE.marker();
+            //Before the pipeline uploads and draws this frame's geometry: sections built off-thread can
+            //carry blend-palette indices whose colours are still only queued
+            this.modelService.drainBlendPalette();
+            // Run the LOD pipeline.
+            this.pipeline.runPipeline(viewport, boundFB, this.viewportDimensions[2], this.viewportDimensions[3]);
+            GPUTiming.INSTANCE.marker();
+
+
+            TimingStatistics.main.stop();
+            TimingStatistics.postDynamic.start();
+
+            PrintfDebugUtil.tick();
+
+            //As much dynamic runtime stuff here
+            {
+                //Tick upload stream (this is ok to do here as upload ticking is just memory management)
+                UploadStream.INSTANCE.tick();
+
+                this.renderDistanceTracker.setProcessRate(this.getTopLevelNodeProcessRate());
+                //Hot-follow the config field every frame (the tracker early-exits when unchanged, one
+                //int compare): only two call sites push a distance change into the live ring - the ctor
+                //and the GUI slider - so a change written by any other path (NeoForge Mods->Config
+                //Reloading, commands, another mod) leaves the ring at the old radius until renderer
+                //recreation. Following the field here makes every write converge within a frame.
+                this.setRenderDistance(VoxyConfig.CONFIG.sectionRenderDistance);
+                //Same hot-follow treatment for the array pool budget (the setter early-exits when
+                //unchanged; WorldSection is common code and cannot read client config itself)
+                me.cortex.voxy.common.world.WorldSection.setArrayPoolCapMiB(VoxyConfig.CONFIG.sectionArrayPoolMiB);
+                while (this.renderDistanceTracker.setCenterAndProcess(viewport.cameraX, viewport.cameraZ)
+                        && VoxyClient.isFrexActive()) {
+                }
+                TimingStatistics.H.start();
+                // Done here as it allows less GL state resetup. The budget is read from config every
+                // frame, so changing the LOD build pressure option is hot-reloadable and does not need
+                // renderer recreation.
+                long modelBakeBudget = this.getModelBakeBudgetNanos();
+                this.modelService.tick(modelBakeBudget);
+                TimingStatistics.H.stop();
+            }
+            GPUTiming.INSTANCE.marker();
+            TimingStatistics.postDynamic.stop();
+
+            GPUTiming.INSTANCE.tick();
+        } finally {
+            glBindFramebuffer(GlConst.GL_FRAMEBUFFER, oldFB);
+            glViewport(this.viewportDimensions[0], this.viewportDimensions[1],
+                    this.viewportDimensions[2], this.viewportDimensions[3]);
+
+            {//Reset state manager stuffs
+                glUseProgram(0);
+                glEnable(GL_DEPTH_TEST);
+                glDisable(GL_STENCIL_TEST);
+
+                GlStateManager._glBindVertexArray(0);//Clear binding
+
+                //One pass over the units, iris' own tracking array included via the pipeline override:
+                //clearing GL state alone leaves iris' cached bindings stale
+                this.pipeline.clearTextureAndSamplerBindings(CLEARED_TEXTURE_BINDING_COUNT);
+
+                // Restore the shader-storage bindings captured before the LOD pass.
+                for (int i = 0; i < this.savedBufferBindings.length; i++) {
+                    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, i, this.savedBufferBindings[i]);
+                }
+            }
+
+            TimingStatistics.all.stop();
+            me.cortex.voxy.commonImpl.VoxyProfile.end("render/lodPipeline", tLod);
+
+            //No-op unless a capture is armed (/voxy debug capture)
+            me.cortex.voxy.client.FrameProfiler.onFrameEnd();
         }
-
-        TimingStatistics.all.stop();
-        me.cortex.voxy.commonImpl.VoxyProfile.end("render/lodPipeline", tLod);
-
-        //No-op unless a capture is armed (/voxy debug capture)
-        me.cortex.voxy.client.FrameProfiler.onFrameEnd();
     }
 
 
@@ -649,7 +656,14 @@ public class VoxyRenderSystem {
     public void addDebugInfo(List<String> debug) {
         debug.add("Buf/Tex [#/Mb]: [" + GlBuffer.getCount() + "/" + (GlBuffer.getTotalSize()/1_000_000) + "],[" + GlTexture.getCount() + "/" + (GlTexture.getEstimatedTotalSize()/1_000_000)+"]");
         //Sodium-visible sections drive the hole-punch mask's fill cost (see the "CB" GPU marker)
+        //Mask size is the viewport's construction-time snapshot, not the live config field: it is
+        //what the buffer and the fragment shader actually use, and a toggle without a renderer
+        //recreation must read as "not in effect"
+        var maskViewport = this.viewportSelector.getViewport();
         debug.add("Mask sections (sodium visible): " + this.chunkBoundRenderer.getLastRenderedSectionCount()
+                + " | mask " + maskViewport.chunkMaskWidth + "x" + maskViewport.chunkMaskHeight
+                + (maskViewport.chunkMaskHalfRes ? " half" : " full")
+                + " | hiz " + maskViewport.hiZBuffer.describe()
                 + (VoxyConfig.CONFIG.experimentalChunkMaskReuse
                         ? " | maskReuse: " + this.chunkBoundRenderer.describeReuseState()
                         : ""));

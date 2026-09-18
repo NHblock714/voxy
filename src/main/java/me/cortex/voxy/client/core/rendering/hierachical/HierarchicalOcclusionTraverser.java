@@ -263,6 +263,19 @@ public class HierarchicalOcclusionTraverser {
         float p11 = Math.max(0.0001f, viewport.vanillaProjection.m11());
         MemoryUtil.memPutFloat(ptr, 1.0f / p00);ptr += 4;
         MemoryUtil.memPutFloat(ptr, 1.0f / p11);ptr += 4;
+
+        MemoryUtil.memPutInt(ptr, this.requestClock); ptr += 4;
+    }
+
+    //The request-retry age in the traversal counts frames, not builds: the node cleaner's
+    //visibilityId (the traversal's frameId) only advances on frames that rebuild the command lists,
+    //so a retry measured against it would stretch by the hold length while the camera is still.
+    //Ticked once per pipeline iteration whether or not the frame builds - without the hold both
+    //clocks advance in lockstep.
+    private int requestClock;
+
+    public void tickRequestClock() {
+        this.requestClock++;
     }
 
     private void bindings(Viewport<?> viewport) {
@@ -400,15 +413,16 @@ public class HierarchicalOcclusionTraverser {
             //Logger.warn("Count over max buffer size, clamping, got count: " + count + ".");
 
             count = (int) ((this.requestBuffer.size()>>3)-1);
-
-            //Write back the clamped count
-            MemoryUtil.memPutInt(ptr-8, count);
         }
         //if (count > REQUEST_QUEUE_SIZE) {
         //    Logger.warn("Count larger than 'maxRequestCount', overflow captured. Overflowed by " + (count-REQUEST_QUEUE_SIZE));
         //}
         if (count != 0) {
-            this.nodeManager.submitRequestBatch(new MemoryBuffer(count*8L+8).cpyFrom(ptr-8));// the -8 is because we incremented it by 8
+            var batch = new MemoryBuffer(count*8L+8).cpyFrom(ptr-8);// the -8 is because we incremented it by 8
+            //The clamped count goes into the copy: ptr is a GL_MAP_READ_BIT mapping, and writing
+            //through it is undefined by the spec
+            MemoryUtil.memPutInt(batch.address, count);
+            this.nodeManager.submitRequestBatch(batch);
         }
     }
 

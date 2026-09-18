@@ -45,6 +45,9 @@ public class Voxy {
         //controls. Outside the Create gate - the far-player keys apply on any server, and the
         //config class itself touches no Create classes (the train keys just sit unused without it).
         me.cortex.voxy.commonImpl.compat.create.CreateServerConfig.register(container, modEventBus);
+        //The sable tracking-range fuse is per server run; ShipBorneServer is dist-safe
+        NeoForge.EVENT_BUS.addListener((net.neoforged.neoforge.event.server.ServerStartingEvent e) ->
+                me.cortex.voxy.commonImpl.compat.sable.ShipBorneServer.reset());
 
         // Only register client config on client side
         if (FMLLoader.getDist() == Dist.CLIENT) {

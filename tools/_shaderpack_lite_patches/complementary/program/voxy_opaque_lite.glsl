@@ -31,6 +31,13 @@ mat4 gbufferPreviousProjection = vxProjPrev;
 #include "/lib/shaderSettings/wavingBlocks.glsl"
 //#define NIGHT_DESATURATION
 
+// Euphoria Patches writes this marker into the four LOD class programs and nowhere else -
+// dh_terrain.glsl:16, dh_water.glsl:14, voxy_opaque.glsl:26, voxy_translucent.glsl:22 - and no .glsl
+// in the generated pack tests it, so its reader is outside the shader source. voxy asks Iris for
+// voxy_opaque_lite instead of voxy_opaque, so this file is what that reader finds, and it has to
+// declare what the program it stands in for declares.
+#define CHUNKS_FADE_IN_NO_FRAG_MOD_INJECT
+
 //LOD Downgrade Level//
 // 1 - only what cannot be seen at LOD range: no per material IPBR tree, no held light, no vanilla
 //     AO term, no lightning flash. The materials the IPBR tree lit or shaped differently enough to
@@ -73,7 +80,7 @@ mat4 gbufferPreviousProjection = vxProjPrev;
 // With IPBR on, /lib/materials/materialHandling/terrainMaterials.glsl:12 pulls in
 // terrainIPBR.glsl - 3646 lines, ~15 levels of nested if, ~500 material ids - and on a fill bound
 // pass that is branch divergence and register pressure on every LOD pixel. With IPBR off the same
-// header falls through to the pack's own compact cascade (terrainMaterials.glsl:26-92): foliage,
+// header falls through to the pack's own compact cascade (terrainMaterials.glsl:26-93): foliage,
 // leaves, vines, lava and the automatic emission range, which is the same set dh_terrain.glsl
 // keeps. Cost: no per material smoothness/highlight on distant stone, ore, metal and glass;
 // emission comes from the light level test and the material fixups below instead of ~200 hand
@@ -113,10 +120,16 @@ layout(location = 1) out vec4 gbufferData6;
 #endif
 
 //Common Variables//
-vec3 sunVec = GetSunVector();
 vec3 upVec = normalize(gbufferModelView[1].xyz);
 vec3 eastVec = normalize(gbufferModelView[0].xyz);
 vec3 northVec = normalize(gbufferModelView[2].xyz);
+
+// GetSunVector is a macro (commonFunctions.glsl:4-16), so this initializer is its expansion inlined
+// here. The OVERWORLD one (:7) reads gbufferModelView and the file scope overworldAngle at :5-6; the
+// END ones read endFlashPosition / endFlashIntensityM at :10 and gbufferModelView plus
+// SUN_ROTATION_DATA (:2) at :12. None of them touches upVec/eastVec/northVec - this order is shape
+// parity with voxy_opaque.glsl:39-43, not a dependency.
+vec3 sunVec = GetSunVector();
 
 float SdotU = dot(sunVec, upVec);
 float sunFactor = SdotU < 0.0 ? clamp(SdotU + 0.375, 0.0, 0.75) / 0.75 : clamp(SdotU + 0.03125, 0.0, 0.0625) / 0.0625;
@@ -274,12 +287,12 @@ void voxy_emitFragment(VoxyFragmentParameters parameters) {
     // Materials the IPBR tree treated differently enough that dropping it shows up as a step across
     // the LOD boundary rather than as missing detail. Everything here is copied from the branch it
     // replaces, so LOD and near terrain stay on the same curve.
-    if (mat == 10412 || mat == 10396) { // Glowstone, Jack o'Lantern - terrainIPBR.glsl:1577-1581
+    if (mat == 10412 || mat == 10396) { // Glowstone, Jack o'Lantern - terrainIPBR.glsl:1622-1626
         noSmoothLighting = true; noDirectionalShading = true;
         lmCoordM = vec2(0.9, 0.0);
         emission = max0(color.g - 0.3) * 4.6;
         color.rg += emission * vec2(0.15, 0.05);
-    } else if (mat == 10648 || mat == 10649) { // Shroomlight - terrainIPBR.glsl:2561-2566
+    } else if (mat == 10648 || mat == 10649) { // Shroomlight - terrainIPBR.glsl:2634-2639
         noSmoothLighting = true; noDirectionalShading = true;
         lmCoordM = vec2(1.0, 0.0);
         emission = min(pow2(pow2(pow2(dot(color.rgb, color.rgb) * 0.6))), 6.0) * 0.8 + 0.5;
@@ -300,15 +313,17 @@ void voxy_emitFragment(VoxyFragmentParameters parameters) {
         // The cascade already multiplied its flat 2.0 by LAVA_EMISSION at terrainMaterials.glsl:77,
         // so this overwrite carries the multiplier itself rather than compounding it.
         emission = (GetLuminance(color.rgb) * 7.48 + 0.5) * LAVA_EMISSION;
-    } else if (mat == 10007 || mat == 10009 || mat == 10011) { // Leaves - leaves.glsl:12-21
+    } else if (uint(mat - 10007) <= 5u) { // Leaves, 10007-10012 - leaves.glsl:12-21
         // The only material whose specular is strong enough to read as a brightness step: the IPBR
         // branch drives highlightMult to 2.0-6.0 where the default is 1.0, so distant canopy goes
-        // noticeably flat under a low sun without this.
+        // noticeably flat under a low sun without this. The id set is what terrainIPBR.glsl:57
+        // (mat < 10013) hands to leaves.glsl and what terrainMaterials.glsl:39 tests here; the even
+        // ids are the waterlogged leaf states, which carry their own customId.
         float leafFactor = min1(pow2(color.g - 0.15 * (color.r + color.b)) * 2.5);
         smoothnessG = leafFactor * 0.4;
         highlightMult = (leafFactor * 4.0 + 2.0)
                       * (1.0 - pow2(pow2(clamp(1.0 + dot(normalM, nViewPos), 0.0, 1.0))));
-    } else if (mat >= 10132 && mat <= 10135 && glColor.b < 0.98) { // Grass top - terrainIPBR.glsl:598
+    } else if (mat >= 10132 && mat <= 10135 && glColor.b < 0.98) { // Grass top - terrainIPBR.glsl:585
         smoothnessG = pow2(color.g);
     }
 
@@ -345,10 +360,27 @@ void voxy_emitFragment(VoxyFragmentParameters parameters) {
     DoLighting(color, shadowMult, playerPos, viewPos, lViewPos, geoNormal, normalM, dither,
                worldGeoNormal, lmCoordM, noSmoothLighting, noDirectionalShading, noVanillaAO,
                centerShadowBias, subsurfaceMode, smoothnessG, highlightMult, emission, purkinjeOverwrite, isLightSource,
-               enderDragonDead);
+               // vec3(1.0) is the non metal tint. Its live use is the highlight multiply at
+               // mainLighting.glsl:849, where vec3(1.0) is an identity; the F0/highlightMult override
+               // above it (:836-840) needs BETTER_LABPBR_REFLECTIONS_INTERNAL, which common.glsl:411
+               // gates on BETTER_LABPBR - left commented out at common.glsl:406, with RP_MODE 1 at
+               // :21 - so :842 pins highlightF0 at 0.05 and the leaf highlightMult set above reaches
+               // :846 untouched. voxy uploads atlas albedo only, so there is no labPBR specular
+               // channel here to read a metal F0 out of.
+               enderDragonDead, vec3(1.0));
 
     #ifdef SS_BLOCKLIGHT
         vec3 lightAlbedo = normalize(color.rgb) * min1(emission);
+
+        // This override ignores emission, which is what makes it load bearing here: with IPBR
+        // undef'd terrainIPBR.glsl never runs its emission assignment for mat 10500, and the compact
+        // cascade (terrainMaterials.glsl:31-93) has no end rod branch, so min1(emission) above is 0
+        // and an end rod past the LOD ring writes a black lightAlbedo - no screenspace blocklight at
+        // all, against the pink gbuffers_terrain.glsl:515-517 writes one chunk closer.
+        // block.properties:9068 maps 10500 to end_rod.
+        #if defined END && END_ROD_COLOR_PROFILE == 0
+            if (mat == 10500) lightAlbedo = vec3(1.0, 0.6078, 0.9); // End Rod
+        #endif
 
         #ifdef COLORED_CANDLE_LIGHT
             if (mat >= 10900 && mat <= 10922) { // Candles:Lit

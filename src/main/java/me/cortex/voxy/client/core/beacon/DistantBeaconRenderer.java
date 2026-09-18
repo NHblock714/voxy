@@ -344,20 +344,23 @@ public final class DistantBeaconRenderer implements LodPipelineHooks.Renderer {
             float v1 = segment.yTop();
             int rgb = segment.colorRgb();
             //Full sky light: the beam is its own light source and must not be shaded by where it sits
+            //Face ids are Direction ordinals: the +x wall faces EAST (5), the -x wall WEST (4)
             side(builder, -r, y0, -r, r, y1, -r, v0, v1, rgb, 2);
             side(builder, r, y0, r, -r, y1, r, v0, v1, rgb, 3);
-            side(builder, r, y0, -r, r, y1, r, v0, v1, rgb, 4);
-            side(builder, -r, y0, r, -r, y1, -r, v0, v1, rgb, 5);
+            side(builder, r, y0, -r, r, y1, r, v0, v1, rgb, 5);
+            side(builder, -r, y0, r, -r, y1, -r, v0, v1, rgb, 4);
         }
         return builder.isEmpty() ? null : builder.build();
     }
 
+    //Counter-clockwise seen from outside the beam, so backface culling keeps the outer walls
+    //and shader packs derive an outward normal
     private static void side(DistantMeshBuilder builder, float x0, float y0, float z0,
                              float x1, float y1, float z1, float v0, float v1, int rgb, int face) {
         builder.rawVertex(x0, y0, z0, 0.0f, v0, 15, 15, 1.0f, face, rgb);
-        builder.rawVertex(x1, y0, z1, 1.0f, v0, 15, 15, 1.0f, face, rgb);
-        builder.rawVertex(x1, y1, z1, 1.0f, v1, 15, 15, 1.0f, face, rgb);
         builder.rawVertex(x0, y1, z0, 0.0f, v1, 15, 15, 1.0f, face, rgb);
+        builder.rawVertex(x1, y1, z1, 1.0f, v1, 15, 15, 1.0f, face, rgb);
+        builder.rawVertex(x1, y0, z1, 1.0f, v0, 15, 15, 1.0f, face, rgb);
     }
 
     private void discard() {

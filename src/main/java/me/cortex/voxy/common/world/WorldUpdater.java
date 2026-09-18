@@ -156,6 +156,7 @@ public class WorldUpdater {
                 final int iSecMsk1 = (~secMsk) + 1;
 
                 int secIdx = 0;
+                int nonAirCount = 0;
 
                 //TODO rotate the loop parralelization
                 // i.e. instead of doing 4 consecutive blocks, which would all be in the same cache line
@@ -170,11 +171,12 @@ public class WorldUpdater {
                     long oldId2 = secD[cSecIdx+2]; secD[cSecIdx+2] = vdat[i+2];
                     long oldId3 = secD[cSecIdx+3]; secD[cSecIdx+3] = vdat[i+3];
 
-                    airCount += Mapper.isAir(oldId0)?1:0; didStateChange |= vdat[i+0] != oldId0;
-                    airCount += Mapper.isAir(oldId1)?1:0; didStateChange |= vdat[i+1] != oldId1;
-                    airCount += Mapper.isAir(oldId2)?1:0; didStateChange |= vdat[i+2] != oldId2;
-                    airCount += Mapper.isAir(oldId3)?1:0; didStateChange |= vdat[i+3] != oldId3;
+                    nonAirCount += Mapper.isNotAirInt(oldId0); didStateChange |= vdat[i+0] != oldId0;
+                    nonAirCount += Mapper.isNotAirInt(oldId1); didStateChange |= vdat[i+1] != oldId1;
+                    nonAirCount += Mapper.isNotAirInt(oldId2); didStateChange |= vdat[i+2] != oldId2;
+                    nonAirCount += Mapper.isNotAirInt(oldId3); didStateChange |= vdat[i+3] != oldId3;
                 }
+                airCount = 4096 - nonAirCount;
             } else {
                 int baseVIdx = VoxelizedSection.getBaseIndexForLevel(lvl);
 

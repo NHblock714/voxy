@@ -134,4 +134,9 @@ public class HiZBuffer {
     public int getPackedLevels() {
         return (this.width<<16)|this.height;//+1
     }
+
+    //Which builder is live, for the debug overlay
+    public String describe() {
+        return "draw";
+    }
 }

@@ -470,7 +470,13 @@ public class RocksDBStorageBackend extends StorageBackend {
 
     @Override
     public void close() {
-        this.flush();
+        try {
+            this.flush();
+        } catch (Exception e) {
+            //Handles and the LOCK file must still go: leaked, the dimension cannot be reopened
+            //until restart
+            me.cortex.voxy.common.Logger.error("Final flush failed, closing storage anyway", e);
+        }
         //this.db.cancelAllBackgroundWork(true);//Rocksdb does this automatically (afak)
         this.closeList.forEach(AbstractImmutableNativeReference::close);
         try {

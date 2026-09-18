@@ -1,18 +1,26 @@
 package me.cortex.voxy.client.core.rendering;
 
+import me.cortex.voxy.client.config.VoxyConfig;
 import me.cortex.voxy.client.core.RenderProperties;
 import me.cortex.voxy.client.core.gl.GlBuffer;
 import me.cortex.voxy.client.core.rendering.util.DepthFramebuffer;
 import me.cortex.voxy.client.core.rendering.util.HiZBuffer;
+import me.cortex.voxy.client.core.rendering.util.HiZBuffer2;
 import net.minecraft.util.Mth;
 import org.joml.*;
 
 import java.lang.reflect.Field;
 
 public abstract class Viewport <A extends Viewport<A>> {
-    //public final HiZBuffer2 hiZBuffer = new HiZBuffer2();
     public final HiZBuffer hiZBuffer;
     public final DepthFramebuffer depthBoundingBuffer = new DepthFramebuffer();
+    //Depth bounding buffer allocation: half the viewport (rounded up) when the chunk-bound mask is
+    //rasterised at half resolution, else the viewport itself. Fixed for the viewport's lifetime
+    //because the LOD fragment shader's mask-coordinate shift is a compile-time define - the section
+    //renderer that compiled it creates the viewport from the same snapshot, so a buffer whose size
+    //disagrees with the shift cannot exist, whatever the live config says.
+    public final boolean chunkMaskHalfRes;
+    public int chunkMaskWidth, chunkMaskHeight;
 
     private static final Field planesField;
     static {
@@ -61,7 +69,8 @@ public abstract class Viewport <A extends Viewport<A>> {
 
     private final RenderProperties properties;
 
-    protected Viewport(RenderProperties properties) {
+    protected Viewport(RenderProperties properties, boolean chunkMaskHalfRes) {
+        this.chunkMaskHalfRes = chunkMaskHalfRes;
         Vector4f[] planes = null;
         try {
              planes = (Vector4f[]) planesField.get(this.frustum);
@@ -71,7 +80,11 @@ public abstract class Viewport <A extends Viewport<A>> {
         this.frustumPlanes = planes;
 
         this.properties = properties;
-        this.hiZBuffer = new HiZBuffer(properties);
+        //Read once here: the choice is fixed for this viewport's life, so flipping the flag at
+        //runtime only reaches the next renderer creation and never swaps a live chain
+        this.hiZBuffer = VoxyConfig.CONFIG.experimentalHiZCompute
+                ? HiZBuffer2.createOrFallback(properties)
+                : new HiZBuffer(properties);
     }
 
     public final void delete() {
@@ -89,7 +102,8 @@ public abstract class Viewport <A extends Viewport<A>> {
     }
 
     public A setProjection(Matrix4f projection) {
-        this.projection = projection;
+        //Copied, not aliased: callers pass a scratch matrix they overwrite every frame
+        this.projection.set(projection);
         return (A) this;
     }
 
@@ -129,7 +143,9 @@ public abstract class Viewport <A extends Viewport<A>> {
                 (float) (this.cameraY-(sy<<5)),
                 (float) (this.cameraZ-(sz<<5)));
 
-        if (this.depthBoundingBuffer.resize(this.width, this.height)) {
+        this.chunkMaskWidth = this.chunkMaskHalfRes ? (this.width + 1) >> 1 : this.width;
+        this.chunkMaskHeight = this.chunkMaskHalfRes ? (this.height + 1) >> 1 : this.height;
+        if (this.depthBoundingBuffer.resize(this.chunkMaskWidth, this.chunkMaskHeight)) {
             this.depthBoundingBuffer.clear(this.properties.inverseClearDepth());
             this.invalidateChunkMask();
         }

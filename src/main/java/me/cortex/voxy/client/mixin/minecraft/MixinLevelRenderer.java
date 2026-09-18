@@ -111,6 +111,13 @@ public abstract class MixinLevelRenderer implements IGetVoxyRenderSystem {
         this.voxy$creatingRenderer = true;
         try {
             this.renderer = new VoxyRenderSystem(world, instance.getServiceManager());
+            //Sodium only re-streams its visible section list into the mask renderer when its graph
+            //is dirty; a renderer created without a level reload (season change, the rendering
+            //toggle) would otherwise sit on an empty mask until the camera moves
+            var sodiumRenderer = net.caffeinemc.mods.sodium.client.render.SodiumWorldRenderer.instanceNullable();
+            if (sodiumRenderer != null) {
+                sodiumRenderer.scheduleTerrainUpdate();
+            }
         } catch (RuntimeException e) {
             if (IrisUtil.irisShaderPackEnabled()) {
                 fallbackToNoShaders = true;

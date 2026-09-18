@@ -24,8 +24,10 @@ public class VoxyEsHandler {
                 levelRenderer.voxy$shutdownRenderer();
                 levelRenderer.voxy$createRenderer();
             }
-            catch (Exception e) {
-                throw new RuntimeException(e);
+            catch (Throwable e) {
+                //This handler runs inside EclipticSeasons' payload future, whose exceptionally()
+                //disconnects the client; a failed LOD rebuild is not worth a disconnect
+                me.cortex.voxy.common.Logger.error("LOD renderer rebuild on solar term change failed", e);
             }
         }
     }

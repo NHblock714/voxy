@@ -122,7 +122,9 @@ public class VoxyConfigMenu implements ConfigEntryPoint {
                                         "voxy:render_distance",
                                         Component.translatable("voxy.config.general.renderDistance"),
                                         ()->Math.round(CFG.sectionRenderDistance*16), v->CFG.sectionRenderDistance=((float)v)/16,
-                                        new Range(10/*1*16*/, 64*16, 1))
+                                        //Lower bound matches sanitize's 2-section floor: anything
+                                        //below it would save as 32 regardless of what the slider showed
+                                        new Range(32, 64*16, 1))
                                         //The value is stored as a float with respect to the size of top level lods, it its increment is a fraction with respect to the size of the bottom level lod
                                         // the value is displayed as a chunk render distance
                                         .setFormatter(v->Component.literal(Integer.toString(v*2)))
@@ -164,6 +166,8 @@ public class VoxyConfigMenu implements ConfigEntryPoint {
                                         SSAO.SSAOMode.class,
                                         Component.translatable("voxy.config.general.ssao_mode"),
                                         ()->CFG.getSSAOMode(), v->CFG.setSSAOMode(v))
+                                        .setNameProvider(mode -> Component.translatable(
+                                                "voxy.config.general.ssao_mode." + mode.name().toLowerCase(java.util.Locale.ROOT)))
                                         .setImpact(OptionImpact.MEDIUM)
                                         .setPostChangeFlags(RENDER_RELOAD)
                         )
@@ -242,6 +246,65 @@ public class VoxyConfigMenu implements ConfigEntryPoint {
                                         new Range(8, 32, 2))
                                         .setEnabler("voxy:lod_boundary_fade")
                                         .setImpact(OptionImpact.LOW)
+                        )
+                ).setEnablerAND("voxy:enabled", "voxy:rendering"),
+                //Every switch here is off by default and fails toward the default path - the explicit
+                //defaults are what sodium's reset restores, whatever the json held at game start.
+                //The first group is read every frame; the second bakes into shader defines or
+                //viewport resources at renderer creation, so those carry the renderer-reload flag.
+                new Page(Component.translatable("voxy.config.experimental"),
+                        new Group(
+                                new BoolOption(
+                                        "voxy:experimental_cmd_list_hold",
+                                        Component.translatable("voxy.config.experimental.cmdListHold"),
+                                        ()->CFG.experimentalCmdListHold, v->CFG.experimentalCmdListHold=v)
+                                        .setDefault(false)
+                                        .setImpact(OptionImpact.MEDIUM),
+                                new IntOption(
+                                        "voxy:cmd_list_hold_max_frames",
+                                        Component.translatable("voxy.config.experimental.cmdListHoldMaxFrames"),
+                                        ()->CFG.cmdListHoldMaxFrames, v->CFG.cmdListHoldMaxFrames=v,
+                                        new Range(2, 60, 1))
+                                        .setDefault(4)
+                                        .setEnablerInherit("voxy:experimental_cmd_list_hold")
+                                        .setImpact(OptionImpact.LOW),
+                                new BoolOption(
+                                        "voxy:experimental_chunk_mask_reuse",
+                                        Component.translatable("voxy.config.experimental.chunkMaskReuse"),
+                                        ()->CFG.experimentalChunkMaskReuse, v->CFG.experimentalChunkMaskReuse=v)
+                                        .setDefault(false)
+                                        .setImpact(OptionImpact.LOW),
+                                new IntOption(
+                                        "voxy:section_array_pool_mib",
+                                        Component.translatable("voxy.config.experimental.sectionArrayPoolMiB"),
+                                        ()->CFG.sectionArrayPoolMiB, v->CFG.sectionArrayPoolMiB=v,
+                                        new Range(25, 1024, 1))
+                                        .setDefault(100)
+                                        .setFormatter(v->Component.literal(v + " MiB"))
+                                        //Heap, not frame time: a filled pool holds the whole budget
+                                        .setImpact(OptionImpact.MEDIUM)
+                        ), new Group(
+                                new BoolOption(
+                                        "voxy:experimental_opaque_near_first",
+                                        Component.translatable("voxy.config.experimental.opaqueNearFirst"),
+                                        ()->CFG.experimentalOpaqueNearFirst, v->CFG.experimentalOpaqueNearFirst=v)
+                                        .setDefault(false)
+                                        .setImpact(OptionImpact.MEDIUM)
+                                        .setPostChangeFlags(RENDER_RELOAD),
+                                new BoolOption(
+                                        "voxy:experimental_chunk_mask_half_res",
+                                        Component.translatable("voxy.config.experimental.chunkMaskHalfRes"),
+                                        ()->CFG.experimentalChunkMaskHalfRes, v->CFG.experimentalChunkMaskHalfRes=v)
+                                        .setDefault(false)
+                                        .setImpact(OptionImpact.MEDIUM)
+                                        .setPostChangeFlags(RENDER_RELOAD),
+                                new BoolOption(
+                                        "voxy:experimental_hiz_compute",
+                                        Component.translatable("voxy.config.experimental.hiZCompute"),
+                                        ()->CFG.experimentalHiZCompute, v->CFG.experimentalHiZCompute=v)
+                                        .setDefault(false)
+                                        .setImpact(OptionImpact.LOW)
+                                        .setPostChangeFlags(RENDER_RELOAD)
                         )
                 ).setEnablerAND("voxy:enabled", "voxy:rendering"),
                 new Page(Component.translatable("voxy.config.compat"),

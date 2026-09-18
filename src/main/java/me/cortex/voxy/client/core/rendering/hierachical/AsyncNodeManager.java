@@ -216,6 +216,8 @@ public class AsyncNodeManager {
             .add(ShaderType.COMPUTE, "voxy:util/memcpy.comp")
             .compile();
 
+    private boolean warnedNegativeWork;
+
     private void run() {
         if (this.workCounter.get() <= 0) {
             //TODO: here, instead of parking, we can do more work on other sub-tasks such as filtering the mesh build queue
@@ -364,15 +366,12 @@ public class AsyncNodeManager {
         } while (true);
 
         if (this.workCounter.addAndGet(-workDone) < 0) {
-            try {
-                Thread.sleep(1000);
-            } catch (InterruptedException e) {
-                throw new RuntimeException(e);
-            }
-            //Due to synchronization "issues", wait a millis (give up this time slice)
-            if (this.workCounter.get() < 0) {
+            //Submitters count their work before queueing it, so this only means a counter that
+            //has not caught up yet - give up the slice, not a full second of LOD updates
+            Thread.yield();
+            if (this.workCounter.get() < 0 && !this.warnedNegativeWork) {
+                this.warnedNegativeWork = true;
                 Logger.error("Work counter less than zero, hope it fixes itself...");
-                //return;
             }
         }
 
@@ -725,10 +724,12 @@ public class AsyncNodeManager {
         }
     }
 
+    //Work is counted BEFORE it is queued in every submit: a worker that is not parked can poll
+    //an item the instant it lands, and counting it afterwards drives the counter negative
     public void submitRequestBatch(MemoryBuffer batch) {//Only called from render thread
-        this.requestBatchQueue.add(batch);
         this.reqQDepth.incrementAndGet();
         this.addWork();
+        this.requestBatchQueue.add(batch);
     }
 
     private void submitChildChange(WorldSection section) {
@@ -736,9 +737,9 @@ public class AsyncNodeManager {
             return;
         }
         section.acquire();//We must acquire the section before putting in the queue
-        this.childUpdateQueue.add(section);
         this.noteChildDepth(this.childQDepth.incrementAndGet());
         this.addWork();
+        this.childUpdateQueue.add(section);
     }
 
     private void submitGeometryResult(BuiltSection geometry) {
@@ -746,15 +747,15 @@ public class AsyncNodeManager {
             geometry.free();
             return;
         }
-        this.geometryUpdateQueue.add(geometry);
         this.geomQDepth.incrementAndGet();
         this.addWork();
+        this.geometryUpdateQueue.add(geometry);
     }
 
     public void submitRemoveBatch(MemoryBuffer batch) {//Only called from render thread
-        this.removeBatchQueue.add(batch);
         this.remQDepth.incrementAndGet();
         this.addWork();
+        this.removeBatchQueue.add(batch);
     }
 
     public void addTopLevel(long section) {//Only called from render thread

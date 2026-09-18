@@ -12,6 +12,9 @@ layout(binding = 0, std140) uniform SceneUniform {
     //assumed -1 would misclassify the entire stable set as newly-visible on the first build after
     //a hold - flooding the temporal lane with a duplicate of the whole scene.
     uint prevBuildFrameId;
+    //Build id a section may still render under after failing this frame's visibility test:
+    //prevBuildFrameId while the command-list hold is enabled, 0 (never matches) otherwise
+    uint visibilityGraceId;
 };
 
 //TODO: see if making the stride 2*4*4 bytes or something cause you get that 16 byte write

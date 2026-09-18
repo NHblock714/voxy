@@ -12,8 +12,8 @@ public class MDICViewport extends Viewport<MDICViewport> {
     public final GlBuffer indirectLookupBuffer = new GlBuffer(HierarchicalOcclusionTraverser.MAX_QUEUE_SIZE*4+4);//In theory, this could be global/not unique to the viewport
     public final GlBuffer visibilityBuffer;
 
-    public MDICViewport(RenderProperties properties, int maxSectionCount) {
-        super(properties);
+    public MDICViewport(RenderProperties properties, int maxSectionCount, boolean chunkMaskHalfRes) {
+        super(properties, chunkMaskHalfRes);
         this.visibilityBuffer = new GlBuffer(maxSectionCount*4L);
     }
 

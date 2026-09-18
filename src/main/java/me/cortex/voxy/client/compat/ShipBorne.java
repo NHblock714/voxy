@@ -27,6 +27,28 @@ public final class ShipBorne {
 
     private ShipBorne() {}
 
+    //A tripped fuse must be loud: with the gate down every cull silently measures ship-borne
+    //content at ~2e7 blocks, which reads as "everything on ships vanished" with nothing in the log
+    private static void tripGate(Throwable e) {
+        if (gateUnavailable) return;
+        gateUnavailable = true;
+        me.cortex.voxy.common.Logger.error("Ship-borne gate disabled after sable threw; content on ships"
+                + " is culled at plot coordinates until the next login", e);
+    }
+
+    private static void tripHeal(Throwable e) {
+        if (healUnavailable) return;
+        healUnavailable = true;
+        me.cortex.voxy.common.Logger.warn("Ship Flywheel self-heal disabled after sable threw", e);
+    }
+
+    //Re-armed per session: what trips a fuse is usually a half-synced sub-level during world
+    //load, gone by the next login
+    public static void reset() {
+        gateUnavailable = false;
+        healUnavailable = false;
+    }
+
     public static boolean isShipBorne(double x, double z) {
         return inSubLevel(Mth.floor(x) >> 4, Mth.floor(z) >> 4);
     }
@@ -42,7 +64,7 @@ public final class ShipBorne {
         try {
             return me.cortex.voxy.client.compat.sable.SableShipContent.hasAnyShip();
         } catch (LinkageError | RuntimeException e) {
-            gateUnavailable = true;
+            tripGate(e);
             return false;
         }
     }
@@ -57,7 +79,7 @@ public final class ShipBorne {
             return me.cortex.voxy.client.compat.sable.SableShipContent.shipScreenBounds(
                     cameraX, cameraY, cameraZ, modelView, projection, overhangBlocks);
         } catch (LinkageError | RuntimeException e) {
-            gateUnavailable = true;
+            tripGate(e);
             return me.cortex.voxy.client.compat.sable.SableScreenBounds.Result.allNear();
         }
     }
@@ -74,7 +96,7 @@ public final class ShipBorne {
             //Only the self-heal goes; sable still registers its own plots at join time, so what is lost
             //is the gap-filling for plots that were not known then - a cosmetic degradation next to
             //losing the gate.
-            healUnavailable = true;
+            tripHeal(e);
         }
     }
 
@@ -85,7 +107,7 @@ public final class ShipBorne {
         try {
             return me.cortex.voxy.client.compat.sable.SableShipContent.inSubLevel(chunkX, chunkZ);
         } catch (LinkageError | RuntimeException e) {
-            gateUnavailable = true;
+            tripGate(e);
             return false;
         }
     }

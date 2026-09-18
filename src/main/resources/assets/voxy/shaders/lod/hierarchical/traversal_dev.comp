@@ -21,6 +21,9 @@ layout(binding = SCENE_UNIFORM_BINDING, std140) uniform SceneUniform {
     float fullDetailDistSq;
     float invP00;
     float invP11;
+    //Advances every frame, unlike frameId which only advances when the node cleaner ticks; the
+    //request-retry age is measured against this so held command-list frames still count
+    uint requestClock;
 };
 
 #import <voxy:lod/hierarchical/queue.glsl>
@@ -54,7 +57,7 @@ void addRequest(inout UnpackedNode node) {
     // A request bit used to remain set forever if a shader/resource reload
     // landed between queue submission and readback. Retry after roughly two
     // seconds; ordinary in-flight requests still suppress duplicates.
-    uint requestAge = (frameId - getRequestFrame(node)) & 0xFFu;
+    uint requestAge = (requestClock - getRequestFrame(node)) & 0xFFu;
     bool retryExpiredRequest = hasRequested(node) && requestAge >= 96u;
     if (!hasRequested(node) || retryExpiredRequest) {
         if (requestQueueIndex.x < requestQueueSize) {//Soft limit
@@ -62,7 +65,7 @@ void addRequest(inout UnpackedNode node) {
             if (atomRes < MAX_REQUEST_QUEUE_SIZE) {//Hard limit
                 //Mark node as having a request submitted to prevent duplicate submissions
                 requestQueue[atomRes] = getRawPos(node);
-                markRequested(node, frameId);
+                markRequested(node, requestClock);
             }
         }
     }

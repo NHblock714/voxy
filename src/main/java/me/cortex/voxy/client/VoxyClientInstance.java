@@ -34,6 +34,8 @@ public class VoxyClientInstance extends VoxyInstance {
         //baseline, `enableRendering=false` still ingests, stores and saves - and a memory report
         //that does not say which one was off cannot be compared against another session's
         var cfg = me.cortex.voxy.client.config.VoxyConfig.CONFIG;
+        //Applies the budget before the first frame and for ingest-only sessions that never render one
+        me.cortex.voxy.common.world.WorldSection.setArrayPoolCapMiB(cfg.sectionArrayPoolMiB);
         me.cortex.voxy.common.Logger.info("Voxy instance: enabled=" + cfg.enabled
                 + " rendering=" + cfg.enableRendering + " ingest=" + cfg.ingestEnabled
                 + ", heap max " + (Runtime.getRuntime().maxMemory() >> 20) + " MiB"
@@ -85,6 +87,9 @@ public class VoxyClientInstance extends VoxyInstance {
         super.shutdown();
         //Free the render resources cache since the entire instance is freed
         RenderResourceReuse.clearResources();
+        //The section array pool is a JVM static that the engines just refilled on the way out; a
+        //raised budget must not stay pinned in the main menu, only the default warm set does
+        me.cortex.voxy.common.world.WorldSection.trimArrayPool(me.cortex.voxy.common.world.WorldSection.DEFAULT_ARRAY_POOL_ARRAYS);
     }
 
     private static class Config {

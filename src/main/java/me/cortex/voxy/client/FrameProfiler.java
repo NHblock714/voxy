@@ -89,7 +89,7 @@ public final class FrameProfiler {
         //GPU timestamps are off by default; turn them on for the capture so the snapshots can separate
         //"the GPU is busy" from "the render thread is busy". Left on afterwards would keep costing
         //queries every frame, so stop() turns it back off.
-        GPUTiming.INSTANCE.setEnabled(true);
+        GPUTiming.INSTANCE.enableFor(GPUTiming.OWNER_CAPTURE);
         active = true;
         frameStartNanos = 0;
         watchdog = new Thread(FrameProfiler::runWatchdog, "Voxy frame capture watchdog");
@@ -303,8 +303,21 @@ public final class FrameProfiler {
             watchdog.interrupt();
             watchdog = null;
         }
-        GPUTiming.INSTANCE.setEnabled(false);
+        GPUTiming.INSTANCE.disableFor(GPUTiming.OWNER_CAPTURE);
+        //Consumed before the empty-capture exit: a full report that armed them would otherwise
+        //keep its forced statistics on and the next capture would write to its file name
+        var extra = extraSections;
+        extraSections = null;
+        String fileName = outputFileName;
+        outputFileName = "voxy-frame-capture.txt";
         if (frames.isEmpty()) {
+            if (extra != null) {
+                try {
+                    extra.get();
+                } catch (Throwable t) {
+                    Logger.error("Full report extra sections failed", t);
+                }
+            }
             return "Frame capture produced no frames";
         }
 
@@ -365,9 +378,7 @@ public final class FrameProfiler {
             report.append(s).append('\n');
         }
 
-        var extra = extraSections;
         if (extra != null) {
-            extraSections = null;
             try {
                 //The supplier returns the report head (static sections) followed by its own tail;
                 //the percentile capture above slots between them
@@ -377,8 +388,7 @@ public final class FrameProfiler {
             }
         }
 
-        Path out = Minecraft.getInstance().gameDirectory.toPath().resolve(outputFileName);
-        outputFileName = "voxy-frame-capture.txt";
+        Path out = Minecraft.getInstance().gameDirectory.toPath().resolve(fileName);
         try {
             Files.writeString(out, report.toString(), StandardCharsets.UTF_8);
         } catch (IOException e) {

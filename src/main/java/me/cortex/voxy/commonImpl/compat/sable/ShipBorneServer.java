@@ -28,9 +28,19 @@ public final class ShipBorneServer {
         try {
             return shipTrackingRangeBlocks0(entity);
         } catch (LinkageError | RuntimeException e) {
-            unavailable = true;
+            if (!unavailable) {
+                unavailable = true;
+                //Loud once: with this down, entities riding ships fall back to vanilla tracking
+                //range and drop off hulls that are still in view
+                me.cortex.voxy.common.Logger.error("Ship tracking range lookup disabled after sable threw", e);
+            }
             return -1;
         }
+    }
+
+    //Re-armed per server start; what trips it is usually a sub-level mid-load
+    public static void reset() {
+        unavailable = false;
     }
 
     private static int shipTrackingRangeBlocks0(Entity entity) {

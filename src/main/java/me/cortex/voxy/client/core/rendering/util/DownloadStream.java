@@ -146,13 +146,20 @@ public class DownloadStream {
             //Release all the allocations from the frame
             var frame = this.frames.pop();
 
-            //Apply all the callbacks
-            for (var data : frame.data) {
-                data.resultConsumer.consume(this.downloadBuffer.addr() + data.downloadStreamOffset, data.size);
+            //Apply all the callbacks. A consumer that throws must not take the frame's arena
+            //space and fence with it - the ring never gets that space back.
+            try {
+                for (var data : frame.data) {
+                    try {
+                        data.resultConsumer.consume(this.downloadBuffer.addr() + data.downloadStreamOffset, data.size);
+                    } catch (Throwable t) {
+                        me.cortex.voxy.common.Logger.error("Download result consumer threw", t);
+                    }
+                }
+            } finally {
+                frame.allocations.forEach(this.allocationArena::free);
+                frame.fence.free();
             }
-
-            frame.allocations.forEach(this.allocationArena::free);
-            frame.fence.free();
         }
     }
 

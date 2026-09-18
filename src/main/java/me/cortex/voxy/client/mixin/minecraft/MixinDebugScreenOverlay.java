@@ -29,14 +29,28 @@ public abstract class MixinDebugScreenOverlay {
     @Unique
     private boolean lastDebugEnabledState = false;
 
+    //render() only runs while the overlay is shown, so it can see F3 opening but never closing;
+    //toggleOverlay() is the one path that sees both
+    @Inject(method = "toggleOverlay", at = @At("TAIL"))
+    private void onToggle(CallbackInfo ci) {
+        this.voxy$syncDebugState();
+    }
+
     @Inject(method = "render", at = @At("HEAD"))
     private void manageGpuTiming(GuiGraphics guiGraphics, CallbackInfo ci) {
+        this.voxy$syncDebugState();
+    }
+
+    @Unique
+    private void voxy$syncDebugState() {
         boolean isDebugOpen = this.renderDebug;
-
-        if (isDebugOpen != lastDebugEnabledState) {
-            lastDebugEnabledState = isDebugOpen;
-
-            GPUTiming.INSTANCE.setEnabled(isDebugOpen);
+        if (isDebugOpen != this.lastDebugEnabledState) {
+            this.lastDebugEnabledState = isDebugOpen;
+            if (isDebugOpen) {
+                GPUTiming.INSTANCE.enableFor(GPUTiming.OWNER_F3);
+            } else {
+                GPUTiming.INSTANCE.disableFor(GPUTiming.OWNER_F3);
+            }
             RenderStatistics.enabled = isDebugOpen;
         }
     }
@@ -47,11 +61,13 @@ public abstract class MixinDebugScreenOverlay {
 
         if (!VoxyCommon.isAvailable()) {
             voxyLines.add(ChatFormatting.RED + "voxy-"+VoxyCommon.MOD_VERSION);//Voxy installed, not avalible
+            info.getReturnValue().addAll(voxyLines);
             return;
         }
         var instance = VoxyCommon.getInstance();
         if (instance == null) {
             voxyLines.add(ChatFormatting.YELLOW + "voxy-" + VoxyCommon.MOD_VERSION);//Voxy avalible, no instance active
+            info.getReturnValue().addAll(voxyLines);
             return;
         }
         VoxyRenderSystem vrs = null;

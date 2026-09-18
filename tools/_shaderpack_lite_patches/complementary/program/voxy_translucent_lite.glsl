@@ -28,6 +28,11 @@ mat4 gbufferPreviousProjection = vxProjPrev;
 #include "/lib/shaderSettings/shockwave.glsl"
 #include "/lib/shaderSettings/emissionMult.glsl"
 
+// Carried for the same reason as in voxy_opaque_lite.glsl: the file this stands in for sets it at
+// voxy_translucent.glsl:22, and an injector that rewrites program source before compilation must see
+// the same opt-out here or it treats the two as different programs.
+#define CHUNKS_FADE_IN_NO_FRAG_MOD_INJECT
+
 //LOD Downgrade Level//
 // Keep this the same value as in voxy_opaque_lite.glsl. See that file for what each level costs.
 #define LOD_LITE_LEVEL 1
@@ -44,7 +49,7 @@ mat4 gbufferPreviousProjection = vxProjPrev;
 
 // translucentMaterials.glsl:11 pulls in translucentIPBR.glsl (190 lines, 7 levels of if) with
 // IPBR on; with it off the same header falls through to the pack's own compact path
-// (translucentMaterials.glsl:20-48), which keeps water and drops the rest. Ice is added back by
+// (translucentMaterials.glsl:20-44), which keeps water and drops the rest. Ice is added back by
 // hand below because it is the one other block that reads wrong when it goes matte.
 #undef IPBR
 
@@ -70,10 +75,11 @@ layout(location = 1) out vec4 gbufferData6;
 #endif
 
 //Common Variables//
-vec3 sunVec = GetSunVector();
 vec3 upVec = normalize(gbufferModelView[1].xyz);
 vec3 eastVec = normalize(gbufferModelView[0].xyz);
 vec3 northVec = normalize(gbufferModelView[2].xyz);
+
+vec3 sunVec = GetSunVector();
 
 float SdotU = dot(sunVec, upVec);
 float sunFactor = SdotU < 0.0 ? clamp(SdotU + 0.375, 0.0, 0.75) / 0.75 : clamp(SdotU + 0.03125, 0.0, 0.0625) / 0.0625;
@@ -109,12 +115,30 @@ mat3 tbnMatrix;
 #include "/lib/atmospherics/fog/mainFog.glsl"
 #include "/lib/materials/materialMethods/translucentTweaks.glsl"
 
+// reflections.glsl:48 includes reflectionBackground.glsl with no guard, and that file opens (:1) on
+// `#if defined END && (defined COMPOSITE || defined GBUFFERS_WATER || defined VOXY_TRANSLUCENT)`.
+// world1/voxy_translucent_lite.glsl:3 defines VOXY_TRANSLUCENT, so the End compile pulls in
+// enderNebula.glsl (:5), whose nebula builder reads vlFactor at :161 without declaring a local. No
+// lib declares it - every program that reaches this path carries its own copy
+// (gbuffers_water.glsl:106, dh_water.glsl:67) - so the name has to exist before the reflections
+// include below. 0.0 is the whole value: the VOXY_TRANSLUCENT branch at
+// reflectionBackground.glsl:112 takes its factor from texelFetch(gaux2, ...), not from this global.
+float vlFactor = 0.0;
+
 #ifdef OVERWORLD
     #include "/lib/atmospherics/sky.glsl"
 #endif
 
 #if WATER_REFLECT_QUALITY >= 0
-    #if defined SKY_EFFECT_REFLECTION && defined OVERWORLD
+    // reflectionBackground.glsl:8 compiles the body of DoSkyEffectReflection on
+    // `!defined COMPOSITE && defined SKY_EFFECT_REFLECTION_TRANSLUCENT`, and that body calls
+    // GetAuroraBorealis (:16), GetNightNebula (:20), GetStarCoord/GetStars (:26, :34, :38) and
+    // GetClouds (:60). Nothing but the include block below declares them, and reflections.glsl:48
+    // pulls that file in unconditionally - so the gate has to carry the name common.glsl:613/:636
+    // actually defines, or the caller compiles with the declarations gone. Quiet at the pack
+    // defaults (DETAIL_QUALITY 2 at common.glsl:26, SKY_EFFECT_REFLECTION_DEFINE -1 at :67 leave
+    // both halves undefined); live as soon as Detail Quality reaches High or the slider is set.
+    #if defined SKY_EFFECT_REFLECTION_TRANSLUCENT && defined OVERWORLD
         #if AURORA_STYLE > 0
             #include "/lib/atmospherics/auroraBorealis.glsl"
         #endif
@@ -234,9 +258,9 @@ void voxy_emitFragment(VoxyFragmentParameters parameters) {
     // non-IPBR path: water keeps its full material, everything else falls through
     #include "/lib/materials/materialHandling/translucentMaterials.glsl"
 
-    // translucentIPBR.glsl:97 is an open ended "else" on that subtree, so everything from 32004 up
+    // translucentIPBR.glsl:103 is an open ended "else" on that subtree, so everything from 32004 up
     // takes these numbers there; matching the bound keeps modded ice variants from going matte.
-    if (mat >= 32004) { // Ice - translucentIPBR.glsl:97-104
+    if (mat >= 32004) { // Ice - translucentIPBR.glsl:103-110
         smoothnessG = pow2(color.g) * color.g;
         highlightMult = pow2(min1(pow2(color.g) * 1.5)) * 3.5;
         reflectMult = 0.7;
@@ -271,7 +295,7 @@ void voxy_emitFragment(VoxyFragmentParameters parameters) {
     DoLighting(color, shadowMult, playerPos, viewPos, lViewPos, geoNormal, normalM, dither,
                worldGeoNormal, lmCoordM, noSmoothLighting, noDirectionalShading, false,
                false, subsurfaceMode, smoothnessG, highlightMult, emission, purkinjeOverwrite, isLightSource,
-               enderDragonDead);
+               enderDragonDead, vec3(1.0));
 
     #ifdef SS_BLOCKLIGHT
         vec3 normalizedColor = normalize(color.rgb);

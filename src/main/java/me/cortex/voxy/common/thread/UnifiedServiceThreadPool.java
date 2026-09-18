@@ -55,11 +55,23 @@ public class UnifiedServiceThreadPool {
     }
 
     private void workerThread() {
-        this.selfBlock.acquire();//This is stupid but it works
-
-        //We are exiting, remove self from list of threads
-        synchronized (this.threads) {
-            this.threads.remove(Thread.currentThread());
+        try {
+            //acquire() runs jobs until an exit permit arrives. A throw out of it (the shutdown race
+            //in Service.runJob, or anything a job leaks) must not end the worker while it still
+            //sits in `threads`: setNumThreads and shutdown spin on that list.
+            while (true) {
+                try {
+                    this.selfBlock.acquire();
+                    break;
+                } catch (Throwable t) {
+                    me.cortex.voxy.common.Logger.error("Dedicated worker threw, resuming", t);
+                }
+            }
+        } finally {
+            //We are exiting, remove self from list of threads
+            synchronized (this.threads) {
+                this.threads.remove(Thread.currentThread());
+            }
         }
     }
 

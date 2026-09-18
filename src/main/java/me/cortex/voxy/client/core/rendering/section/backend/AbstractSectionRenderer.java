@@ -64,6 +64,8 @@ public abstract class AbstractSectionRenderer <T extends Viewport<T>, J extends 
     public abstract void buildDrawCalls(T viewport);
     public abstract void renderTemporal(T viewport);
     public void postOpaquePreperation(T viewport){}//can be used for next frame culling
+    //A frame that replayed the previous build's command lists instead of rebuilding them
+    public void onCommandListsHeld(T viewport) {}
     public abstract void renderTranslucent(T viewport);
     public abstract T createViewport();
     public abstract void free();

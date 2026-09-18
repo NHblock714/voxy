@@ -228,7 +228,15 @@ void main() {
     bool useChunkBounds = circularLodBoundaryEnabled < 0.5;
     #endif
     if (useChunkBounds) {
-        if (DEPTH_SCALAR_COMPARE(gl_FragCoord.z, texelFetch(depthTex, ivec2(gl_FragCoord.xy), 0).r)) {
+        //With the mask rasterised at half the viewport resolution the shift lands this fragment on
+        //the mask texel covering its 2x2 footprint. Must agree with the size of the buffer bound
+        //on unit 2 - both come from the one snapshot the section renderer was built with.
+        #ifdef CHUNK_MASK_HALF_RES
+        ivec2 maskCoord = ivec2(gl_FragCoord.xy) >> 1;
+        #else
+        ivec2 maskCoord = ivec2(gl_FragCoord.xy);
+        #endif
+        if (DEPTH_SCALAR_COMPARE(gl_FragCoord.z, texelFetch(depthTex, maskCoord, 0).r)) {
             discard;
             return;
         }

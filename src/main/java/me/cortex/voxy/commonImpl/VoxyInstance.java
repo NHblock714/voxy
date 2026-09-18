@@ -259,6 +259,9 @@ public abstract class VoxyInstance {
                 .map(world -> Integer.toString(world.getActiveSectionCount()))
                 .collect(Collectors.joining(", "));
         debug.add("I/S/AWSC: " + this.ingestService.getTaskCount() + "/" + this.savingService.getTaskCount() + "/[" + sectionCounts + "]");
+        debug.add("Section array pool: " + me.cortex.voxy.common.world.WorldSection.getReuseCacheCount()
+                + " arrays, miss " + PerfStats.sectionArrayPoolMiss.sum()
+                + " overflow " + PerfStats.sectionArrayPoolOverflow.sum());
     }
 
     //One line per open engine for the memory report: engines lingering after a dimension hop are

@@ -18,6 +18,9 @@ public class ClientSessionEvents {
             inSession = true;
         }
 
+        //Per-session fuses re-arm here, before anything in the new session can trip them
+        me.cortex.voxy.client.compat.ShipBorne.reset();
+
         try {
             //Should never try creating multiple instances via session start
             if (VoxyCommon.getInstance() != null) throw new IllegalStateException();

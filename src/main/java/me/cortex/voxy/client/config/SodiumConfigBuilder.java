@@ -133,6 +133,13 @@ public class SodiumConfigBuilder {
             return this.setEnabler(s->s.readBooleanOption(id), enabler);
         }
 
+        //Like setEnabler(String) but AND-joined with the enclosing page/group gate instead of
+        //replacing it
+        public TYPE setEnablerInherit(String enabler) {
+            var id = ResourceLocation.parse(enabler);
+            return this.setEnablerInherit(s->s.readBooleanOption(id), enabler);
+        }
+
         public TYPE setEnablerAND(String... enablers) {
             var enablersId = mapIds(enablers);
             return this.setEnabler0(new Enabler(s->{
@@ -232,6 +239,14 @@ public class SodiumConfigBuilder {
             return (OPTION) this;
         }
 
+        //What sodium's reset-to-default restores. Without it the default is whatever the getter
+        //held at registration, i.e. the value loaded from the json at game start.
+        protected TYPE defaultValue;
+        public OPTION setDefault(TYPE defaultValue) {
+            this.defaultValue = defaultValue;
+            return (OPTION) this;
+        }
+
         protected Consumer<TYPE> postRunner;
         protected ResourceLocation[] postRunnerConflicts;
         protected ResourceLocation[] postChangeFlags;
@@ -278,7 +293,7 @@ public class SodiumConfigBuilder {
 
             option.setStorageHandler(ctx.saveHandler);
 
-            option.setDefaultValue(this.getter.get());
+            option.setDefaultValue(this.defaultValue != null ? this.defaultValue : this.getter.get());
 
             if (this.tooltipSupplier != null) {
                 option.setTooltip(this.tooltipSupplier);

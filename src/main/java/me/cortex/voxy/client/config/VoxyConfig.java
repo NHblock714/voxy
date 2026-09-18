@@ -113,8 +113,8 @@ public class VoxyConfig {
     // pass. Any geometry consumption, camera movement or the frame cap below forces a full build -
     // failure direction is always the current per-frame path. Off = exactly current behaviour.
     public boolean experimentalCmdListHold = false;
-    // Longest run of consecutive held frames before a build is forced regardless (bounds request
-    // latency, statistics staleness and hi-z age).
+    // A build is forced at least every this many frames regardless, i.e. at most N-1 consecutive
+    // held frames (bounds request latency, statistics staleness and hi-z age).
     public int cmdListHoldMaxFrames = 4;
     // Section voxel-array reuse pool budget, in MiB (256KiB per array; 100 = the long-standing 400
     // array cap). The pool absorbs materialise/release churn from the mesh workers - when the F3
@@ -126,18 +126,30 @@ public class VoxyConfig {
     // far-to-near list order, letting early-z reject the far fill hidden behind near terrain. Pure
     // draw-order heuristic - the depth test owns correctness either way. Matters because the LOD
     // opaque pass is fill-bound (geometry density barely moves its cost); takes effect on renderer
-    // recreation (rejoin world or toggle voxy rendering off/on).
+    // recreation - the config menu entry triggers one, a hand-edited json needs a restart or rejoin.
     public boolean experimentalOpaqueNearFirst = false;
     // EXPERIMENTAL: when the camera is still and the sodium-visible section set is unchanged
-    // (content-hashed - sodium 0.8 re-streams an identical list every frame), keep the previous
+    // (compared against the uploaded stream - sodium re-streams the list whenever its graph is
+    // dirty, identical or not), keep the previous
     // frame's hole-punch mask (the depth bounding buffer) instead of re-rasterising every visible
     // section's AABB. Any camera motion, set change, render-distance change or buffer clear/resize
     // re-rasterises. Under a shader pack that declares TAA, reuse disables itself: the seam is
     // only stable when the mask re-rasterises every frame with that frame's jitter (a kept mask
-    // freezes its phase and flickers; an unjittered mask shimmers against the jittered terrain -
-    // both field-verified). The duplicate-upload squash stays active under TAA. Off = exactly
-    // current behaviour.
+    // freezes its phase and flickers; an unjittered mask shimmers against the jittered terrain).
+    // The duplicate-upload squash is independent of this flag and always on.
+    // Off = exactly current behaviour.
     public boolean experimentalChunkMaskReuse = false;
+    // EXPERIMENTAL: rasterise the chunk-bound mask (the sodium-terrain hole punch the LOD fragment
+    // pass reads) at half resolution. Each box is dilated by half a mask pixel (the half-res sample
+    // point's offset from the pixels it serves) and its depth pulled one mask pixel of slope toward
+    // the camera, so the coarser mask never cuts LOD the full-resolution one would keep; the
+    // residual error is LOD allowed up to a couple of blocks inside a vanilla AABB where vanilla
+    // drew nothing. The pass is fill-bound so its cost quarters. Off = exactly current behaviour.
+    public boolean experimentalChunkMaskHalfRes = false;
+    // EXPERIMENTAL: build the hi-z mip chain with compute dispatches instead of one fullscreen draw
+    // plus barrier per level. Falls back to the draw chain if the compute shaders fail to compile
+    // on this driver (logged once, F3 shows the live chain). Off = exactly current behaviour.
+    public boolean experimentalHiZCompute = false;
     // Vanilla-style biome colour blending for LOD water: each border voxel's tint is the box
     // average over a (2*radius+1)^2 window, radius measured in LOD voxels so every ring shows the
     // same apparent transition width. Same 0..7 range as vanilla's biomeBlendRadius; 0 = off (hard
@@ -296,6 +308,18 @@ public class VoxyConfig {
         this.geometryResidencySections = Math.max(this.geometryResidencySections, 0);
         this.cmdListHoldMaxFrames = Math.clamp(this.cmdListHoldMaxFrames, 2, 60);
         this.sectionArrayPoolMiB = Math.clamp(this.sectionArrayPoolMiB, 25, 1024);
+        //A config file shared between machines carries the writer's core count; a negative or
+        //oversized thread count reaches setNumThreads as a throw or a pool that never drains
+        this.serviceThreads = Math.clamp(this.serviceThreads, 1, Math.max(1, CpuLayout.getCoreCount()));
+        this.simulatedContraptionRenderDistancePercent = Math.clamp(this.simulatedContraptionRenderDistancePercent, 0, 100);
+        this.distantBeaconMaxChunks = Math.max(this.distantBeaconMaxChunks, 0);
+        this.distantTrainMaxChunks = Math.max(this.distantTrainMaxChunks, 0);
+        this.distantTrackMaxChunks = Math.max(this.distantTrackMaxChunks, 0);
+        this.distantContraptionMaxChunks = Math.max(this.distantContraptionMaxChunks, 0);
+        this.distantKineticMaxChunks = Math.max(this.distantKineticMaxChunks, 0);
+        this.distantContraptionGpuBudgetMiB = Math.max(this.distantContraptionGpuBudgetMiB, 0);
+        this.distantKineticGpuBudgetMiB = Math.max(this.distantKineticGpuBudgetMiB, 0);
+        this.distantTrainGpuBudgetMiB = Math.max(this.distantTrainGpuBudgetMiB, 0);
         if (!"water".equals(this.biomeBlendScope) && !"water_grass".equals(this.biomeBlendScope)) {
             this.biomeBlendScope = "water";
         }
@@ -310,6 +334,9 @@ public class VoxyConfig {
         }
 
         this.sanitize();
+        //The render loop follows this field too, but only while a renderer draws frames; pushing it
+        //here as well keeps an ingest-only client on its configured budget
+        me.cortex.voxy.common.world.WorldSection.setArrayPoolCapMiB(this.sectionArrayPoolMiB);
         Path path = getConfigPath();
         Path temporary = path.resolveSibling(path.getFileName() + ".tmp");
 
