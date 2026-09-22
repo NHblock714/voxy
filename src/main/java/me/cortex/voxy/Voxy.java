@@ -46,8 +46,13 @@ public class Voxy {
         //config class itself touches no Create classes (the train keys just sit unused without it).
         me.cortex.voxy.commonImpl.compat.create.CreateServerConfig.register(container, modEventBus);
         //The sable tracking-range fuse is per server run; ShipBorneServer is dist-safe
-        NeoForge.EVENT_BUS.addListener((net.neoforged.neoforge.event.server.ServerStartingEvent e) ->
-                me.cortex.voxy.commonImpl.compat.sable.ShipBorneServer.reset());
+        NeoForge.EVENT_BUS.addListener((net.neoforged.neoforge.event.server.ServerStartingEvent e) -> {
+            me.cortex.voxy.commonImpl.compat.sable.ShipBorneServer.reset();
+            me.cortex.voxy.commonImpl.compat.sable.SableContraptionRenderDistance.clearPlayerPreferences();
+        });
+        //Announced hull preferences live exactly as long as the player's connection
+        NeoForge.EVENT_BUS.addListener((net.neoforged.neoforge.event.entity.player.PlayerEvent.PlayerLoggedOutEvent e) ->
+                me.cortex.voxy.commonImpl.compat.sable.SableContraptionRenderDistance.clearPlayerPreference(e.getEntity().getUUID()));
 
         // Only register client config on client side
         if (FMLLoader.getDist() == Dist.CLIENT) {
@@ -59,6 +64,9 @@ public class Voxy {
 
             // Build/maintainer/repo line on world join (showJoinMessage in voxy-config.json)
             NeoForge.EVENT_BUS.register(me.cortex.voxy.client.VoxyJoinMessage.INSTANCE);
+
+            //Tells the server how far this client wants sable ships tracked (login + config save)
+            NeoForge.EVENT_BUS.register(me.cortex.voxy.client.compat.sable.SableHullRangeClient.class);
 
             // Voxy's Sodium video-settings page is registered by VoxyConfigMenu (@ConfigEntryPointForge,
             // Sodium 0.8 native config API), not here.
@@ -142,6 +150,12 @@ public class Voxy {
                         ctx.enqueueWork(() -> me.cortex.voxy.client.compat.create.DistantTrainManager.handlePoses(payload));
                     }
                 });
+        registrar.playToServer(
+                me.cortex.voxy.commonImpl.compat.sable.SableHullRangeProtocol.HullRangePayload.TYPE,
+                me.cortex.voxy.commonImpl.compat.sable.SableHullRangeProtocol.HullRangePayload.STREAM_CODEC,
+                (payload, ctx) -> ctx.enqueueWork(() ->
+                        me.cortex.voxy.commonImpl.compat.sable.SableContraptionRenderDistance.updatePlayerPreference(
+                                ctx.player().getUUID(), payload.enabled(), payload.sectionRenderDistance(), payload.percent())));
     }
 
     private void registerFarEntityPayloads(net.neoforged.neoforge.network.event.RegisterPayloadHandlersEvent event) {

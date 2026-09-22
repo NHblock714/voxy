@@ -4,6 +4,7 @@ import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import me.cortex.voxy.common.Logger;
 import net.minecraft.server.level.ServerLevel;
+import net.minecraft.world.entity.player.Player;
 import net.neoforged.fml.loading.FMLPaths;
 
 import java.io.BufferedReader;
@@ -11,6 +12,9 @@ import java.io.IOException;
 import java.io.Reader;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Map;
+import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 
 public final class SableContraptionRenderDistance {
     private static final Path CONFIG_PATH = FMLPaths.CONFIGDIR.get().resolve("voxy-config.json");
@@ -31,10 +35,81 @@ public final class SableContraptionRenderDistance {
     private static long cachedDedicatedServerConfigLastModified = Long.MIN_VALUE;
     private static long nextDedicatedServerConfigRefreshTick;
 
+    //Per-player preference announced over SableHullRangeProtocol: the client's own LOD radius and
+    //percent, resolved against THIS server's view distance the same way the integrated server
+    //resolves the host's config. Without one the player gets the level's fallback - sable's own
+    //tracking range on a dedicated server, the host config on the integrated one.
+    private record PlayerPreference(boolean enabled, double sectionRenderDistance, int percent) {}
+    private static final Map<UUID, PlayerPreference> playerPreferences = new ConcurrentHashMap<>();
+    //Admin ceiling for announced preferences, dedicated servers only: a preference is a request
+    //for the server to track ships (and keep their footprint loaded) that far out for that player.
+    //Zero leaves announced preferences unused. The integrated server is the host's own machine and
+    //keeps following the host's config uncapped.
+    private static final double DEFAULT_SERVER_CEILING_BLOCKS = 4096.0;
+    private static volatile double serverCeilingBlocks = DEFAULT_SERVER_CEILING_BLOCKS;
+
     private SableContraptionRenderDistance() {
     }
 
+    public static void updatePlayerPreference(UUID player, boolean enabled, double sectionRenderDistance, int percent) {
+        playerPreferences.put(player, new PlayerPreference(enabled, sectionRenderDistance, percent));
+    }
+
+    public static void clearPlayerPreference(UUID player) {
+        playerPreferences.remove(player);
+    }
+
+    public static void clearPlayerPreferences() {
+        playerPreferences.clear();
+    }
+
+    public static void updateServerConfig(double ceilingBlocks) {
+        serverCeilingBlocks = Math.max(0.0, ceilingBlocks);
+    }
+
+    //Widest range any player in the level is owed: what the footprint tickets and the ship-borne
+    //entity tracking work from
     public static double getRangeBlocks(ServerLevel level) {
+        double widest = -1.0;
+        for (Player player : level.players()) {
+            PlayerPreference preference = playerPreferences.get(player.getUUID());
+            if (preference != null) {
+                widest = Math.max(widest, preferenceRangeBlocks(level, preference));
+            }
+        }
+        if (widest >= 0.0) {
+            return widest;
+        }
+        return getFallbackRangeBlocks(level);
+    }
+
+    //Range one player is owed: what decides whether a ship is tracked to that player
+    public static double getRangeBlocks(ServerLevel level, Player player) {
+        PlayerPreference preference = playerPreferences.get(player.getUUID());
+        if (preference != null) {
+            return preferenceRangeBlocks(level, preference);
+        }
+        return getFallbackRangeBlocks(level);
+    }
+
+    private static double preferenceRangeBlocks(ServerLevel level, PlayerPreference preference) {
+        if (!preference.enabled() || preference.sectionRenderDistance() <= 0.0) {
+            return 0.0;
+        }
+        int contraptionDistanceChunks = extendVanillaRenderDistanceChunks(
+                getVanillaRenderDistanceChunks(level),
+                preference.sectionRenderDistance(),
+                preference.percent()
+        );
+        double blocks = contraptionDistanceChunks * BLOCKS_PER_CHUNK;
+        if (!level.getServer().isDedicatedServer()) {
+            return blocks;
+        }
+        double ceiling = serverCeilingBlocks;
+        return ceiling <= 0.0 ? 0.0 : Math.min(blocks, ceiling);
+    }
+
+    private static double getFallbackRangeBlocks(ServerLevel level) {
         if (level.getServer().isDedicatedServer()) {
             return getDedicatedServerRangeBlocks(level.getGameTime());
         }

@@ -23,7 +23,7 @@ public class MixinSubLevelTrackingSystem {
 
     @Inject(method = "shouldLoad", at = @At("HEAD"), cancellable = true, remap = false)
     private void voxy$useVoxySimulatedContraptionRenderDistance(Player player, Vector3dc position, CallbackInfoReturnable<Boolean> cir) {
-        double rangeBlocks = SableContraptionRenderDistance.getRangeBlocks(this.level);
+        double rangeBlocks = SableContraptionRenderDistance.getRangeBlocks(this.level, player);
         if (rangeBlocks <= 0.0) {
             return;
         }

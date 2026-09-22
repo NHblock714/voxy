@@ -51,6 +51,17 @@ public final class CreateServerConfig {
                      "radius within which other players' positions are shared.")
             .defineInRange("maxFarPlayerDistanceBlocks", 8192, 0, 32768);
 
+    //A voxy client asks to have sable ships tracked to it over its LOD range (hull, pose stream and
+    //the ship-borne contraption entities), which also keeps each ship's footprint chunks loaded
+    //while a player is within range. Applied per player up to this ceiling; 0 ignores the requests
+    //and leaves sable's own sub_level_tracking_range in charge.
+    public static final ModConfigSpec.IntValue MAX_SABLE_HULL_RANGE_BLOCKS = BUILDER
+            .comment("Ceiling, in blocks, for how far this server tracks sable ships to a voxy client",
+                     "that asks for its LOD range. Ships within a player's range keep their footprint",
+                     "chunks loaded, so this is a server-load lever. 0 = ignore client requests and use",
+                     "sable's own sub_level_tracking_range.")
+            .defineInRange("maxSableHullRangeBlocks", 4096, 0, 32768);
+
     public static final ModConfigSpec SPEC = BUILDER.build();
 
     public static void register(ModContainer container, IEventBus modEventBus) {
@@ -79,5 +90,7 @@ public final class CreateServerConfig {
         me.cortex.voxy.compat.far.FarEntityService.updateServerConfig(
                 FAR_PLAYERS_ENABLED.get(),
                 MAX_FAR_PLAYER_DISTANCE_BLOCKS.get());
+        me.cortex.voxy.commonImpl.compat.sable.SableContraptionRenderDistance.updateServerConfig(
+                MAX_SABLE_HULL_RANGE_BLOCKS.get());
     }
 }

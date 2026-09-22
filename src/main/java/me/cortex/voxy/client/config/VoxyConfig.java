@@ -377,6 +377,8 @@ public class VoxyConfig {
                 this.sectionRenderDistance,
                 this.simulatedContraptionRenderDistancePercent
         );
+        //A dedicated server only learns the preference over the wire
+        me.cortex.voxy.client.compat.sable.SableHullRangeClient.send();
     }
 
     // Create: push the distant-train enable flag + render distance to the server-side sampler bridge,

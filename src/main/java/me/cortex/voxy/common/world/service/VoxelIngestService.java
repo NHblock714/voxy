@@ -29,17 +29,24 @@ public class VoxelIngestService {
     //One pending job per section, latest wins: every trigger source (per-block, bulk packet, chunk
     //lifecycle, VSS stream) can re-fire for the same section many times per second, the job reads
     //live section state at process time anyway, and the newer light copy is the fresher one - so a
-    //busy section costs one slot instead of an unbounded pileup of ~4KB payloads, each pinning its
-    //engine ref. The deque holds keys (one node per in-map key, permits track deque nodes); the map
-    //is the single owner of the engine refs.
+    //busy section costs one payload instead of an unbounded pileup of ~4KB payloads, each pinning
+    //its engine ref. The map is the single owner of the engine refs.
     private record IngestKey(WorldEngine world, int cx, int cy, int cz){}
-    private final ConcurrentLinkedDeque<IngestKey> ingestQueue = new ConcurrentLinkedDeque<>();
+    //One deque node per SUBMISSION, superseded or not: a queue observer (VSS) redirects the pop and
+    //pairs each popped node's `section` with the section it handed to rawIngest, so every section
+    //that entered has to come out of processJob exactly once. A node whose job was superseded or
+    //dropped drains as a no-op. Permits track nodes.
+    private record IngestNode(IngestKey key, LevelChunkSection section){}
+    private final ConcurrentLinkedDeque<IngestNode> ingestQueue = new ConcurrentLinkedDeque<>();
+    private final java.util.concurrent.atomic.AtomicInteger queuedNodes = new java.util.concurrent.atomic.AtomicInteger();
     private final java.util.concurrent.ConcurrentHashMap<IngestKey, IngestSection> pending = new java.util.concurrent.ConcurrentHashMap<>();
     //Hard fuse over the dedup: a storage stall collapses drain throughput while arrival continues,
     //and the payloads pin engines and chunks. Dropping the OLDEST fails toward pre-existing
     //behavior - stale LOD that self-heals on the next update or visit; dropping newest would keep
     //older, equally stale data instead.
     private static final int MAX_PENDING = 10_000;
+    //Nodes carry no payload, so they are bounded separately and far above the payload fuse
+    private static final int MAX_QUEUED_NODES = MAX_PENDING * 4;
 
     public VoxelIngestService(ServiceManager pool) {
         this(pool, null);
@@ -51,13 +58,17 @@ public class VoxelIngestService {
     }
 
     private void processJob() {
-        var key = this.ingestQueue.poll();
-        if (key == null) {
+        IngestNode node;
+        try {
+            node = this.ingestQueue.pop();
+        } catch (java.util.NoSuchElementException e) {
+            //A permit outran its node: the shutdown drain cleared the deque
             return;
         }
-        var task = this.pending.remove(key);
+        this.queuedNodes.decrementAndGet();
+        var task = this.pending.remove(node.key());
         if (task == null) {
-            //Dropped by the overflow fuse after its permit was issued
+            //Superseded (its newer twin drained this section already) or dropped by the fuse
             return;
         }
 
@@ -140,28 +151,33 @@ public class VoxelIngestService {
     }
 
     //Sole enqueue path: takes ownership of one engine ref per pending section, supersedes in place,
-    //and drops the oldest pending job past the fuse.
+    //queues one node per submission and drops the oldest pending job past the fuse.
     private boolean enqueueJob(WorldEngine engine, IngestSection job) {
+        if (this.queuedNodes.get() >= MAX_QUEUED_NODES) {
+            me.cortex.voxy.commonImpl.PerfStats.ingestOverflowDropped.increment();
+            return true;
+        }
         engine.acquireRef();
         var key = new IngestKey(engine, job.cx(), job.cy(), job.cz());
         var prev = this.pending.put(key, job);
         if (prev != null) {
             prev.world().releaseRef();
             me.cortex.voxy.commonImpl.PerfStats.ingestSuperseded.increment();
-            //The old deque node still names this key and drains the NEW job - no extra permit needed
-            return true;
-        }
-        if (this.pending.size() > MAX_PENDING) {
-            var oldestKey = this.ingestQueue.pollFirst();
-            if (oldestKey != null) {
-                var oldest = this.pending.remove(oldestKey);
-                if (oldest != null) {
-                    oldest.world().releaseRef();
-                    me.cortex.voxy.commonImpl.PerfStats.ingestOverflowDropped.increment();
-                }
+        } else if (this.pending.size() > MAX_PENDING) {
+            //The oldest live job goes and its node drains as a no-op. When the head node is already
+            //a no-op the newest job goes instead - one map probe either way, never a scan.
+            var head = this.ingestQueue.peekFirst();
+            var dropped = head == null ? null : this.pending.remove(head.key());
+            if (dropped == null) {
+                dropped = this.pending.remove(key);
+            }
+            if (dropped != null) {
+                dropped.world().releaseRef();
+                me.cortex.voxy.commonImpl.PerfStats.ingestOverflowDropped.increment();
             }
         }
-        this.ingestQueue.add(key);
+        this.queuedNodes.incrementAndGet();
+        this.ingestQueue.add(new IngestNode(key, job.section()));
         me.cortex.voxy.commonImpl.PerfStats.ingestEnqueued.increment();
         try {
             this.service.execute();
@@ -272,6 +288,7 @@ public class VoxelIngestService {
         //Every pending task still holds a world ref, owned by the map - drain and release so worlds
         //can close
         this.ingestQueue.clear();
+        this.queuedNodes.set(0);
         var it = this.pending.entrySet().iterator();
         while (it.hasNext()) {
             var entry = it.next();
