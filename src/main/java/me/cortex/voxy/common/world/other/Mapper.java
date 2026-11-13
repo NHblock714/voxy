@@ -223,7 +223,8 @@ public class Mapper {
 
         this.persistStateEntry(entry);
 
-        if (this.newStateCallback!=null)this.newStateCallback.accept(entry);
+        var callback = this.newStateCallback;
+        if (callback != null) callback.accept(entry);
         return entry;
     }
 
@@ -255,7 +256,8 @@ public class Mapper {
 
         this.persistBiomeEntry(entry);
 
-        if (this.newBiomeCallback!=null)this.newBiomeCallback.accept(entry);
+        var callback = this.newBiomeCallback;
+        if (callback != null) callback.accept(entry);
         return entry;
     }
 
@@ -347,8 +349,9 @@ public class Mapper {
         }
 
         this.persistStateEntry(mapping);
-        if (this.newStateCallback != null) {
-            this.newStateCallback.accept(mapping);
+        var callback = this.newStateCallback;
+        if (callback != null) {
+            callback.accept(mapping);
         }
         return mapping.id;
     }
