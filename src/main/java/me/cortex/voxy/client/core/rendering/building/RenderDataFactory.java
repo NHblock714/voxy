@@ -23,6 +23,8 @@ public class RenderDataFactory {
     private static final boolean DISABLE_CULL_SAME_OCCLUDES = false;//TODO: FIX TRANSLUCENTS (e.g. stained glass) breaking on chunk boarders with this set to false (it might be something else????)
 
     private static final boolean VERIFY_MESHING = VoxyCommon.isVerificationFlagOn("verifyMeshing");
+    private static final long BLEND_PALETTE_FLAG = 1L << 63;
+    private static final long FLUID_SURFACE_FLAG = 1L << 45;
 
     //TODO: MAKE a render cache that caches each WorldSection directional face generation, cause then can just pull that directly
     // instead of needing to regen the entire thing
@@ -365,7 +367,7 @@ public class RenderDataFactory {
             data &= ~((0x1FFL << 46) | (0xFL << 42));
             data |= ((long) (idx & 0x1FF)) << 46;
             data |= ((long) ((idx >>> 9) & 0xF)) << 42;
-            data |= 1L << 63;
+            data |= BLEND_PALETTE_FLAG;
             this.sectionData[i * 2] = data;
         }
     }
@@ -1892,9 +1894,67 @@ public class RenderDataFactory {
         }
     }
 
-    private void generateFluidFaces() {
+    private void markFluidSurfaceSides(int firstSide) {
+        for (int i = firstSide; i < this.quadCounters[0]; i++) {
+            long address = this.quadBufferPtr + 8L * i;
+            long quad = MemoryUtil.memGetLong(address);
+            int face = (int) (quad & 7);
+
+            int modelId = (int) (quad >>> 26 & 0xFFFF);
+            long meta = this.modelMan.getModelMetadataFromClientId(modelId);
+            if (!ModelQueries.isFluid(meta) || !ModelQueries.isTranslucent(meta) || !ModelQueries.faceExists(meta, 1)) continue;
+
+            boolean northSouth = (face >> 1) == 1;
+            int sizeA = (int) (quad >>> 3 & 15) + 1;
+            int sizeB = (int) (quad >>> 7 & 15) + 1;
+            int x = (int) (quad >>> 21 & 31);
+            int y = (int) (quad >>> 16 & 31);
+            int z = (int) (quad >>> 11 & 31);
+            int top = y + (northSouth ? sizeB : sizeA) - 1;
+            int width = northSouth ? sizeA : sizeB;
+            int step = northSouth ? 1 : 32;
+
+            // Shortening a merged side is safe only if its entire upper edge meets open surface.
+            int cell = x | (z << 5) | (top << 10);
+            int end = cell + step * width;
+            while (cell < end && this.hasOpenFluidTop(cell)) cell += step;
+            if (cell != end) continue;
+
+            if ((quad & BLEND_PALETTE_FLAG) == 0) {
+                quad |= FLUID_SURFACE_FLAG;
+            } else {
+                // Bits 42..45 are part of the palette index. Escape faces 6/7 encode the axis
+                // instead, with the now redundant blend flag holding the original face polarity.
+                quad = (quad & ~(BLEND_PALETTE_FLAG | 7L)) | (5 + (face >> 1)) | ((long) (face & 1) << 63);
+            }
+            MemoryUtil.memPutLong(address, quad);
+        }
+    }
+
+    private boolean hasOpenFluidTop(int cell) {
+        int row = cell >>> 5;
+        int bit = 1 << (cell & 31);
+        if ((this.fluidMasks[row] & bit) == 0) return false;
+
+        if (cell < 31 * 32 * 32) {
+            // Match generateYZFluidInnerGeometry's UP culling (fluid, opaque, or occluding DOWN).
+            if (((this.fluidMasks[row + 32] | this.opaqueMasks[row + 32]) & bit) != 0) return false;
+            return !ModelQueries.faceOccludes(this.sectionData[(cell + 32 * 32) * 2 + 1], 0);
+        }
+        // The outer mesher can emit an UP face between different fluids; do not shorten a
+        // continuing column. An unbaked neighbour cannot establish an exposed surface either.
+        int blockId = Mapper.getBlockId(this.neighboringFaces[3 * 32 * 32 + (cell & 1023)]);
+        if (blockId == 0) return true;
+        int modelId = this.modelMan._unsafeRawAccess()[blockId];
+        if (modelId < 0) return false;
+        long meta = this.modelMan.getModelMetadataFromClientId(modelId);
+        return !ModelQueries.isFluid(meta) && !ModelQueries.containsFluid(meta) && !ModelQueries.faceOccludes(meta, 0);
+    }
+
+    private void generateFluidFaces(int lodLevel) {
         // The translucent bucket is order-sensitive. Submit side walls first and
         // horizontal surfaces last so water tops do not hide shoreline geometry.
+        int firstSide = this.quadCounters[0];
         this.blockMesher.axis = 1;
         this.generateYZFluidInnerGeometry(1);
         this.generateYZFluidOuterGeometry(1);
@@ -1907,6 +1967,7 @@ public class RenderDataFactory {
         for (var mesher : this.xAxisMeshers) {
             mesher.finish();
         }
+        if (lodLevel > 0) this.markFluidSurfaceSides(firstSide);
 
         this.blockMesher.axis = 0;
         this.generateYZFluidInnerGeometry(0);
@@ -2065,7 +2126,7 @@ public class RenderDataFactory {
             this.applyBiomeBlend(rawSection, neighborMsk, CHECK_NEIGHBOR_FACE_OCCLUSION);
             this.generateYZFaces();
             this.generateXFaces();
-            this.generateFluidFaces();
+            this.generateFluidFaces(section.lvl);
         } catch (IdNotYetComputedException e) {
             e.auxBitMsk = neighborMsk;
             e.auxData = this.neighboringFaces;

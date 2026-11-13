@@ -172,6 +172,17 @@ void setupQuad(out QuadData quad, const in Quad rawQuad, uvec2 sPos, bool genera
     #else
     quad.quadSizeAddin = faceSize.yw + quadSize - 1;
     #endif
+    #if defined(TRANSLUCENT) && !defined(USE_SINGLE_TRI)
+    if (face >= 2u && lodLevel > 0u && modelUsesFluidDatum(model) && !modelIsLava(model)
+            && quadEndsAtFluidSurface(rawQuad)) {
+        int vertical = quad.axis == 1u ? 1 : 0;
+        float topCellY = extractPos(rawQuad).y + float(quadSize[vertical] - 1);
+        float topIndentation = resolveFluidTopIndentation(
+                model, 1u, extractFaceIndentation(model.faceData[1]), topCellY, lodScale, lodPos, lodLevel);
+        float span = topCellY + 1.0 - topIndentation - quadStart.y;
+        if (span > 0.0 && span < quad.quadSizeAddin[vertical]) quad.quadSizeAddin[vertical] = span;
+    }
+    #endif
     quad.uvCorner = faceSize.xz;
 
     //Attributes must come AFTER the geometry fields: the lava band test below reads
