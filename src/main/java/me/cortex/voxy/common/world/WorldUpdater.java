@@ -22,10 +22,11 @@ public class WorldUpdater {
         boolean shouldCheckEmptiness = false;
         WorldSection previousSection = null;
         WorldSection current = null;
+        Throwable failure = null;
         //Refcounts must survive any throw out of this loop - markDirty fans into the dirty-callback
         //chain (node manager, render router), and one leaked acquire keeps isWorldUsed() true
-        //forever, pinning the engine's whole native footprint past dimension teardown. Every
-        //hand-off nulls its local so the finally releases exactly the refs still held.
+        //forever, pinning the engine's whole native footprint past dimension teardown.
+        //Release decrements the refcount before it can throw, so clear the claim before calling it.
         try {
             for (int lvl = 0; lvl <= MAX_LOD_LAYER; lvl++) {
                 current = into.acquire(lvl, section.x >> (lvl + 1), section.y >> (lvl + 1), section.z >> (lvl + 1));
@@ -35,8 +36,9 @@ public class WorldUpdater {
                 if (lvl != 0 && shouldCheckEmptiness) {
                     emptinessStateChange = current.updateEmptyChildState(previousSection);
                     //We kept the previous section acquired, so we need to release it
-                    previousSection.release();
+                    WorldSection released = previousSection;
                     previousSection = null;
+                    released.release();
                 }
 
                 long status = insertSectionLvlIntoWorld(section, current);
@@ -82,16 +84,40 @@ public class WorldUpdater {
                     //fresh mip against storage, so stale parents get detected and rewritten. Unchanged levels write
                     //identical data and mark nothing dirty.
                     shouldCheckEmptiness = false;
-                    current.release();
+                    WorldSection released = current;
                     current = null;
+                    released.release();
                 }
             }
+        } catch (Throwable thrown) {
+            failure = thrown;
+            throw thrown;
         } finally {
-            if (current != null) {
-                current.release();
+            try {
+                releaseRemaining(current, failure);
+            } catch (Throwable thrown) {
+                failure = thrown;
+                throw thrown;
+            } finally {
+                releaseRemaining(previousSection, failure);
             }
-            if (previousSection != null) {
-                previousSection.release();
+        }
+    }
+
+    private static void releaseRemaining(WorldSection section, Throwable failure) {
+        if (section == null) return;
+        try {
+            section.release();
+        } catch (Throwable cleanupFailure) {
+            if (failure == null) throw cleanupFailure;
+            if (failure == cleanupFailure) return;
+            try {
+                for (Throwable suppressed : failure.getSuppressed()) {
+                    if (suppressed == cleanupFailure) return;
+                }
+                failure.addSuppressed(cleanupFailure);
+            } catch (Throwable ignored) {
+                // Failure to record suppression must not mask the original failure.
             }
         }
     }
