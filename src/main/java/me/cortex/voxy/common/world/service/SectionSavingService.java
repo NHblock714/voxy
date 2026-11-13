@@ -59,6 +59,7 @@ public class SectionSavingService {
         var staged = new ArrayList<WorldSection>(MAX_BATCH_SECTIONS);
         WorldEngine batchEngine = null;
         SectionStorage.SectionSaveBatch batch = null;
+        Throwable primaryFailure = null;
         //Raised inside the try so nothing can throw between here and the finally that lowers it - a
         //flag stuck true would silently drop this thread's queue backpressure for the rest of its life.
         try {
@@ -71,7 +72,7 @@ public class SectionSavingService {
                 //and a mixed batch would write one dimension's sections into another's database.
                 if (batchEngine != task.engine()) {
                     if (batch != null) {
-                        this.finishBatch(batch, staged);
+                        this.finishBatch(batch, staged, false);
                         batch.close();
                         batch = null;
                     }
@@ -80,7 +81,7 @@ public class SectionSavingService {
                 }
                 this.stageSection(batch, staged, task.section());
                 if (staged.size() >= MAX_BATCH_SECTIONS || batch.dataSize() >= MAX_BATCH_BYTES) {
-                    this.finishBatch(batch, staged);
+                    this.finishBatch(batch, staged, true);
                 }
                 if (++handled >= MAX_SECTIONS_PER_CALL) {
                     break;
@@ -95,12 +96,20 @@ public class SectionSavingService {
                     break;
                 }
             }
+        } catch (Throwable failure) {
+            primaryFailure = failure;
+            throw failure;
         } finally {
             try {
                 if (batch != null) {
-                    this.finishBatch(batch, staged);
+                    this.finishBatch(batch, staged, false);
                     batch.close();
                 }
+            } catch (Throwable cleanupFailure) {
+                if (primaryFailure == null) {
+                    throw cleanupFailure;
+                }
+                suppress(primaryFailure, cleanupFailure);
             } finally {
                 if (outermost) {
                     DRAINING.set(Boolean.FALSE);
@@ -133,7 +142,7 @@ public class SectionSavingService {
     //release() only after the commit: while a section is held it stays in the tracker's loaded cache,
     //so WorldEngine.isWorldUsed() is true and the idle cleaner cannot free the world (and close the
     //storage) out from under a batch that still has staged writes.
-    private void finishBatch(SectionStorage.SectionSaveBatch batch, List<WorldSection> staged) {
+    private void finishBatch(SectionStorage.SectionSaveBatch batch, List<WorldSection> staged, boolean thresholdFlush) {
         if (staged.isEmpty()) {
             return;
         }
@@ -155,6 +164,10 @@ public class SectionSavingService {
                         + " sections (consecutive failure " + failures + ")", e);
             }
         }
+        if (committed && thresholdFlush) {
+            retireCommittedThresholdBatch(staged);
+            return;
+        }
         //Past this many consecutive failures the store is not coming back on its own, and holding
         //the sections costs 256KiB each while the retry accomplishes nothing. LOD data is
         //regenerable - dropping it is the same bargain the ingest overflow fuse makes.
@@ -170,6 +183,43 @@ public class SectionSavingService {
             me.cortex.voxy.commonImpl.PerfStats.saveDroppedAfterRetries.add(staged.size());
         }
         staged.clear();
+    }
+
+    private static void retireCommittedThresholdBatch(List<WorldSection> staged) {
+        int next = 0;
+        try {
+            while (next < staged.size()) {
+                // A release can throw after consuming its pin. Do not leave that entry to retry.
+                staged.set(next++, null).release();
+            }
+        } catch (Throwable failure) {
+            while (next < staged.size()) {
+                try {
+                    staged.set(next++, null).release();
+                } catch (Throwable cleanupFailure) {
+                    suppress(failure, cleanupFailure);
+                }
+            }
+            throw failure;
+        } finally {
+            staged.clear();
+        }
+    }
+
+    private static void suppress(Throwable primary, Throwable secondary) {
+        if (primary == secondary) {
+            return;
+        }
+        try {
+            for (Throwable previous : primary.getSuppressed()) {
+                if (previous == secondary) {
+                    return;
+                }
+            }
+            primary.addSuppressed(secondary);
+        } catch (Throwable ignored) {
+            // Suppression must not replace the original failure or interrupt retirement.
+        }
     }
 
     private volatile long consecutiveCommitFailures;
