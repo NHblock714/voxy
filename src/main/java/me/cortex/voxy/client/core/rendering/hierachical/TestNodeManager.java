@@ -285,6 +285,10 @@ public class TestNodeManager {
 
     public static void main(String[] args) {
         Logger.INSERT_CLASS = false;
+        if (args.length == 1 && args[0].equals("--empty-child-request")) {
+            testEmptyChildRequest();
+            return;
+        }
         int ITER_COUNT = 5_000;
         int INNER_ITER_COUNT = 1_000_000;
         boolean GEO_REM = true;
@@ -312,6 +316,64 @@ public class TestNodeManager {
         }
         System.out.println("Finished " + finished.get() + " iterations out of " + ITER_COUNT);
     }
+
+    private static void testEmptyChildRequest() {
+        var test = new TestBase();
+        long root = WorldEngine.getWorldSectionId(4, -1, 0, 1);
+        long child = makeChildPos(root, 7);
+        test.putTopPos(root);
+        test.meshUpdate(root, 0, 0);
+        var updates = test.nodeManager.getNodeUpdates();
+        int rootId = test.nodeManager.getTopLevelNodeIds().iterator().nextInt();
+        updates.clear();
+
+        test.request(root);
+        test.request(root);
+        expectState(test, "empty root requested twice", 1, 0);
+        if (!updates.isEmpty()) {
+            throw new AssertionError("Refusing an empty root request must not republish the node");
+        }
+
+        test.childUpdate(root, 1 << 7);
+        expectState(test, "new child existence, before traversal", 1, 0);
+        if (!updates.contains(rootId) || test.watcher.get(child) != 0) {
+            throw new AssertionError("Child existence must republish the root without starting a request");
+        }
+
+        test.request(root);
+        test.request(root);
+        expectState(test, "nonempty root requested twice", 2, 1);
+        if (test.watcher.get(child) != DEFAULT_UPDATE_FLAGS) {
+            throw new AssertionError("Nonempty root must start watching the requested child");
+        }
+        test.meshUpdate(child, 0, 0);
+        expectState(test, "child request completed", 2, 0);
+
+        updates.clear();
+        test.request(child);
+        expectState(test, "empty non-top-level leaf refused", 2, 0);
+        if (updates.size() != 1 || updates.contains(rootId)) {
+            throw new AssertionError("Non-top-level leaf must keep the existing refusal and invalidation path");
+        }
+
+        test.remTopPos(root);
+        expectState(test, "root removed", 0, 0);
+        if (!test.cleaner.active.isEmpty() || !test.watcher.updateTypes.isEmpty()) {
+            throw new AssertionError("Root removal must release the nodes and watches");
+        }
+        System.out.println("Empty child request regression passed");
+    }
+
+    private static void expectState(TestBase test, String stage, int nodes, int requests) {
+        List<String> debug = new ArrayList<>();
+        test.nodeManager.addDebug(debug);
+        String expected = "NC/IF: " + nodes + "/" + requests;
+        if (!debug.getFirst().equals(expected)) {
+            throw new AssertionError(stage + ": expected " + expected + ", got " + debug.getFirst());
+        }
+        test.verifyIntegrity();
+    }
+
     private static long rPos(Random r, LongList tops) {
         int lvl = r.nextInt(5);
         long top = tops.getLong(r.nextInt(tops.size()));

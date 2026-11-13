@@ -1159,6 +1159,12 @@ public class NodeManager {
                 return;
             }
 
+            // An empty top-level leaf has no children to fulfill a request. A later child
+            // existence update republishes the node so traversal can request it again.
+            if (this.nodeData.getNodeChildExistence(nodeId) == 0 && this.topLevelNodes.contains(this.nodeData.nodePosition(nodeId))) {
+                return;
+            }
+
             //Mark node as having an inflight request
             this.nodeData.markRequestInFlight(nodeId);
 
