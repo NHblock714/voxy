@@ -60,6 +60,7 @@ public class SoftwareRasterizer {
     private int samplerWidth;
     private int samplerHeight;
     private int[] samplerTexture;
+    private AtlasTexture samplerTiles;
 
     public SoftwareRasterizer(int targetSize) {
         int testExpect = targetSize*targetSize;
@@ -89,14 +90,22 @@ public class SoftwareRasterizer {
             throw new IllegalArgumentException("Texture dimensions do not match pixel count");
         }
         this.samplerTexture = texture;
+        this.samplerTiles = null;
         this.samplerWidth = width;
         this.samplerHeight = height;
+    }
+
+    void setSamplerTexture(AtlasTexture texture) {
+        this.samplerTiles = texture;
+        this.samplerTexture = null;
+        this.samplerWidth = texture.width;
+        this.samplerHeight = texture.height;
     }
 
     private int sampleTexture(float u, float v) {
         int pu = Math.clamp(Math.round(u*this.samplerWidth-0.5f), 0, this.samplerWidth-1);
         int pv = Math.clamp(Math.round(v*this.samplerHeight-0.5f), 0, this.samplerHeight-1);
-        return this.samplerTexture[this.samplerWidth*pv+pu];
+        return this.samplerTiles != null ? this.samplerTiles.get(pu, pv) : this.samplerTexture[this.samplerWidth*pv+pu];
     }
 
     public void clear() {

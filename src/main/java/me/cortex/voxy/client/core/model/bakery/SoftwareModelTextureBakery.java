@@ -37,12 +37,6 @@ import org.lwjgl.system.MemoryUtil;
 
 import java.util.concurrent.CompletableFuture;
 
-import static org.lwjgl.opengl.GL11.*;
-import static org.lwjgl.opengl.GL11C.GL_RGBA;
-import static org.lwjgl.opengl.GL12.GL_PACK_IMAGE_HEIGHT;
-import static org.lwjgl.opengl.GL15C.glBindBuffer;
-import static org.lwjgl.opengl.GL21.GL_PIXEL_PACK_BUFFER;
-
 public class SoftwareModelTextureBakery {
     private static final Matrix4f[] VIEWS = new Matrix4f[6];
 
@@ -79,37 +73,7 @@ public class SoftwareModelTextureBakery {
     }
 
     private void _doSetupTexture(int glId) {
-        glBindTexture(GL_TEXTURE_2D, glId);
-        int width = glGetTexLevelParameteri(GL_TEXTURE_2D, 0, GL_TEXTURE_WIDTH);
-        int height = glGetTexLevelParameteri(GL_TEXTURE_2D, 0, GL_TEXTURE_HEIGHT);
-
-        int[] pixels = new int[width * height];
-        //Pack state is global and whatever ran last owns it. A pixel-pack buffer left bound sends this
-        //readback into that buffer instead of our array, and a stale row length/skip mis-strides it -
-        //both silent, and both far more likely with a large atlas under another renderer.
-        glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
-        glPixelStorei(GL_PACK_ROW_LENGTH, width);
-        glPixelStorei(GL_PACK_IMAGE_HEIGHT, 0);
-        glPixelStorei(GL_PACK_SKIP_ROWS, 0);
-        glPixelStorei(GL_PACK_SKIP_PIXELS, 0);
-        glPixelStorei(GL_PACK_ALIGNMENT, 4);
-        //The readback goes through native memory, never a Java array: handing the driver an int[]
-        //holds a JNI critical pin on a (large-atlas: humongous) heap region across a full GPU sync,
-        //and that pin path has produced a hard JVM crash in the field (Zulu 25 + AMD GL, EXCEPTION_
-        //ACCESS_VIOLATION inside jvm.dll under glGetTexImage). The extra bulk copy is a one-time
-        //cost at renderer creation.
-        long size = (long) width * height * 4L;
-        long addr = MemoryUtil.nmemAlloc(size);
-        if (addr == 0) throw new OutOfMemoryError("atlas readback buffer: " + size + " bytes");
-        try {
-            nglGetTexImage(GL_TEXTURE_2D, 0, GL_RGBA, GL_UNSIGNED_BYTE, addr);
-            MemoryUtil.memIntBuffer(addr, width * height).get(pixels);
-        } finally {
-            MemoryUtil.nmemFree(addr);
-        }
-        glPixelStorei(GL_PACK_ROW_LENGTH, 0);
-
-        this.rasterizer.setSamplerTexture(pixels, width, height);
+        AtlasReadback.setup(glId, this.rasterizer);
     }
 
     public static final int FLAG_CENTERED_GROUND_CROSS = 1 << 4;
