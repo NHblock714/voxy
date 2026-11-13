@@ -6,6 +6,7 @@ import me.cortex.voxy.client.core.gl.GlTexture;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.renderer.texture.TextureAtlas;
 import net.minecraft.resources.ResourceLocation;
+import org.lwjgl.system.MemoryStack;
 
 import static org.lwjgl.opengl.GL11.*;
 import static org.lwjgl.opengl.GL11C.GL_NEAREST;
@@ -13,10 +14,13 @@ import static org.lwjgl.opengl.GL11C.GL_NEAREST_MIPMAP_LINEAR;
 import static org.lwjgl.opengl.GL12C.GL_TEXTURE_MAX_LOD;
 import static org.lwjgl.opengl.GL12C.GL_TEXTURE_MIN_LOD;
 import static org.lwjgl.opengl.GL30.glBindBufferBase;
+import static org.lwjgl.opengl.GL30C.GL_R32UI;
+import static org.lwjgl.opengl.GL30C.GL_RED_INTEGER;
 import static org.lwjgl.opengl.GL33.*;
 import static org.lwjgl.opengl.GL33C.glSamplerParameteri;
 import static org.lwjgl.opengl.GL43.GL_SHADER_STORAGE_BUFFER;
 import static org.lwjgl.opengl.GL45.glBindTextureUnit;
+import static org.lwjgl.opengl.GL45C.glClearNamedBufferSubData;
 
 public class ModelStore {
     public static final int MODEL_SIZE = 64;
@@ -27,7 +31,13 @@ public class ModelStore {
 
     public ModelStore() {
         this.modelBuffer = new GlBuffer(MODEL_SIZE * (1<<16)).name("ModelData");
-        this.modelColourBuffer = new GlBuffer(4 * (1<<16)).name("ModelColour");
+        this.modelColourBuffer = new GlBuffer((long) Integer.BYTES * BiomeColourRows.BUFFER_ENTRIES).name("ModelColour");
+        try (var stack = MemoryStack.stackPush()) {
+            glClearNamedBufferSubData(this.modelColourBuffer.id, GL_R32UI,
+                    (long) Integer.BYTES * BiomeColourRows.FALLBACK_BASE,
+                    (long) Integer.BYTES * BiomeColourRows.MAX_BIOMES,
+                    GL_RED_INTEGER, GL_UNSIGNED_INT, stack.ints(BiomeColourRows.FALLBACK_COLOUR));
+        }
         this.textures = RenderResourceReuse.getOrCreateModelStoreTextureAtlas();
 
         //Limit the mips of the texture to match that of the terrain atlas
