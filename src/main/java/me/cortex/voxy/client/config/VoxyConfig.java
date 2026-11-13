@@ -260,14 +260,20 @@ public class VoxyConfig {
 
         Path path = getConfigPath();
         if (Files.exists(path)) {
-            try (FileReader reader = new FileReader(path.toFile())) {
-                VoxyConfig config = GSON.fromJson(reader, VoxyConfig.class);
+            try {
+                VoxyConfig config;
+                try (FileReader reader = new FileReader(path.toFile())) {
+                    config = GSON.fromJson(reader, VoxyConfig.class);
+                    if (config != null) {
+                        config.sanitize();
+                    } else {
+                        Logger.error("Failed to load Voxy config; resetting it");
+                    }
+                }
                 if (config != null) {
-                    config.sanitize();
                     config.save();
                     return config;
                 }
-                Logger.error("Failed to load Voxy config; resetting it");
             } catch (IOException | RuntimeException e) {
                 Logger.error("Could not load Voxy config; resetting it", e);
                 backupInvalidConfig(path);
