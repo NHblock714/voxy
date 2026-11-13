@@ -34,7 +34,7 @@ public class WorldEngine {
     public final SectionStorage storage;
     private final Mapper mapper;
     private final ActiveSectionTracker sectionTracker;
-    private ISectionChangeCallback dirtyCallback;
+    private volatile ISectionChangeCallback dirtyCallback;
     private ISectionSaveCallback saveCallback;
     volatile boolean isLive = true;
 
@@ -138,8 +138,9 @@ public class WorldEngine {
         if (section.tracker != this.sectionTracker) {
             throw new IllegalStateException("Section is not from here");
         }
-        if (this.dirtyCallback != null) {
-            this.dirtyCallback.accept(section, changeState, neighborMsk);
+        var callback = this.dirtyCallback;
+        if (callback != null) {
+            callback.accept(section, changeState, neighborMsk);
         }
         if ((changeState&UPDATE_TYPE_DONT_SAVE)==0) {
             section.markDirty();

@@ -26,7 +26,11 @@ import org.lwjgl.system.MemoryUtil;
 
 import java.lang.invoke.MethodHandles;
 import java.lang.invoke.VarHandle;
+import java.util.ArrayDeque;
+import java.util.Collections;
+import java.util.IdentityHashMap;
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.ConcurrentLinkedDeque;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.locks.LockSupport;
@@ -142,8 +146,10 @@ public class AsyncNodeManager {
             if (e == null) {
                 e = new RuntimeException("null throwable");
             }
-            this.uncaughtException = e;
-            this.running = false;
+            synchronized (this.childUpdateQueue) {
+                this.uncaughtException = e;
+                this.running = false;
+            }
         });
         this.thread.setName("Async Node Manager");
 
@@ -276,13 +282,16 @@ public class AsyncNodeManager {
         }
 
         do {
-            var job = this.childUpdateQueue.poll();
+            var job = this.pollChildChange();
             if (job == null)
                 break;
-            this.childQDepth.decrementAndGet();
             workDone++;
-            this.manager.processChildChange(job.key, job.getNonEmptyChildren());
-            job.release();
+            try {
+                this.processChildChange(job);
+            } catch (RuntimeException | Error failure) {
+                this.workCounter.addAndGet(-workDone);
+                throw failure;
+            }
         } while (true);
 
 
@@ -703,7 +712,10 @@ public class AsyncNodeManager {
 
     //TODO: add atomic counters for each event type probably
     private final ConcurrentLinkedDeque<MemoryBuffer> requestBatchQueue = new ConcurrentLinkedDeque<>();
-    private final ConcurrentLinkedDeque<WorldSection> childUpdateQueue = new ConcurrentLinkedDeque<>();
+    // Admission, publication and closing share this monitor. The worker drops the identity
+    // before reading the latest mask, so an update during processing can queue the section again.
+    private final ArrayDeque<WorldSection> childUpdateQueue = new ArrayDeque<>();
+    private final Set<WorldSection> queuedChildren = Collections.newSetFromMap(new IdentityHashMap<>());
     private final ConcurrentLinkedDeque<BuiltSection> geometryUpdateQueue = new ConcurrentLinkedDeque<>();
 
     private final ConcurrentLinkedDeque<MemoryBuffer> removeBatchQueue = new ConcurrentLinkedDeque<>();
@@ -733,13 +745,56 @@ public class AsyncNodeManager {
     }
 
     private void submitChildChange(WorldSection section) {
-        if (!this.running) {
-            return;
+        int depth;
+        synchronized (this.childUpdateQueue) {
+            if (!this.running || this.queuedChildren.contains(section) || !section.tryAcquire()) {
+                return;
+            }
+            this.queuedChildren.add(section);
+            this.childUpdateQueue.add(section);
+            depth = this.childQDepth.incrementAndGet();
+            if (this.workCounter.getAndIncrement() == 0) {
+                LockSupport.unpark(this.thread);
+            }
         }
-        section.acquire();//We must acquire the section before putting in the queue
-        this.noteChildDepth(this.childQDepth.incrementAndGet());
-        this.addWork();
-        this.childUpdateQueue.add(section);
+        this.noteChildDepth(depth);
+    }
+
+    private WorldSection pollChildChange() {
+        synchronized (this.childUpdateQueue) {
+            var section = this.childUpdateQueue.poll();
+            if (section != null) {
+                this.queuedChildren.remove(section);
+                this.childQDepth.decrementAndGet();
+            }
+            return section;
+        }
+    }
+
+    private void processChildChange(WorldSection section) {
+        try {
+            this.manager.processChildChange(section.key, section.getNonEmptyChildren());
+        } catch (RuntimeException | Error failure) {
+            try {
+                section.release();
+            } catch (RuntimeException | Error releaseFailure) {
+                if (failure != releaseFailure) failure.addSuppressed(releaseFailure);
+            }
+            throw failure;
+        }
+        section.release();
+    }
+
+    private void drainChildChanges() {
+        WorldSection section;
+        while ((section = this.pollChildChange()) != null) {
+            this.workCounter.decrementAndGet();
+            try {
+                section.release();
+            } catch (RuntimeException failure) {
+                Logger.error("Failed to release a queued child update during shutdown", failure);
+            }
+        }
     }
 
     private void submitGeometryResult(BuiltSection geometry) {
@@ -803,11 +858,13 @@ public class AsyncNodeManager {
         //the worker died on its own, and bailing here would leak every queued MemoryBuffer plus
         //pin the WorldSections acquired in submitChildChange for the rest of the process (world
         //exit then hangs in awaitWorldQuiescence). Joining a dead thread returns immediately.
-        if (this.stopped) {
-            return;
+        synchronized (this.childUpdateQueue) {
+            if (this.stopped) {
+                return;
+            }
+            this.stopped = true;
+            this.running = false;
         }
-        this.stopped = true;
-        this.running = false;
         LockSupport.unpark(this.thread);
         try {
             while (this.thread.isAlive()) {
@@ -818,6 +875,8 @@ public class AsyncNodeManager {
             //Keep draining regardless - the queues must be emptied on this path too
             Thread.currentThread().interrupt();
         }
+
+        this.drainChildChanges();
 
         while (true) {
             var buffer = this.requestBatchQueue.poll();
@@ -837,12 +896,6 @@ public class AsyncNodeManager {
             buffer.free();
         }
 
-        while (true) {
-            var section = this.childUpdateQueue.poll();
-            if (section == null) break;
-            section.release();
-        }
-
         //Thread is joined above; nothing else touches the manager now. Bounded by one merge window
         //(the 300-job/1MB cap in the tick loop), but unconditionally leaked without this.
         this.geometryManager.freePendingUploads();
@@ -851,7 +904,6 @@ public class AsyncNodeManager {
         this.reqQDepth.set(0);
         this.remQDepth.set(0);
         this.geomQDepth.set(0);
-        this.childQDepth.set(0);
 
         if (RESULT_HANDLE.get(this) != null) {
             var result = (SyncResults)RESULT_HANDLE.getAndSet(this, null);
