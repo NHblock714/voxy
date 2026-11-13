@@ -118,8 +118,9 @@ public class ModelFactory {
     private final IntOpenHashSet blockStatesInFlight = new IntOpenHashSet();
     private final ReentrantLock blockStatesInFlightLock = new ReentrantLock();
 
-    private final List<Biome> biomes = new ArrayList<>();
+    private List<Biome> biomes = new ArrayList<>();
     private final List<Pair<Integer, BlockState>> modelsRequiringBiomeColours = new ArrayList<>();
+    private BiomeColourRows biomeColourRows = new BiomeColourRows(0);
 
     private static final ObjectSet<BlockState> LOGGED_SELF_CULLING_WARNING = new ObjectOpenHashSet<>();
 
@@ -475,7 +476,7 @@ public class ModelFactory {
         public int modelId = -1;
 
         public int biomeUploadIndex = -1;
-        public @Nullable MemoryBuffer biomeUpload;
+        public @Nullable int[] biomeUpload;
 
         public void upload(ModelStore store) {//Uploads and resets for reuse
             this.upload(store.modelBuffer, store.modelColourBuffer, store.textures);
@@ -483,11 +484,8 @@ public class ModelFactory {
 
         public void upload(GlBuffer modelBuffer, GlBuffer colourBuffer, GlTexture atlas) {//Uploads and resets for reuse
             this.model.cpyTo(UploadStream.INSTANCE.upload(modelBuffer, (long) this.modelId * MODEL_SIZE, MODEL_SIZE));
-            if (this.biomeUploadIndex != -1) {
-                this.biomeUpload.cpyTo(UploadStream.INSTANCE.upload(colourBuffer, this.biomeUploadIndex * 4L, this.biomeUpload.size));
-                this.biomeUploadIndex = -1;
-                this.biomeUpload.free();
-                this.biomeUpload = null;
+            if (this.biomeUpload != null) {
+                uploadBiomeColours(colourBuffer, this.biomeUploadIndex, this.biomeUpload);
             }
 
             int X = (this.modelId&0xFF) * MODEL_TEXTURE_SIZE*3;
@@ -505,9 +503,6 @@ public class ModelFactory {
         public void free() {
             this.model.free();
             this.texture.free();
-            if (this.biomeUpload != null) {
-                this.biomeUpload.free();
-            }
         }
     }
 
@@ -813,34 +808,20 @@ public class ModelFactory {
         MemoryUtil.memPutInt(uploadPtr, modelFlags); uploadPtr += 4;
 
 
-        //Temporary override to always be non biome specific
+        BiomeColourRows.Admission biomeRow = null;
+        BiomeBlendPalette.Snapshot biomeSnapshot = null;
         if (colourProvider == null) {
             MemoryUtil.memPutInt(uploadPtr, -1);//Set the default to nothing so that its faster on the gpu
         } else if (!isBiomeColourDependent) {
             MemoryUtil.memPutInt(uploadPtr, entry.tintingColour);
         } else {
-            //Populate the list of biomes for the model state
-            int biomeIndex = this.modelsRequiringBiomeColours.size() * this.biomes.size();
-            if (biomeIndex + this.biomes.size() > BiomeBlendPalette.PALETTE_BASE) {
-                //The rows have grown into the reserved region. The two overwrite each other from
-                //here - rows re-upload whole on every biome add, palette entries never re-upload -
-                //so the blend stands down and the plain per-biome colours keep the whole buffer.
-                this.blendPalette.disable();
-                Logger.error("Biome colour rows reached the blend palette boundary ("
-                        + BiomeBlendPalette.PALETTE_BASE + ") - LOD biome blending disabled");
-            }
-            MemoryUtil.memPutInt(uploadPtr, biomeIndex);
+            biomeRow = this.biomeColourRows.prepare(this.biomeColourRows.capturesColours()
+                    ? this.captureBiomeColours(this.biomes, colourProvider, colourState) : null);
+            biomeSnapshot = this.blendPalette.prepareRow(modelId, biomeRow, this.biomeColourRows.stride());
+            MemoryUtil.memPutInt(uploadPtr, biomeRow.base());
+            uploadResult.biomeUploadIndex = biomeRow.base();
+            uploadResult.biomeUpload = biomeRow.newColours();
             this.modelsRequiringBiomeColours.add(new Pair<>(modelId, colourState));
-            if (!this.biomes.isEmpty()) {
-                uploadResult.biomeUploadIndex = biomeIndex;
-                long clrUploadPtr = (uploadResult.biomeUpload = new MemoryBuffer(4L * this.biomes.size())).address;
-                for (var biome : this.biomes) {
-                    //A hole in the table (an id registered but not yet delivered) keeps its slot:
-                    //the row stride is the biome count, and a null reaches the vanilla resolvers as NPE
-                    MemoryUtil.memPutInt(clrUploadPtr, captureColourConstant(colourProvider, colourState, biome == null ? DEFAULT_BIOME : biome) | 0xFF000000); clrUploadPtr += 4;
-                }
-                this.blendPalette.mirrorRow(modelId, biomeIndex, uploadResult.biomeUpload.address, this.biomes.size());
-            }
         }
         uploadPtr += 4;
 
@@ -864,15 +845,23 @@ public class ModelFactory {
 
         //glGenerateTextureMipmap(this.textures.id);
 
-        //Set the mapping at the very end
-        this.idMappings[blockId] = modelId;
-
         this.blockStatesInFlightLock.lock();
-        if (!this.blockStatesInFlight.remove(blockId)) {
+        try {
+            if (!this.blockStatesInFlight.remove(blockId)) {
+                throw new IllegalStateException("processing a texture bake result but the block state was not in flight!!");
+            }
+            if (biomeRow != null) {
+                if (this.biomeColourRows.stride() != 0 && biomeRow.base() == BiomeColourRows.FALLBACK_BASE) {
+                    this.blendPalette.disable();
+                }
+                this.biomeColourRows.commit(biomeRow);
+                this.blendPalette.publish(biomeSnapshot);
+            }
+            // Publish the mapping only after texture, row and mirror preparation have succeeded.
+            this.idMappings[blockId] = modelId;
+        } finally {
             this.blockStatesInFlightLock.unlock();
-            throw new IllegalStateException("processing a texture bake result but the block state was not in flight!!");
         }
-        this.blockStatesInFlightLock.unlock();
 
         this.pendingEntry = null;
         this.pendingModelId = -1;
@@ -915,89 +904,88 @@ public class ModelFactory {
         return Math.clamp(state.getLightEmission(blockGetter, BlockPos.ZERO),0,15);
     }
 
-    private static final class BiomeUploadResult implements ResultUploader {
-        private final MemoryBuffer biomeColourBuffer;
-        private final MemoryBuffer modelBiomeIndexPairs;
-        private BiomeUploadResult(int biomes, int models) {
-            this.biomeColourBuffer = new MemoryBuffer(biomes*models*4);
-            this.modelBiomeIndexPairs = new MemoryBuffer(models*8);
+    private static void uploadBiomeColours(GlBuffer colourBuffer, int base, int[] colours) {
+        if (colours.length == 0) return;
+        long ptr = UploadStream.INSTANCE.upload(colourBuffer, (long) base * Integer.BYTES,
+                (long) colours.length * Integer.BYTES);
+        for (int colour : colours) {
+            MemoryUtil.memPutInt(ptr, colour);
+            ptr += Integer.BYTES;
         }
+    }
 
+    private record BiomeUploadResult(int[] colours, long[] modelBiomeIndexPairs) implements ResultUploader {
+        @Override
         public void upload(ModelStore store) {
-            this.upload(store.modelBuffer, store.modelColourBuffer);
-        }
-
-        public void upload(GlBuffer modelBuffer, GlBuffer modelColourBuffer) {
-            this.biomeColourBuffer.cpyTo(UploadStream.INSTANCE.upload(modelColourBuffer, 0, this.biomeColourBuffer.size));
-
-            //TODO: optimize this to like a compute scatter update or something
-            long ptr = this.modelBiomeIndexPairs.address;
-            for (long offset = 0; offset < this.modelBiomeIndexPairs.size; offset += 8) {
-                long v = MemoryUtil.memGetLong(ptr);ptr += 8;
-                MemoryUtil.memPutInt(UploadStream.INSTANCE.upload(modelBuffer, (MODEL_SIZE*(v&((1L<<32)-1)))+ 4*6 + 4, 4), (int) (v>>>32));
-            }
-
-            this.biomeColourBuffer.free();
-            this.modelBiomeIndexPairs.free();
-        }
-
-        public void free() {
-            if (!this.biomeColourBuffer.isFreed()) {
-                this.biomeColourBuffer.free();
-                this.modelBiomeIndexPairs.free();
+            uploadBiomeColours(store.modelColourBuffer, BiomeColourRows.ROW_BASE, this.colours);
+            for (long pair : this.modelBiomeIndexPairs) {
+                long offset = (long) MODEL_SIZE * (int) pair + 7L * Integer.BYTES;
+                MemoryUtil.memPutInt(UploadStream.INSTANCE.upload(store.modelBuffer, offset, Integer.BYTES), (int) (pair >>> 32));
             }
         }
+
+        @Override
+        public void free() { }
+    }
+
+    private int[] captureBiomeColours(List<Biome> biomes, BlockColor provider, BlockState state) {
+        int[] colours = new int[biomes.size()];
+        for (int i = 0; i < colours.length; i++) {
+            var biome = biomes.get(i);
+            // A missing biome keeps its column and uses the default resolver input.
+            colours[i] = captureColourConstant(provider, state, biome == null ? DEFAULT_BIOME : biome) | 0xFF000000;
+        }
+        return colours;
     }
 
     private BiomeUploadResult addBiome0(int id, Biome biome) {
         if (biome == null) {
             throw new IllegalStateException("Null biome");
         }
-        for (int i = this.biomes.size(); i <= id; i++) {
-            this.biomes.add(null);
-        }
-        var oldBiome = this.biomes.set(id, biome);
-
-        if (oldBiome != null && oldBiome != biome) {
-            throw new IllegalStateException("Biome was put in an id that was not null");
-        }
+        var oldBiome = id < this.biomes.size() ? this.biomes.get(id) : null;
         if (oldBiome == biome) {
             //Expected: the renderer registers its callback before replaying the mapper's table,
             //so a biome registered in between arrives twice
             return null;
         }
-
-        if (this.modelsRequiringBiomeColours.isEmpty()) return null;
-
-        var result = new BiomeUploadResult(this.biomes.size(), this.modelsRequiringBiomeColours.size());
-
-        int i = 0;
-        long modelUpPtr = result.modelBiomeIndexPairs.address;
-        for (var entry : this.modelsRequiringBiomeColours) {
-            var colourProvider = getColourProvider(entry.right());
-            if (colourProvider == null) {
-                throw new IllegalStateException();
-            }
-            //Populate the list of biomes for the model state
-            int biomeIndex = (i++) * this.biomes.size();
-            MemoryUtil.memPutLong(modelUpPtr, Integer.toUnsignedLong(entry.left())|(Integer.toUnsignedLong(biomeIndex)<<32));modelUpPtr+=8;
-            long clrUploadPtr = result.biomeColourBuffer.address + biomeIndex * 4L;
-            for (var biomeE : this.biomes) {
-                //Holes keep their slot (see the row build in processTextureBakeResult): skipping
-                //one shifts every later colour one column left
-                MemoryUtil.memPutInt(clrUploadPtr, captureColourConstant(colourProvider, entry.right(), biomeE == null ? DEFAULT_BIOME : biomeE)|0xFF000000); clrUploadPtr += 4;
-            }
+        if (oldBiome != null) {
+            throw new IllegalStateException("Biome was put in an id that was not null");
         }
 
-        if (this.modelsRequiringBiomeColours.size() * this.biomes.size() > BiomeBlendPalette.PALETTE_BASE) {
+        var nextBiomes = new ArrayList<>(this.biomes);
+        for (int i = nextBiomes.size(); i <= id; i++) {
+            nextBiomes.add(null);
+        }
+        nextBiomes.set(id, biome);
+        var nextRows = new BiomeColourRows(nextBiomes.size());
+        if (this.modelsRequiringBiomeColours.isEmpty()) {
+            this.biomes = nextBiomes;
+            this.biomeColourRows = nextRows;
+            return null;
+        }
+
+        var rebuild = nextRows.rebuild(this.modelsRequiringBiomeColours.size(), i -> {
+            var entry = this.modelsRequiringBiomeColours.get(i);
+            int[] colours = null;
+            if (nextRows.capturesColours()) {
+                var provider = getColourProvider(entry.right());
+                if (provider == null) {
+                    throw new IllegalStateException("Biome-coloured model lost its colour provider");
+                }
+                colours = this.captureBiomeColours(nextBiomes, provider, entry.right());
+            }
+            return new BiomeColourRows.ModelColours(entry.left(), colours);
+        });
+
+        var snapshot = BiomeBlendPalette.prepareRebuild(rebuild.pairs(), rebuild.colours(), nextRows.stride());
+        var result = new BiomeUploadResult(rebuild.colours(), rebuild.pairs());
+        // A failed tint capture leaves the previous table, mirror and biome list intact.
+        this.biomes = nextBiomes;
+        this.biomeColourRows = nextRows;
+        if (rebuild.fallback()) {
             this.blendPalette.disable();
-            Logger.error("Biome colour rows reached the blend palette boundary ("
-                    + BiomeBlendPalette.PALETTE_BASE + ") - LOD biome blending disabled");
         }
-        //Mirror before the result is queued: the buffers are freed after their render-thread upload
-        this.blendPalette.mirrorRebuild(result.modelBiomeIndexPairs.address, this.modelsRequiringBiomeColours.size(),
-                result.biomeColourBuffer.address, (int) (result.biomeColourBuffer.size / 4), this.biomes.size());
-
+        this.blendPalette.publish(snapshot);
         return result;
     }
 

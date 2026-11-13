@@ -4,6 +4,7 @@ import me.cortex.voxy.client.core.gl.GlBuffer;
 import me.cortex.voxy.client.core.rendering.util.UploadStream;
 import org.lwjgl.system.MemoryUtil;
 
+import java.util.Arrays;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -15,15 +16,13 @@ import java.util.concurrent.atomic.AtomicInteger;
 //will not fit (Terralith already fills most of the 9-bit space), so blends live in a palette
 //addressed through the quad's five never-used bits (13-bit index + flag bit).
 //
-//The palette occupies the reserved top of the existing model colour LUT buffer: per-(model,biome)
-//rows grow from the bottom, blends from PALETTE_BASE up, with a guard where rows are allocated.
+//The palette keeps its original indices, with ordinary biome rows in a separate bank above it.
 //Dedup keys are quantised to 5 bits per channel - below what a flat-shaded LOD quad can show, and
 //it keeps typical biome-pair usage to a few hundred entries. The entry itself keeps the first
 //arrival's exact colour, so a slot is at most a quantisation step off any voxel sharing it.
 //
-//The CPU mirror exists because blending must read the same colours the GPU displays: rows are
-//copied byte-for-byte from the exact upload buffers (null-biome compaction quirks and all), never
-//recomputed. The snapshot is swapped whole by the bakery thread and read lock-free by mesh workers.
+//The CPU mirror uses the same row bases and colours as the GPU uploads. The snapshot is swapped
+//whole by the bakery thread and read lock-free by mesh workers.
 public final class BiomeBlendPalette {
     //Must match BLEND_PALETTE_BASE in quad_util.glsl
     public static final int PALETTE_BASE = 57344;
@@ -40,18 +39,15 @@ public final class BiomeBlendPalette {
         //-1 = unknown (model has no mirrored row yet, or the biome predates the row); the caller
         //keeps the unblended colour
         public int colourOf(int modelId, int biomeId) {
-            if (modelId < 0 || modelId >= this.rowBaseByModelId.length || biomeId >= this.stride) {
+            if (modelId < 0 || modelId >= this.rowBaseByModelId.length || biomeId < 0 || biomeId >= this.stride) {
                 return -1;
             }
             int base = this.rowBaseByModelId[modelId];
-            if (base < 0) {
-                return -1;
+            if (base == BiomeColourRows.FALLBACK_BASE) {
+                return BiomeColourRows.FALLBACK_COLOUR;
             }
-            int idx = base + biomeId;
-            if (idx >= this.colours.length) {
-                return -1;
-            }
-            return this.colours[idx];
+            int idx = base - BiomeColourRows.ROW_BASE + biomeId;
+            return idx < 0 || idx >= this.colours.length ? -1 : this.colours[idx];
         }
     }
 
@@ -63,9 +59,7 @@ public final class BiomeBlendPalette {
     //every index written before its first read.
     private final ConcurrentLinkedQueue<int[]> pendingUploads = new ConcurrentLinkedQueue<>();
     private volatile boolean fullWarned;
-    //Set when the per-(model,biome) rows grow into the reserved region. The two then overwrite each
-    //other - rows are re-uploaded whole from offset 0 on every biome add, palette entries only once
-    //- so blending stops entirely rather than painting from a clobbered slot.
+    //New blended indices are not useful once any model has fallen back to a neutral row.
     private volatile boolean disabled;
 
     public Snapshot snapshot() {
@@ -111,48 +105,41 @@ public final class BiomeBlendPalette {
         return wrote;
     }
 
-    //Bakery thread: one freshly registered model's biome row, read back from the very buffer being
-    //uploaded so the mirror shows exactly what the GPU will display.
-    public void mirrorRow(int modelId, int rowBase, long rowAddress, int entryCount) {
+    Snapshot prepareRow(int modelId, BiomeColourRows.Admission row, int stride) {
         var old = this.snapshot;
+        if (stride == 0) return old;
         int[] rowBases = growRowBases(old.rowBaseByModelId(), modelId + 1);
         int[] colours = old.colours();
-        if (colours.length < rowBase + entryCount) {
-            colours = java.util.Arrays.copyOf(colours, rowBase + entryCount);
-        } else {
-            colours = colours.clone();
+        int[] fresh = row.newColours();
+        if (fresh != null) {
+            int offset = row.base() - BiomeColourRows.ROW_BASE;
+            colours = Arrays.copyOf(colours, offset + fresh.length);
+            System.arraycopy(fresh, 0, colours, offset, fresh.length);
         }
-        rowBases[modelId] = rowBase;
-        for (int i = 0; i < entryCount; i++) {
-            colours[rowBase + i] = MemoryUtil.memGetInt(rowAddress + i * 4L);
-        }
-        //entryCount is this row's stride, which is the current biome count - the same one every
-        //other row was last built with
-        this.snapshot = new Snapshot(colours, rowBases, entryCount);
+        rowBases[modelId] = row.base();
+        return new Snapshot(colours, rowBases, stride);
     }
 
-    //Bakery thread: a new biome restrides every row; mirror the full rebuilt buffer.
-    public void mirrorRebuild(long pairsAddress, int modelCount, long coloursAddress, int colourCount, int stride) {
+    static Snapshot prepareRebuild(long[] pairs, int[] colours, int stride) {
         int maxModelId = 0;
-        for (int i = 0; i < modelCount; i++) {
-            maxModelId = Math.max(maxModelId, (int) (MemoryUtil.memGetLong(pairsAddress + i * 8L) & 0xFFFFFFFFL));
+        for (long pair : pairs) {
+            maxModelId = Math.max(maxModelId, (int) pair);
         }
-        int[] rowBases = growRowBases(new int[0], Math.max(this.snapshot.rowBaseByModelId().length, maxModelId + 1));
-        for (int i = 0; i < modelCount; i++) {
-            long pair = MemoryUtil.memGetLong(pairsAddress + i * 8L);
-            rowBases[(int) (pair & 0xFFFFFFFFL)] = (int) (pair >>> 32);
+        int[] rowBases = growRowBases(new int[0], maxModelId + 1);
+        for (long pair : pairs) {
+            rowBases[(int) pair] = (int) (pair >>> 32);
         }
-        int[] colours = new int[colourCount];
-        for (int i = 0; i < colourCount; i++) {
-            colours[i] = MemoryUtil.memGetInt(coloursAddress + i * 4L);
-        }
-        this.snapshot = new Snapshot(colours, rowBases, stride);
+        return new Snapshot(colours, rowBases, stride);
+    }
+
+    void publish(Snapshot next) {
+        this.snapshot = next;
     }
 
     private static int[] growRowBases(int[] old, int minLen) {
         int len = Math.max(old.length, minLen);
-        int[] fresh = java.util.Arrays.copyOf(old, len);
-        java.util.Arrays.fill(fresh, old.length, len, -1);
+        int[] fresh = Arrays.copyOf(old, len);
+        Arrays.fill(fresh, old.length, len, -1);
         return fresh;
     }
 }
