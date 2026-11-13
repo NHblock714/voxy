@@ -146,7 +146,12 @@ public class RenderGenerationService {
 
         WorldSection section;
         if (task.section == null) {
-            section = this.acquireSection(task.position);
+            try {
+                section = this.acquireSection(task.position);
+            } catch (Throwable failure) {
+                this.retireFailedAcquisition(task, failure);
+                throw failure;
+            }
         } else {
             section = task.section;
         }
@@ -293,6 +298,37 @@ public class RenderGenerationService {
         }
     }
 
+    private void retireFailedAcquisition(BuildTask task, Throwable failure) {
+        // The queue entry was consumed, but acquisition threw before we reached the map removal.
+        long stamp = 0;
+        try {
+            stamp = this.taskMapLock.writeLock();
+            if (this.taskMap.get(task.position) == task) {
+                this.taskMap.remove(task.position);
+            }
+        } catch (Throwable retirementFailure) {
+            suppressCleanupFailure(failure, retirementFailure);
+        } finally {
+            if (stamp != 0) {
+                try {
+                    this.taskMapLock.unlockWrite(stamp);
+                } catch (Throwable unlockFailure) {
+                    suppressCleanupFailure(failure, unlockFailure);
+                }
+            }
+        }
+    }
+
+    private static void suppressCleanupFailure(Throwable failure, Throwable cleanupFailure) {
+        if (failure != cleanupFailure) {
+            try {
+                failure.addSuppressed(cleanupFailure);
+            } catch (Throwable ignored) {
+                // Suppression is best effort; the acquisition failure must remain primary.
+            }
+        }
+    }
+
 
     public void enqueueTask(long pos) {
         if (!this.service.isLive()) {
@@ -323,31 +359,37 @@ public class RenderGenerationService {
 
     public void shutdown() {
         //Steal and free as much work as possible
-        while (this.service.numJobs() != 0) {
-            int i = this.service.drain();
-            if (i == 0) break;
-            {
-                //A throw mid-drain (queue/permit drift, a release assertion) must neither leak the
-                //write stamp nor abandon the remaining releases - every un-released task section
-                //keeps isWorldUsed() true and world exit hangs. Desyncs are logged, not thrown:
-                //this is teardown, finishing the cleanup beats preserving the invariant signal.
+        try {
+            while (this.service.numJobs() != 0) {
+                int i = this.service.drain();
+                if (i == 0) break;
+                int removed = 0;
                 long stamp = this.taskMapLock.writeLock();
                 try {
                     for (int j = 0; j < i; j++) {
                         var task = this.taskQueue.remove();
-                        if (task.section != null) {
-                            task.section.release();
-                            this.holdingSectionCount.decrementAndGet();
-                        }
-                        if (this.taskMap.remove(task.position) != task) {
-                            Logger.error("Task map desync while draining render generation queue");
+                        removed++;
+                        try {
+                            if (task.section != null) {
+                                task.section.release();
+                            }
+                        } finally {
+                            // A failed release may already have changed the section's refcount.
+                            if (task.section != null) {
+                                this.holdingSectionCount.decrementAndGet();
+                            }
+                            if (!this.taskMap.remove(task.position, task)) {
+                                Logger.error("Task map desync while draining render generation queue");
+                            }
                         }
                     }
                 } finally {
                     this.taskMapLock.unlockWrite(stamp);
+                    this.taskQueueCount.addAndGet(-removed);
                 }
-                this.taskQueueCount.addAndGet(-i);
             }
+        } catch (RuntimeException failure) {
+            Logger.error("Render generation queue drain failed during shutdown; stopping the service and releasing the remaining tasks", failure);
         }
 
         //Shutdown the threads
